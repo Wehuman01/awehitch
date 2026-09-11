@@ -57,7 +57,8 @@ import {
 import { appendExecutionRecord } from "../execution/records.js";
 import { saveExecutionOutput } from "../execution/output.js";
 import { runStdioServer } from "../control-plane/server.js";
-import { interactiveLogin } from "../control-plane/browser.js";
+import { ControlPlaneBrowser, interactiveLogin } from "../control-plane/browser.js";
+import { loadSiteSelectors, probeSelectors, type SelectorProbe } from "../control-plane/selectors.js";
 import { HARNESS_IDS, HarnessId, awehitchCliEntry, harnessLabel } from "../adapters/paths.js";
 import { loadAdapter } from "../adapters/index.js";
 
@@ -470,8 +471,9 @@ program
   .description("Diagnose and auto-repair the connection")
   .option("-w, --workspace <path>")
   .option("--no-fix", "diagnose only, do not repair")
+  .option("--control-plane", "also probe the live ChatGPT DOM (launches the control-plane browser)", false)
   .option("--json", "machine-readable output", false)
-  .action(async (opts: { workspace?: string; fix: boolean; json: boolean }) => {
+  .action(async (opts: { workspace?: string; fix: boolean; controlPlane: boolean; json: boolean }) => {
     const root = resolveWorkspace(opts.workspace);
     const report: Record<string, { ok: boolean; detail?: string }> = {};
     const results: string[] = [];
@@ -724,8 +726,63 @@ program
       }
     }
 
+    // Control-plane selector pack (cheap, always reported) + optional live probe
+    const selectorPack = loadSiteSelectors();
+    report.selectors = {
+      ok: selectorPack.problems.length === 0,
+      detail:
+        `${selectorPack.site.id}/${selectorPack.site.version}` +
+        (selectorPack.source === "override" ? "（覆盖文件生效）" : "") +
+        (selectorPack.problems.length > 0 ? `；${selectorPack.problems.join("；")}` : ""),
+    };
+    let controlPlane: { ok: boolean; detail?: string; probe?: SelectorProbe } | undefined;
+    if (opts.controlPlane) {
+      if (!workspace) {
+        report.controlPlane = { ok: false, detail: "工作区无法识别" };
+      } else {
+        const driver = new ControlPlaneBrowser(workspace.id);
+        try {
+          await driver.openConversation();
+          const page = await driver.currentPage();
+          const probe = await probeSelectors(page, selectorPack.site);
+          // composer + userTurn must hit; loginWall must NOT (it means a login
+          // wall is visible); assistantTurn/generating may be absent on an
+          // empty chat, so they are informational only.
+          const broken = [
+            ...(!probe.composer.found ? ["composer"] : []),
+            ...(!probe.userTurn.found ? ["userTurn"] : []),
+            ...(probe.loginWall.found ? ["登录墙可见（需要 awehitch login）"] : []),
+          ];
+          controlPlane = {
+            ok: broken.length === 0,
+            detail: broken.length === 0 ? "DOM 探针通过" : broken.join("、"),
+            probe,
+          };
+          report.controlPlane = { ok: controlPlane.ok, detail: controlPlane.detail };
+        } catch (error) {
+          report.controlPlane = { ok: false, detail: (error as Error).message };
+        } finally {
+          await driver.close().catch(() => undefined);
+        }
+      }
+    }
+
     if (opts.json) {
-      say(JSON.stringify({ report, repairs: results, chatgptRepair, namedRepair, adapters }));
+      say(
+        JSON.stringify({
+          report,
+          repairs: results,
+          chatgptRepair,
+          namedRepair,
+          adapters,
+          selectors: {
+            site: { id: selectorPack.site.id, version: selectorPack.site.version },
+            source: selectorPack.source,
+            problems: selectorPack.problems,
+          },
+          controlPlane,
+        })
+      );
       return;
     }
     say(`${PRODUCT_NAME} Doctor`);
@@ -738,6 +795,8 @@ program
       mcp: "MCP",
       oauth: "OAuth",
       tunnel: "Tunnel",
+      selectors: "选择器",
+      controlPlane: "控制面 DOM",
     };
     let allOk = true;
     for (const [key, value] of Object.entries(report)) {

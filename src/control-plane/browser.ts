@@ -8,6 +8,8 @@ import {
   applyChatBinding,
   normalizeChatUrl,
 } from "./state.js";
+import { typeMultiline, normalizeForCompare, lastUserText } from "./composer.js";
+import { loadSiteSelectors, type SiteSelectors } from "./selectors.js";
 import { ensureDir, getStateDir } from "../config/paths.js";
 import { Logger, nullLogger } from "../logger/index.js";
 
@@ -15,7 +17,7 @@ import { Logger, nullLogger } from "../logger/index.js";
  * Control-plane browser driver.
  *
  * Wraps the ChatGPT web conversation used for [C2C] state messages and
- * exposes it as four semantic operations. The rules below are hard-won
+ * exposes it as five semantic operations. The rules below are hard-won
  * (they come from the original Codex skill) and MUST NOT be relaxed:
  *
  * 1. One browser, one tab. Switch conversations with goto, never new tabs.
@@ -46,6 +48,8 @@ export interface ReplyView {
   isControlMessage: boolean;
   /** Parsed `STATE:` value from a [C2C] control message. */
   state: string | null;
+  /** Present on `timeout` when a reply exists but was not accepted, and why. */
+  note?: string;
 }
 
 /** Snapshot of the reply log taken when the last message was sent. */
@@ -102,6 +106,8 @@ export class ControlPlaneBrowser {
   /** Task whose conversation is currently open; bindings apply to it. */
   private activeTaskId: string | null = null;
   private replyAnchor: ReplyAnchor | null = null;
+  /** Active selector pack (external override over compiled defaults). */
+  private readonly site: SiteSelectors;
   private readonly logger: Logger;
 
   constructor(
@@ -110,6 +116,7 @@ export class ControlPlaneBrowser {
     logger?: Logger
   ) {
     this.logger = logger ?? nullLogger;
+    this.site = loadSiteSelectors().site;
   }
 
   /** Lazy-launch a dedicated-profile Chromium. Uses system Chrome when present. */
@@ -127,7 +134,8 @@ export class ControlPlaneBrowser {
       args: ["--disable-blink-features=AutomationControlled"],
     };
     try {
-      // Prefer the user's real Chrome (no extra download, existing login).
+      // Prefer the system Chrome binary (no extra download). The profile is a
+      // dedicated directory — the user's daily Chrome login state is NOT reused.
       this.context = await chromium.launchPersistentContext(profile, {
         ...launchOptions,
         channel: "chrome",
@@ -156,7 +164,7 @@ export class ControlPlaneBrowser {
     const url = page.url();
     if (url.includes("/auth/login") || url.includes("auth.openai.com")) return false;
     const loginMarker = await page
-      .locator("#login-button, a[href*='/auth/login']")
+      .locator(this.site.selectors.loginWall)
       .count()
       .catch(() => 0);
     return loginMarker === 0;
@@ -222,34 +230,37 @@ export class ControlPlaneBrowser {
     applyChatBinding(this.workspaceId, url, this.activeTaskId);
   }
 
-  /** The composer is contenteditable in current ChatGPT; fill + submit. */
+  /**
+   * Insert one [C2C] message into the composer and submit it, then confirm
+   * the send by reading the message back from the conversation log.
+   */
   async sendMessage(text: string): Promise<SendResult> {
     const page = await this.ensurePage();
     if (!(await this.isLoggedIn(page))) {
       throw new ControlPlaneError("NOT_LOGGED_IN", "Log in to ChatGPT first (open_conversation).");
     }
 
-    const composer = page
-      .locator("#prompt-textarea, div[contenteditable='true'][role='textbox']")
-      .first();
+    const composer = page.locator(this.site.selectors.composer).first();
     try {
       await composer.waitFor({ state: "visible", timeout: 15_000 });
     } catch {
       throw new ControlPlaneError(
         "CHATGPT_DOM_CHANGED",
-        "Composer not found. ChatGPT layout may have changed; run awehitch doctor."
+        "Composer not found. ChatGPT layout may have changed; run awehitch doctor --control-plane."
       );
     }
     // Anchor for "new reply" detection: snapshot the reply log BEFORE sending
     // so waits can distinguish the incoming reply from the previous turn's.
-    const assistant = page.locator("[data-message-author-role='assistant']");
+    const assistant = page.locator(this.site.selectors.assistantTurn);
     const count = await assistant.count().catch(() => 0);
     const lastText = count > 0 ? ((await assistant.last().innerText().catch(() => "")) ?? "") : "";
     this.replyAnchor = { count, text: lastText };
 
+    // Multi-line safe input: `type()` would press a plain Enter per "\n" and
+    // fragment the message into several submits (issue #1).
     await composer.fill("");
-    await composer.type(text, { delay: 10 });
-    await page.keyboard.press("Enter");
+    await composer.click();
+    await typeMultiline(page, composer, text);
 
     // A brand-new chat only gets its permanent /c/<id> URL after the first
     // message lands. Capture it once so the task binding survives restarts;
@@ -257,12 +268,30 @@ export class ControlPlaneBrowser {
     await page.waitForURL(/chatgpt\.com\/c\//, { timeout: 10_000 }).catch(() => undefined);
     this.bindConversationUrl(page.url());
 
-    // Cheap confirmation: the composer empties and the message appears in the log.
-    const sent = await composer
-      .evaluate((node) => (node as HTMLElement).innerText.trim().length === 0)
-      .catch(() => false);
+    // Honest confirmation: the full text must appear as the last user
+    // message. An emptied composer proves nothing — it empties on the first
+    // Enter even when the rest of the message was never sent.
+    const confirmed = await this.waitForReadback(page, text);
+    if (!confirmed) {
+      throw new ControlPlaneError(
+        "SEND_FAILED",
+        "The last user message does not match the sent text (fragmented send or DOM change)."
+      );
+    }
     this.logger.info(`Control message sent (${text.split("\n")[1]?.trim() ?? "?"})`);
-    return { sent, url: page.url() };
+    return { sent: true, url: page.url() };
+  }
+
+  /** Wait (max ~10s) for the optimistic user-message render to appear. */
+  private async waitForReadback(page: Page, text: string): Promise<boolean> {
+    const expected = normalizeForCompare(text);
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      const got = await lastUserText(page, this.site.selectors.userTurn);
+      if (got !== null && normalizeForCompare(got) === expected) return true;
+      if (Date.now() >= deadline) return false;
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
   }
 
   /**
@@ -282,11 +311,11 @@ export class ControlPlaneBrowser {
     }
 
     const generating = await page
-      .locator("button[data-testid='stop-button'], [data-testid='composer-stop-button']")
+      .locator(this.site.selectors.generating)
       .count()
       .catch(() => 0);
 
-    const assistant = page.locator("[data-message-author-role='assistant']");
+    const assistant = page.locator(this.site.selectors.assistantTurn);
     const count = await assistant.count().catch(() => 0);
     if (count === 0) {
       return {
@@ -319,14 +348,21 @@ export class ControlPlaneBrowser {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       const { messageCount, ...reply } = await this.readReplyWithCount();
-      if (
-        reply.status === "replied" &&
-        isFreshReply({ messageCount, text: reply.text }, this.replyAnchor)
-      ) {
+      const fresh =
+        reply.status === "replied" && isFreshReply({ messageCount, text: reply.text }, this.replyAnchor);
+      if (fresh) {
         if (!opts.expectState || reply.state === opts.expectState) return reply;
         // A fresh reply exists but is not the expected state — keep polling gently.
       }
-      if (Date.now() >= deadline) return { ...reply, status: "timeout" };
+      if (Date.now() >= deadline) {
+        let note: string | undefined;
+        if (reply.status === "replied") {
+          note = fresh
+            ? `a reply is present with STATE: ${reply.state ?? "?"} (expected ${opts.expectState})`
+            : "the latest reply predates the last sent message; no new reply arrived";
+        }
+        return { ...reply, status: "timeout", note };
+      }
       await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
     }
   }
@@ -349,13 +385,14 @@ export async function interactiveLogin(workspaceId: string, timeoutMs = 5 * 60_0
       if (!(error instanceof ControlPlaneError) || error.code !== "NOT_LOGGED_IN") throw error;
     }
     const page = await driver.currentPage();
+    const loginWall = loadSiteSelectors().site.selectors.loginWall;
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const url = page.url();
       const onLogin = url.includes("/auth/login") || url.includes("auth.openai.com");
       if (!onLogin) {
         const marker = await page
-          .locator("#login-button, a[href*='/auth/login']")
+          .locator(loginWall)
           .count()
           .catch(() => 0);
         if (marker === 0) return true;
