@@ -15,7 +15,8 @@
     "dev": "tsx src/cli/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "verify": "pnpm run typecheck && pnpm run test"
   },
   "packageManager": "pnpm@11.24.0",
   "dependencies": {
