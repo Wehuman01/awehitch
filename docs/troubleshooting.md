@@ -3,7 +3,7 @@
 First move, always:
 
 ```
-c2c doctor
+awehitch doctor
 ```
 
 It checks Node, workspace, bridge, MCP, OAuth and tunnel — and repairs what it
@@ -12,15 +12,15 @@ can (restarts the bridge, restarts the tunnel) without asking.
 ## Common situations
 
 ### "Bridge 未运行"
-`c2c start` (or let doctor do it). Bridge logs:
-`c2c logs`, or verbose: `c2c logs --verbose`.
+`awehitch start` (or let doctor do it). Bridge logs:
+`awehitch logs`, or verbose: `awehitch logs --verbose`.
 
 If doctor says the bridge state is **uncertain** (无法确认), do not start a
 second bridge and do not Delete the ChatGPT connector. Wait and run doctor
 again. The local process may still be running.
 
 ### Everything was quit and ChatGPT can no longer connect
-Quitting Codex / the terminal stops the public address. The next `c2c doctor`
+Quitting Codex / the terminal stops the public address. The next `awehitch doctor`
 starts a new address and sets `chatgptRepair.needed`. The Skill should tell the
 user that the old address expired, then **Delete** THIS workspace's
 connector (`chatgptRepair.connectorName`) and create it again with the new
@@ -35,10 +35,10 @@ Fixed ChatGPT pages for first-time setup and later repair (do not hunt the UI):
   https://chatgpt.com/plugins#settings/Connectors?create-connector=true&redirectAfter=%2Fplugins
 
 ### Tunnel URL unreachable / ChatGPT says the connector is broken
-Same as above: `c2c doctor`, then Delete + recreate THIS workspace's
-connector if `chatgptRepair.needed`. Fresh pairing code: `c2c pair`.
+Same as above: `awehitch doctor`, then Delete + recreate THIS workspace's
+connector if `chatgptRepair.needed`. Fresh pairing code: `awehitch pair`.
 If this workspace uses a stable hostname, doctor sets `namedRepair` instead —
-re-login to Cloudflare (`c2c tunnel login`) and doctor again. Do not Delete
+re-login to Cloudflare (`awehitch tunnel login`) and doctor again. Do not Delete
 the connector; the address did not change.
 
 ### I have a Cloudflare domain and want a stable hostname
@@ -46,19 +46,19 @@ During first-time setup (or the next coding session, once), say you have a
 Cloudflare account and give the domain. Codex opens a browser for Cloudflare
 login, then keeps `c2c-<project>.your-domain.com`. To stay on the temporary
 address, say you do not have a domain. Switching later: tell Codex you want
-the stable hostname; it runs `c2c tunnel choose --mode named --zone <domain>`.
+the stable hostname; it runs `awehitch tunnel choose --mode named --zone <domain>`.
 
 ### "配对码无效/过期"
 Pairing codes are one-time and expire after ~5 minutes:
 
 ```
-c2c pair
+awehitch pair
 ```
 
 generates a fresh one (older codes become invalid immediately).
 
 ### ChatGPT gets 401 on every tool call
-The access token expired and refresh failed (e.g. after `c2c unpair` or a
+The access token expired and refresh failed (e.g. after `awehitch unpair` or a
 long offline period). Delete THIS workspace's connector if the address also
 changed; otherwise run Authorize again in ChatGPT and enter a fresh pairing
 code. Never use Reconnect when the public address has been replaced.
@@ -73,11 +73,11 @@ If cloudflared is installed in a custom location that is not on `PATH`, set
 
 ### Every new Codex chat “repairs” the connection / cannot write logs
 The C2C state directory lives outside the project (macOS:
-`~/Library/Application Support/codex-with-chatgpt`; Windows:
-`%LOCALAPPDATA%\codex-with-chatgpt`). Codex's default sandbox cannot write
+`~/Library/Application Support/awehitch`; Windows:
+`%LOCALAPPDATA%\awehitch`). Codex's default sandbox cannot write
 there, so each new chat looks like a health-check failure.
 
-`c2c setup`, `c2c doctor` and `c2c sandbox-allow` add that directory to
+`awehitch setup`, `awehitch doctor` and `awehitch sandbox-allow` add that directory to
 `[sandbox_workspace_write].writable_roots` in `~/.codex/config.toml`
 (`%USERPROFILE%\.codex\config.toml` on Windows). After that, later chats
 do not need elevation.
@@ -91,22 +91,24 @@ automatically.
 Working as intended: `.env`, keys, credentials and anything matched by
 `.c2cignore` are never readable through ChatGPT. `.env.example` is allowed.
 
-### I cannot see Projects in the ChatGPT sidebar
-Hover **Chats** /「聊天」, click the … that appears, and choose
-**Organize by project** /「按项目整理」. Then create a project named after
-this workspace, with **project-only memory**. Tell Codex「好了」when the
-collection page is open (`https://chatgpt.com/g/g-p-…/project`).
+### The task's ChatGPT chat is gone (404) or lags
+One chat per task. Open a replacement with `awehitch_open_chat` for that
+`task_id` and `fresh=true`, then send the boot prompt and
+`awehitch_send_handoff` (composed from the session checkpoint). Resume the
+protocol from the checkpoint state — do not restart the task.
 
-### This workspace opened the wrong ChatGPT Project
-Do not pick another project by name automatically. Open the collection that
-matches this workspace and tell Codex「已找到」, or say you want the old
-long-chat instead. Each workspace has its own Project and its own connector.
+### Each new workspace asks me to log in to ChatGPT again
+Known limitation: the control-plane browser profile is per workspace
+(isolation by default), so the ChatGPT login lives once per workspace.
+Sharing one profile across workspaces needs a single-browser lock first
+(Playwright persistent contexts cannot share a profile directory
+concurrently) — deliberately deferred.
 
 ### Completely stuck
 ```
-c2c stop
-c2c setup
+awehitch stop
+awehitch setup
 ```
 
 re-creates the bridge, tunnel and pairing session from scratch. Existing
-authorizations stay valid unless you also ran `c2c unpair`.
+authorizations stay valid unless you also ran `awehitch unpair`.

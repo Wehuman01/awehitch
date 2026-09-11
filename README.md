@@ -24,7 +24,7 @@ awehitch hitches the ChatGPT web app onto any coding agent as its external brain
 ## Install
 
 ```bash
-git clone <this repo> awehitch
+git clone https://github.com/mugpeng/awehitch.git awehitch
 cd awehitch
 corepack pnpm install && corepack pnpm build
 ```
@@ -97,14 +97,14 @@ All commands support `--json`. Internal: `serve`, `control-plane` (stdio MCP), `
 ```bash
 corepack pnpm install
 corepack pnpm build     # -> dist/, exposes the awehitch bin
-corepack pnpm test      # 196 tests: path security, OAuth, pairing, MCP e2e, adapters
+corepack pnpm test      # 210 tests: path security, OAuth, pairing, MCP e2e, adapters
 ```
 
 Docs: [architecture](docs/architecture.md) · [protocol](docs/protocol.md) · [security](docs/security.md) · [harness capability matrix](docs/harness-matrix.md)
 
 ## Status & disclaimer
 
-Alpha. The control plane depends on the current ChatGPT DOM; when it changes, `awehitch_wait_reply` fails honestly with `CHATGPT_DOM_CHANGED` — run doctor, fix selectors. Not affiliated with or endorsed by OpenAI.
+Alpha. The control plane depends on the current ChatGPT DOM; when it changes, `awehitch_wait_reply` fails honestly with `CHATGPT_DOM_CHANGED` — run `awehitch doctor --control-plane` to pinpoint the broken selector, or fix it via a selector override file in the state dir. Not affiliated with or endorsed by OpenAI.
 
 Data plane adapted from [codex-with-chatgpt](https://github.com/mugpeng/codex-with-chatgpt) (forked from [XiaoDuoYa/codex-with-chatgpt](https://github.com/XiaoDuoYa/codex-with-chatgpt)) — MIT.
 

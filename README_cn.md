@@ -24,7 +24,7 @@ awehitch 把 ChatGPT 网页大脑挂（hitch）到任意编码 agent 上：ChatG
 ## 安装
 
 ```bash
-git clone <this repo> awehitch
+git clone https://github.com/mugpeng/awehitch.git awehitch
 cd awehitch
 corepack pnpm install && corepack pnpm build
 ```
@@ -97,14 +97,16 @@ awehitch sandbox-allow [--json]              # codex writable_roots（幂等）
 ```bash
 corepack pnpm install
 corepack pnpm build     # -> dist/，暴露 awehitch 命令
-corepack pnpm test      # 196 个测试：路径安全、OAuth、配对、MCP 端到端、adapter
+corepack pnpm test      # 210 个测试：路径安全、OAuth、配对、MCP 端到端、adapter
 ```
 
 文档：[架构](docs/architecture.md) · [协议](docs/protocol.md) · [安全](docs/security.md) · [harness 能力矩阵](docs/harness-matrix.md)
 
 ## 状态与声明
 
-Alpha。控制面依赖当前 ChatGPT 页面结构；页面改版时 `awehitch_wait_reply` 会诚实地报 `CHATGPT_DOM_CHANGED`——跑 doctor、修选择器。非 OpenAI 官方项目。
+Alpha。控制面依赖当前 ChatGPT 页面结构；页面改时 `awehitch_wait_reply` 会诚实地报 `CHATGPT_DOM_CHANGED`——跑 `awehitch doctor --control-plane` 定位失效选择器，或通过状态目录的选择器覆盖文件修复。非 OpenAI 官方项目。
+
+数据面改造自 [codex-with-chatgpt](https://github.com/mugpeng/codex-with-chatgpt)（fork 自 [XiaoDuoYa/codex-with-chatgpt](https://github.com/XiaoDuoYa/codex-with-chatgpt)）—— MIT。
 
 ## 许可
 

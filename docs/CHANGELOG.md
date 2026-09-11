@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+Control-plane fixes from issue #1 (code review).
+
+- **P0 — multi-line send**: `locator.type()` pressed a plain Enter per `\n`
+  and ChatGPT submits on Enter, so every multi-line [C2C] message fragmented
+  into several partial sends. The composer path now inserts each line with
+  `insertText`, joins lines with Shift+Enter, and submits with one final
+  Enter. Send confirmation reads the message back from the conversation log
+  (whitespace-normalized compare) and fails loudly with `SEND_FAILED` — the
+  old "composer is empty" check was a false positive after the first
+  fragment. Covered by real-DOM contract tests (headless Chromium fixture).
+- **waitReply timeout notes**: on timeout, a present-but-unaccepted reply is
+  explained (state mismatch vs. pre-send stale reply) instead of a bare
+  timeout.
+- **Selector pack**: ChatGPT selectors moved out of the driver into a
+  versioned declarative description — compiled defaults plus a per-key
+  override file in the state dir. `awehitch doctor` reports the pack;
+  `awehitch doctor --control-plane` opens the browser and probes every
+  selector on the live page, naming the broken one instead of waiting for
+  `CHATGPT_DOM_CHANGED` mid-task.
+- Small items: profile comment now honest (user's Chrome login is NOT
+  reused), MCP SDK pinned to `^1.30.0`, README clone URL fixed, upstream
+  attribution added to README_cn, stale `c2c` command names and Project-era
+  workflow removed from troubleshooting, handover doc archived to
+  `docs/handover.md`.
+
 ## v0.1.1
 
 Task-scoped ChatGPT conversations with automatic HANDOFF.
