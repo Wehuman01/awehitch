@@ -48,6 +48,29 @@ export interface ReplyView {
   state: string | null;
 }
 
+/** Snapshot of the reply log taken when the last message was sent. */
+export interface ReplyAnchor {
+  count: number;
+  text: string;
+}
+
+/**
+ * Decide whether a reply view is NEW relative to a send anchor. Without an
+ * anchor (no send in this process — e.g. after a restart) any reply counts:
+ * the driver cannot know better and must not pretend otherwise.
+ */
+export function isFreshReply(
+  view: { messageCount: number; text: string | null },
+  anchor: ReplyAnchor | null
+): boolean {
+  if (!anchor) return true;
+  // Message count moved (appended reply, or a different conversation was
+  // opened) — treat as new; same count means the last message must have
+  // changed in place (streamed/edited) to count.
+  if (view.messageCount !== anchor.count) return true;
+  return view.text !== anchor.text;
+}
+
 export interface SendResult {
   sent: boolean;
   url: string;
@@ -78,6 +101,7 @@ export class ControlPlaneBrowser {
   private page: Page | null = null;
   /** Task whose conversation is currently open; bindings apply to it. */
   private activeTaskId: string | null = null;
+  private replyAnchor: ReplyAnchor | null = null;
   private readonly logger: Logger;
 
   constructor(
@@ -172,6 +196,8 @@ export class ControlPlaneBrowser {
     if (page.url() === target || (target === CHATGPT_HOME && onHome)) {
       // Already there — do not goto the URL we are on.
     } else {
+      // The anchor belongs to the old conversation; it is meaningless here.
+      this.replyAnchor = null;
       await page.goto(target, { waitUntil: "domcontentloaded", timeout: 45_000 });
     }
     if (!(await this.isLoggedIn(page))) {
@@ -214,6 +240,13 @@ export class ControlPlaneBrowser {
         "Composer not found. ChatGPT layout may have changed; run awehitch doctor."
       );
     }
+    // Anchor for "new reply" detection: snapshot the reply log BEFORE sending
+    // so waits can distinguish the incoming reply from the previous turn's.
+    const assistant = page.locator("[data-message-author-role='assistant']");
+    const count = await assistant.count().catch(() => 0);
+    const lastText = count > 0 ? ((await assistant.last().innerText().catch(() => "")) ?? "") : "";
+    this.replyAnchor = { count, text: lastText };
+
     await composer.fill("");
     await composer.type(text, { delay: 10 });
     await page.keyboard.press("Enter");
@@ -237,9 +270,15 @@ export class ControlPlaneBrowser {
    * `generating` means ChatGPT is still typing — keep polling, never resend.
    */
   async readReply(): Promise<ReplyView> {
+    const { messageCount, ...view } = await this.readReplyWithCount();
+    return view;
+  }
+
+  /** ReplyView plus the number of assistant messages on the page. */
+  private async readReplyWithCount(): Promise<ReplyView & { messageCount: number }> {
     const page = await this.ensurePage();
     if (!(await this.isLoggedIn(page))) {
-      return { status: "error", text: null, isControlMessage: false, state: null };
+      return { status: "error", text: null, isControlMessage: false, state: null, messageCount: 0 };
     }
 
     const generating = await page
@@ -247,38 +286,45 @@ export class ControlPlaneBrowser {
       .count()
       .catch(() => 0);
 
-    const message = page.locator("[data-message-author-role='assistant']").last();
-    const count = await message.count().catch(() => 0);
+    const assistant = page.locator("[data-message-author-role='assistant']");
+    const count = await assistant.count().catch(() => 0);
     if (count === 0) {
       return {
         status: generating > 0 ? "generating" : "timeout",
         text: null,
         isControlMessage: false,
         state: null,
+        messageCount: 0,
       };
     }
-    const text = (await message.innerText().catch(() => "")) ?? "";
+    const text = (await assistant.last().innerText().catch(() => "")) ?? "";
     if (generating > 0) {
-      return { status: "generating", text, isControlMessage: false, state: null };
+      return { status: "generating", text, isControlMessage: false, state: null, messageCount: count };
     }
     const isControlMessage = text.trimStart().startsWith("[C2C]");
     const state = isControlMessage ? text.match(/^STATE:\s*(\w+)/m)?.[1] ?? null : null;
-    return { status: "replied", text, isControlMessage, state };
+    return { status: "replied", text, isControlMessage, state, messageCount: count };
   }
 
   /**
    * Wait for a reply with cheap DOM checks at 20-30s intervals, up to
-   * `timeoutMs`. A timeout is reported honestly (`timeout` status) — it is
-   * NOT a failure and must not trigger a resend by the caller.
+   * `timeoutMs`. Only replies that are NEW relative to the last send (see
+   * `replyAnchor`) are reported as `replied`; the pre-send reply shows up in
+   * the `timeout` view instead — it is NOT the answer to the last message.
+   * A timeout is reported honestly (`timeout` status) — it is NOT a failure
+   * and must not trigger a resend by the caller.
    */
   async waitReply(opts: { timeoutMs?: number; expectState?: string } = {}): Promise<ReplyView> {
     const timeoutMs = opts.timeoutMs ?? 5 * 60_000;
     const deadline = Date.now() + timeoutMs;
     for (;;) {
-      const reply = await this.readReply();
-      if (reply.status === "replied") {
+      const { messageCount, ...reply } = await this.readReplyWithCount();
+      if (
+        reply.status === "replied" &&
+        isFreshReply({ messageCount, text: reply.text }, this.replyAnchor)
+      ) {
         if (!opts.expectState || reply.state === opts.expectState) return reply;
-        // A reply exists but is not the expected state — keep polling gently.
+        // A fresh reply exists but is not the expected state — keep polling gently.
       }
       if (Date.now() >= deadline) return { ...reply, status: "timeout" };
       await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
@@ -295,7 +341,13 @@ export async function interactiveLogin(workspaceId: string, timeoutMs = 5 * 60_0
     onNotice: (message) => process.stderr.write(`${message}\n`),
   });
   try {
-    await driver.openConversation(CHATGPT_HOME);
+    try {
+      await driver.openConversation(CHATGPT_HOME);
+    } catch (error) {
+      // A login wall is exactly why this command exists: the browser window
+      // is open now — swallow it and wait for the user to finish below.
+      if (!(error instanceof ControlPlaneError) || error.code !== "NOT_LOGGED_IN") throw error;
+    }
     const page = await driver.currentPage();
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {

@@ -86,6 +86,18 @@ describe("control-plane MCP server (stdio)", () => {
     expect(payload.error).toBe("INVALID_MESSAGE");
   });
 
+  it("rejects control messages over 1 KB (1024 bytes)", async () => {
+    const c = await connect();
+    const base = "[C2C]\nSTATE: INIT\n";
+    const message = base + "x".repeat(1025 - Buffer.byteLength(base));
+    expect(Buffer.byteLength(message)).toBe(1025);
+    // Rejected by validation, before any browser is launched.
+    const result = await c.callTool({ name: "awehitch_send_state", arguments: { message } });
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse((result.content as { text: string }[])[0].text);
+    expect(payload.error).toBe("INVALID_MESSAGE");
+  });
+
   it("answers chat_info with the saved binding (null when unset)", async () => {
     const c = await connect();
     const result = await c.callTool({ name: "awehitch_chat_info", arguments: {} });
