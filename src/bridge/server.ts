@@ -90,7 +90,7 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
   const authStore = new AuthStore(workspace.id, { file: opts.authStoreFile });
   const pairing = new PairingManager(workspace.id, { ttlMs: opts.pairingTtlMs });
   const tunnel = opts.tunnelProvider ?? tunnelForWorkspace(workspace.id, logger);
-  const adminToken = `awemind_admin_${randomBytes(24).toString("base64url")}`;
+  const adminToken = `awehitch_admin_${randomBytes(24).toString("base64url")}`;
 
   let publicBaseUrl: string | null = null;
 

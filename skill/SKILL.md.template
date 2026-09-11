@@ -1,14 +1,14 @@
 ---
-name: awemind
+name: awehitch
 description: >
   Use ChatGPT (web) as the planning and review brain for coding sessions in
   this harness, while the agent keeps full execution ownership. Use when the
-  user says "用 ChatGPT 帮我规划" / "use ChatGPT to plan" / "awemind", when they
+  user says "用 ChatGPT 帮我规划" / "use ChatGPT to plan" / "awehitch", when they
   ask to connect ChatGPT to the current workspace, disconnect it, or run a
   task through the ChatGPT planning loop.
 ---
 
-# awemind
+# awehitch
 
 ChatGPT thinks. {{HARNESS}} works.
 
@@ -19,10 +19,10 @@ strategy. Two connections make this work:
 1. **Read-only MCP connector** (named "{{CONNECTOR_NAME}}" in ChatGPT) —
    ChatGPT reads files, diffs, search results by itself. Never paste file
    contents, diffs, or logs to ChatGPT.
-2. **Control-plane tools** (local MCP, `awemind_*`) — you exchange tiny
+2. **Control-plane tools** (local MCP, `awehitch_*`) — you exchange tiny
    structured `[C2C]` state messages with the ChatGPT conversation:
-   `awemind_open_chat`, `awemind_send_state`, `awemind_wait_reply`,
-   `awemind_read_reply`.
+   `awehitch_open_chat`, `awehitch_send_state`, `awehitch_wait_reply`,
+   `awehitch_read_reply`.
 
 **Golden rules**
 
@@ -33,40 +33,40 @@ strategy. Two connections make this work:
 3. The pairing code is the ONLY credential ever typed into a browser page.
    Never touch OAuth tokens, cookies, or session storage.
 4. Control-message discipline:
-   - `awemind_wait_reply` returning `status=generating` or `status=timeout`
+   - `awehitch_wait_reply` returning `status=generating` or `status=timeout`
      is NOT a failure. Call it again. NEVER resend a message because a wait
      timed out.
-   - Only one conversation per workspace. `awemind_open_chat` handles URL
+   - Only one conversation per workspace. `awehitch_open_chat` handles URL
      bookkeeping; never open a second chat tab.
-5. If something fails, run `awemind doctor -w <workspace> --json` and repair
+5. If something fails, run `awehitch doctor -w <workspace> --json` and repair
    silently. Only involve the user for logins, CAPTCHA, or 2FA — and then give
    them ONE action at a time.
 
 ## Locations
 
-- CLI: `awemind <command>` (all commands support `--json`).
+- CLI: `awehitch <command>` (all commands support `--json`).
 - Always pass `-w <workspace root>` (the project the user is working on).
 
-## Workflow: first-time setup（"使用 awemind 完成首次配置"）
+## Workflow: first-time setup（"使用 awehitch 完成首次配置"）
 
 1. Check prerequisites yourself: Node.js >= 20, git. Install missing pieces
    (macOS: Homebrew; Windows: winget). Also ensure `cloudflared` exists.
-2. `awemind setup -w <workspace> --json`
+2. `awehitch setup -w <workspace> --json`
    → returns `{ mcpUrl, pairingCode, workspaceName, connectorName, ... }`.
 3. The ChatGPT connector must be configured once in the browser (OAuth +
-   pairing code). `awemind setup` prints exact steps; guide the user through
+   pairing code). `awehitch setup` prints exact steps; guide the user through
    them ONE action at a time, or automate if this harness controls a browser.
    Never open third-party pages; only `chatgpt.com`.
-4. `awemind login -w <workspace> --json` opens the control-plane browser and
+4. `awehitch login -w <workspace> --json` opens the control-plane browser and
    waits for the ChatGPT login. Tell the user: "请在打开的窗口里登录 ChatGPT，
    完成后告诉我『好了』".
-5. First conversation: `awemind_open_chat`, then send the boot prompt (below),
+5. First conversation: `awehitch_open_chat`, then send the boot prompt (below),
    then the workspace_info check (below). Confirm the reply names the current
    workspace before continuing.
 6. Report in this shape (no internals):
 
 ```
-awemind
+awehitch
 
 ✓ 当前项目已识别
 ✓ Workspace Bridge 已启动
@@ -116,22 +116,22 @@ Rules:
 Protocol states exchanged with ChatGPT:
 `INIT → PLAN → EXECUTING → EXECUTED → REVIEW → (PLAN | DONE | BLOCKED)`.
 All control messages start with `[C2C]`, keep them under 1 KB.
-Store progress in the session checkpoint via `awemind session set`.
+Store progress in the session checkpoint via `awehitch session set`.
 
-0. `awemind doctor -w <workspace> --json` (auto-repairs). Doctor gate: if
+0. `awehitch doctor -w <workspace> --json` (auto-repairs). Doctor gate: if
    local is not green, do not open ChatGPT and do not send INIT. Follow its
    `chatgptRepair` / `namedRepair` guidance first.
-1. `awemind session -w <workspace> --json` → resume from `session.checkpoint`
-   before any INIT (details in `awemind session get --json`). Never re-pair or
+1. `awehitch session -w <workspace> --json` → resume from `session.checkpoint`
+   before any INIT (details in `awehitch session get --json`). Never re-pair or
    recreate the connector just to resume.
-2. `awemind_open_chat`. On a NEW conversation send the boot prompt, then:
+2. `awehitch_open_chat`. On a NEW conversation send the boot prompt, then:
 
 ```
 Use the "{{CONNECTOR_NAME}}" connector: call workspace_info and read hello-style top-level file. Reply with the workspace name.
 ```
 
    Confirm the reply names this workspace.
-3. Send INIT via `awemind_send_state`:
+3. Send INIT via `awehitch_send_state`:
 
 ```
 [C2C]
@@ -147,18 +147,18 @@ Inspect the connected workspace through the {{CONNECTOR_NAME}} MCP connector.
 Produce a C2C PLAN message.
 ```
 
-   Then `awemind session set -w <ws> --task {{TASK_ID}} --iteration 0 --state INIT --protocol-state INIT --waiting-for GPT_PLAN --goal "<short goal>" --next-step "wait for PLAN"`.
-4. `awemind_wait_reply` (expect_state=PLAN). Read GOAL/ACTIONS/TESTS/
+   Then `awehitch session set -w <ws> --task {{TASK_ID}} --iteration 0 --state INIT --protocol-state INIT --waiting-for GPT_PLAN --goal "<short goal>" --next-step "wait for PLAN"`.
+4. `awehitch_wait_reply` (expect_state=PLAN). Read GOAL/ACTIONS/TESTS/
    SUCCESS_CRITERIA. If the PLAN is a bare one-liner, ask once for rationale
-   and per-file suggestions. Then `awemind session set --protocol-state PLAN_RECEIVED --waiting-for none --next-step "execute PLAN"`.
+   and per-file suggestions. Then `awehitch session set --protocol-state PLAN_RECEIVED --waiting-for none --next-step "execute PLAN"`.
 5. Execute the plan yourself with your own tools. Before starting:
-   `awemind session set --protocol-state EXECUTING --waiting-for none --next-step "finish PLAN then record"`.
+   `awehitch session set --protocol-state EXECUTING --waiting-for none --next-step "finish PLAN then record"`.
 6. Record the execution (metadata always; command output when a test/build/
    lint ran):
 
 ```
-awemind record -w <ws> --task {{TASK_ID}} --iteration 1 --changed-files "src/a.ts,src/b.ts" --tests "27 passed" --exit-status ok
-awemind record … --command "npm test" --output-file <temp> --exit-code 0
+awehitch record -w <ws> --task {{TASK_ID}} --iteration 1 --changed-files "src/a.ts,src/b.ts" --tests "27 passed" --exit-status ok
+awehitch record … --command "npm test" --output-file <temp> --exit-code 0
 ```
 
 7. Send EXECUTED (no diffs, no logs):
@@ -183,12 +183,12 @@ If execution_output lists a readable item for this iteration, list then read it.
 If status is restricted, ignore it and review from git_diff.
 ```
 
-   Then `awemind session set --protocol-state EXECUTED_SENT --waiting-for GPT_REVIEW --next-step "wait for PLAN or DONE"`.
-8. `awemind_wait_reply`. ChatGPT reviews via MCP and replies DONE / PLAN
+   Then `awehitch session set --protocol-state EXECUTED_SENT --waiting-for GPT_REVIEW --next-step "wait for PLAN or DONE"`.
+8. `awehitch_wait_reply`. ChatGPT reviews via MCP and replies DONE / PLAN
    (next iteration) / BLOCKED. Loop; respect maxIterations (`.c2c.json`,
    default 12) — at the limit ask the user whether to continue.
 9. On DONE: summarize in plain language and
-   `awemind session set --state DONE --clear-checkpoint`.
+   `awehitch session set --state DONE --clear-checkpoint`.
 10. On BLOCKED: surface the reason or the single decision the user must make.
 
 ## Workflow: reconnect after address reclaim
@@ -199,6 +199,6 @@ new `mcpUrl` and pairing code. Never click Reconnect. Then doctor again.
 
 ## Workflow: disconnect（"断开 ChatGPT"）
 
-1. `awemind unpair -w <workspace>` (revokes all tokens immediately).
+1. `awehitch unpair -w <workspace>` (revokes all tokens immediately).
 2. Optionally remove the connector at chatgpt.com/plugins.
 3. Tell the user: "已断开 ChatGPT 对该项目的访问。"

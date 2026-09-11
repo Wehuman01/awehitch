@@ -21,20 +21,20 @@ function runRecord(root: string, args: string[]) {
 function withRecordEnvironment(run: (root: string, workspace: Workspace) => void): void {
   const root = makeTmpDir("record-cli-workspace");
   const stateDir = makeTmpDir("record-cli-state");
-  const previousStateDir = process.env.AWEMIND_STATE_DIR;
-  process.env.AWEMIND_STATE_DIR = stateDir;
+  const previousStateDir = process.env.AWEHITCH_STATE_DIR;
+  process.env.AWEHITCH_STATE_DIR = stateDir;
 
   try {
     run(root, new Workspace(root));
   } finally {
-    if (previousStateDir === undefined) delete process.env.AWEMIND_STATE_DIR;
-    else process.env.AWEMIND_STATE_DIR = previousStateDir;
+    if (previousStateDir === undefined) delete process.env.AWEHITCH_STATE_DIR;
+    else process.env.AWEHITCH_STATE_DIR = previousStateDir;
     cleanup(root);
     cleanup(stateDir);
   }
 }
 
-describe("awemind record", () => {
+describe("awehitch record", () => {
   it("records valid numeric options and command output", () => {
     withRecordEnvironment((root, workspace) => {
       const result = runRecord(root, [

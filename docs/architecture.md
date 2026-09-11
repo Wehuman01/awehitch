@@ -10,7 +10,7 @@
              Data Plane   │          │ Control Plane
                          ▼          │
               ┌─────────────────────┐
-              │    awemind Bridge    │
+              │    awehitch Bridge    │
               │  MCP Server (RO)     │
               │  OAuth AS + PRM      │
               │  Pairing Manager     │
@@ -37,15 +37,15 @@
 - **ChatGPT thinks. The agent works.** The bridge never re-implements a coding harness.
 - **Control plane is decoupled from the harness.** The original Codex-only design
   bound the ChatGPT conversation to Codex's built-in browser
-  (`setupBrowserRuntime()` / `agent.browsers.get("iab")`). awemind moves that
+  (`setupBrowserRuntime()` / `agent.browsers.get("iab")`). awehitch moves that
   into a standalone **control-plane proxy**: a local stdio MCP server wrapping
   a dedicated-profile Playwright browser. Any harness that can call tools can
   now use the whole loop — the bar drops from "has a built-in browser" to
   "can call MCP tools".
 - **Semantic tools, not a raw browser.** The model never drives the browser
-  directly. It gets exactly four tools (`awemind_open_chat`,
-  `awemind_send_state`, `awemind_wait_reply`, `awemind_read_reply`) plus a
-  read-only `awemind_chat_info`. Hard-wired rules from the original skill:
+  directly. It gets exactly four tools (`awehitch_open_chat`,
+  `awehitch_send_state`, `awehitch_wait_reply`, `awehitch_read_reply`) plus a
+  read-only `awehitch_chat_info`. Hard-wired rules from the original skill:
   cheap DOM polling every 20–30 s, timeout ≠ failure, one tab, never resend.
 - **MCP = data plane**: ChatGPT pulls files/diffs/search results itself.
 - **Read-only by design**: no write/exec tools exist at all.
@@ -67,7 +67,7 @@
 | `execution/` | JSONL execution records plus optional sanitized command output (`execution_output`) |
 | `process/` | Daemon spawn/reuse, health probing, graceful shutdown |
 | `session/` | ChatGPT conversation + Project binding + resume checkpoints |
-| `cli/` | `awemind` commands; `--json` everywhere for the skills |
+| `cli/` | `awehitch` commands; `--json` everywhere for the skills |
 | `config/`, `logger/` | OS-convention state dir, secret-redacting logger |
 
 ## Request lifecycles
@@ -86,7 +86,7 @@ reply view (`status: generating | timeout | replied`, `state` from `[C2C]`).
 authorization code → `/oauth/token` (PKCE S256) → access + refresh tokens.
 
 **Ports**: prefer 48765, bind 127.0.0.1 only. On conflict, `/health` identifies
-whether the occupant is an awemind bridge for the same workspace (reuse) or
+whether the occupant is an awehitch bridge for the same workspace (reuse) or
 not (fall back to an ephemeral port).
 
 **Tunnel**: default is a Cloudflare Quick Tunnel; a workspace may choose a

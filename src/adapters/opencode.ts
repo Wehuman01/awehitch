@@ -6,10 +6,10 @@ import { renderSkill } from "./skill-template.js";
 /**
  * opencode adapter.
  *
- * 1. MCP registration: `"mcp": { "awemind": { "type": "local", "command": […] } }`
+ * 1. MCP registration: `"mcp": { "awehitch": { "type": "local", "command": […] } }`
  *    in the global opencode.json (JSONC-aware upsert that preserves comments)
- * 2. Instructions: `~/.opencode/skills/awemind/SKILL.md` (AGENTS.md left to the user —
- *    awemind never edits the project)
+ * 2. Instructions: `~/.opencode/skills/awehitch/SKILL.md` (AGENTS.md left to the user —
+ *    awehitch never edits the project)
  * 3. Sandbox: none needed (opencode has no writable_roots equivalent)
  *
  * Note: opencode natively supports remote MCP with OAuth (RFC 7591 DCR). The
@@ -27,7 +27,7 @@ export function setupOpencodeAdapter(opts: {
   const home = harnessHome("opencode");
 
   // 1. Skill (instructions)
-  const skillDir = path.join(home, "skills", "awemind");
+  const skillDir = path.join(home, "skills", "awehitch");
   fs.mkdirSync(skillDir, { recursive: true });
   const skillPath = path.join(skillDir, "SKILL.md");
   fs.writeFileSync(skillPath, renderSkill({ harness: "opencode", connectorName: opts.connectorName }), {
@@ -39,7 +39,7 @@ export function setupOpencodeAdapter(opts: {
   fs.mkdirSync(path.dirname(configPath), { recursive: true, mode: 0o700 });
   const config = readJsonc(configPath);
   config.mcp ??= {};
-  config.mcp.awemind = {
+  config.mcp.awehitch = {
     type: "local",
     command: [opts.cliEntry.cmd, ...opts.cliEntry.args, "--workspace", opts.workspaceRoot],
     enabled: true,
@@ -55,12 +55,12 @@ export function opencodeAdapterStatus(): {
   configPath: string;
 } {
   const home = harnessHome("opencode");
-  const skillPath = path.join(home, "skills", "awemind", "SKILL.md");
+  const skillPath = path.join(home, "skills", "awehitch", "SKILL.md");
   const configPath = path.join(home, "opencode.json");
   let mcpRegistered = false;
   try {
     const config = readJsonc(configPath);
-    mcpRegistered = Boolean(config.mcp?.awemind);
+    mcpRegistered = Boolean(config.mcp?.awehitch);
   } catch {
     // missing or unparsable -> false
   }

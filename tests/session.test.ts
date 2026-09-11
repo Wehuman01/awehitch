@@ -190,13 +190,13 @@ describe("clearChatPointer", () => {
   afterEach(() => {
     for (const dir of dirs) cleanup(dir);
     dirs.length = 0;
-    delete process.env.AWEMIND_STATE_DIR;
+    delete process.env.AWEHITCH_STATE_DIR;
   });
 
   it("keeps the collection binding in Project mode", () => {
     const dir = makeTmpDir("session-clear");
     dirs.push(dir);
-    process.env.AWEMIND_STATE_DIR = dir;
+    process.env.AWEHITCH_STATE_DIR = dir;
     writeSession("abc123abc123", {
       conversationMode: "project",
       projectUrl: PROJECT,
@@ -222,7 +222,7 @@ describe("clearChatPointer", () => {
   it("deletes a legacy long-chat file", () => {
     const dir = makeTmpDir("session-clear-legacy");
     dirs.push(dir);
-    process.env.AWEMIND_STATE_DIR = dir;
+    process.env.AWEHITCH_STATE_DIR = dir;
     writeSession("def456def456", {
       url: "https://chatgpt.com/c/legacy",
       savedAt: "2026-01-01T00:00:00.000Z",

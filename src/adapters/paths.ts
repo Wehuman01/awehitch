@@ -15,8 +15,8 @@ export type HarnessId = "codex" | "opencode" | "zcode";
 
 export const HARNESS_IDS: readonly HarnessId[] = ["codex", "opencode", "zcode"];
 
-/** Resolve the awemind checkout the adapter spawns the control plane from. */
-export function awemindCliEntry(): { cmd: string; args: string[] } {
+/** Resolve the awehitch checkout the adapter spawns the control plane from. */
+export function awehitchCliEntry(): { cmd: string; args: string[] } {
   // dist build (preferred)
   const here = path.resolve(
     typeof import.meta.dirname === "string" ? import.meta.dirname : process.cwd()

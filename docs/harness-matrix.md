@@ -25,14 +25,14 @@ codex 原方案的内置浏览器控制面，被独立代理取代——任何 h
 | 配置 | `~/.codex/config.toml`（TOML） |
 | MCP 注册 | `[mcp_servers.<name>]` 表：`command`/`args`（stdio）或 `type="http"` + `url` |
 | 指令注入 | `~/.codex/skills/<name>/SKILL.md`（YAML frontmatter: name/description） |
-| 沙箱 | `[sandbox_workspace_write].writable_roots` 数组——awemind 状态目录必须写入 |
-| 浏览器 | 内置 iab（原方案专用）。awemind 不依赖它，改用控制面代理 |
+| 沙箱 | `[sandbox_workspace_write].writable_roots` 数组——awehitch 状态目录必须写入 |
+| 浏览器 | 内置 iab（原方案专用）。awehitch 不依赖它，改用控制面代理 |
 | 环境变量 | `CODEX_HOME` 可重定向配置目录 |
 
 Adapter 做法：
 1. `sandbox-allow`：状态目录写入 `writable_roots`（复用参考实现逻辑）
-2. 控制面代理注册：`[mcp_servers.awemind]` stdio 命令
-3. Skill 安装到 `~/.codex/skills/awemind/SKILL.md`
+2. 控制面代理注册：`[mcp_servers.awehitch]` stdio 命令
+3. Skill 安装到 `~/.codex/skills/awehitch/SKILL.md`
 4. ChatGPT 数据面不需要注册给 codex（它不消费数据面；ChatGPT 才消费）
 
 ## opencode
@@ -48,11 +48,11 @@ Adapter 做法：
 
 **注意（交接文档 4.1 的"第一步实测"）**：opencode remote MCP 原生支持 OAuth 2.1 + PKCE + DCR，
 bridge 的 `/oauth/register`、`/oauth/authorize`、`/oauth/token` 与之协议兼容，
-`opencode mcp auth awemind` 可直接触发配对流程。这验证了整体方案成立。
+`opencode mcp auth awehitch` 可直接触发配对流程。这验证了整体方案成立。
 
 Adapter 做法：
-1. 项目 `opencode.json` 或全局配置写入 `"mcp": { "awemind": { "type": "local", "command": […] } }`（控制面 stdio）
-2. Skill 安装到 `~/.opencode/skills/awemind/SKILL.md`（+ `AGENTS.md` 追加一段触发说明）
+1. 项目 `opencode.json` 或全局配置写入 `"mcp": { "awehitch": { "type": "local", "command": […] } }`（控制面 stdio）
+2. Skill 安装到 `~/.opencode/skills/awehitch/SKILL.md`（+ `AGENTS.md` 追加一段触发说明）
 3. 无沙箱改写需求
 
 ## zcode
@@ -63,11 +63,11 @@ Adapter 做法：
 | MCP 注册 | 顶层 `"mcpServers": { "<name>": { "command": …, "args": […] } }`（当前为空对象，格式与 Claude Desktop 一致） |
 | 指令注入 | `~/.zcode/agents/<name>.md`（YAML frontmatter: name/description/model/injectAgentsMd），插件 skills 在 `~/.zcode/cli/plugins/…` |
 | 沙箱 | hooks 事件（PermissionRequest / PostToolUse 等）；无 writable_roots 等价物 |
-| 浏览器 | 内置 ZCode Computer Use（accessibility 优先 + 截图兜底的 MCP 工具集）——awemind 不依赖它 |
+| 浏览器 | 内置 ZCode Computer Use（accessibility 优先 + 截图兜底的 MCP 工具集）——awehitch 不依赖它 |
 
 Adapter 做法：
-1. `~/.zcode/cli/config.json` 的 `mcpServers` 写入 `awemind` stdio 条目（保留其余键，幂等合并）
-2. 指令：`~/.zcode/agents/awemind.md` 或项目内 `AGENTS.md`（zcode 桌面版读取项目根 AGENTS.md）
+1. `~/.zcode/cli/config.json` 的 `mcpServers` 写入 `awehitch` stdio 条目（保留其余键，幂等合并）
+2. 指令：`~/.zcode/agents/awehitch.md` 或项目内 `AGENTS.md`（zcode 桌面版读取项目根 AGENTS.md）
 3. 无沙箱改写需求
 
 ## 红线核对（对齐 docs/security.md）

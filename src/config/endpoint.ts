@@ -6,7 +6,7 @@ export const CHATGPT_PLUGINS_URL = "https://chatgpt.com/plugins";
 export const CHATGPT_CREATE_CONNECTOR_URL =
   "https://chatgpt.com/plugins#settings/Connectors?create-connector=true&redirectAfter=%2Fplugins";
 
-export const DEFAULT_CONNECTOR_NAME = "awemind";
+export const DEFAULT_CONNECTOR_NAME = "awehitch";
 
 export interface LastEndpoint {
   workspaceId: string;
@@ -62,7 +62,7 @@ export function sanitizeConnectorLabel(name: string, workspaceId: string): strin
 /**
  * Same workspace keeps one connector title forever.
  * A workspace already recorded without a title stays on the original
- * "awemind" name. A new workspace gets a distinct title.
+ * "awehitch" name. A new workspace gets a distinct title.
  */
 export function connectorNameFor(opts: {
   workspaceName: string;

@@ -37,10 +37,10 @@ const RG_CANDIDATES = [
 let cachedRg: string | null | undefined;
 
 export function findRipgrep(): string | null {
-  if (process.env.AWEMIND_DISABLE_RG === "1") return null;
+  if (process.env.AWEHITCH_DISABLE_RG === "1") return null;
   if (cachedRg !== undefined) return cachedRg;
-  if (process.env.AWEMIND_RG_PATH) {
-    cachedRg = process.env.AWEMIND_RG_PATH;
+  if (process.env.AWEHITCH_RG_PATH) {
+    cachedRg = process.env.AWEHITCH_RG_PATH;
     return cachedRg;
   }
   for (const candidate of RG_CANDIDATES) {

@@ -27,7 +27,7 @@ afterAll(() => {
 });
 
 afterEach(() => {
-  delete process.env.AWEMIND_DISABLE_RG;
+  delete process.env.AWEHITCH_DISABLE_RG;
   resetRipgrepCache();
 });
 
@@ -37,7 +37,7 @@ function engines(): ("ripgrep" | "node")[] {
 
 describe.each(engines())("search engine: %s", (engine) => {
   const configure = (): void => {
-    if (engine === "node") process.env.AWEMIND_DISABLE_RG = "1";
+    if (engine === "node") process.env.AWEHITCH_DISABLE_RG = "1";
     resetRipgrepCache();
   };
 

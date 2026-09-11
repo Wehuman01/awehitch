@@ -1,6 +1,6 @@
 # C2C Agent Protocol
 
-Control plane: the control-plane proxy (tiny structured messages sent through the awemind MCP tools into the ChatGPT UI).
+Control plane: the control-plane proxy (tiny structured messages sent through the awehitch MCP tools into the ChatGPT UI).
 Data plane: MCP (ChatGPT pulls files, diffs, search results itself).
 
 Never mix the two: control messages carry state, never content.
@@ -63,7 +63,7 @@ GOAL:
 Implement dark mode.
 
 INSTRUCTION:
-Inspect the connected workspace through the awemind MCP connector.
+Inspect the connected workspace through the awehitch MCP connector.
 Create an implementation plan for the coding agent.
 ```
 
@@ -121,7 +121,7 @@ If status is restricted, ignore it and review from git_diff.
 ```
 
 Before sending EXECUTED, the agent records the iteration:
-`awemind record --task c2c_f81a --iteration 1 --changed-files ... --tests ... --exit-status ok`
+`awehitch record --task c2c_f81a --iteration 1 --changed-files ... --tests ... --exit-status ok`
 and, when a test/build/lint/typecheck was run, `--command` plus `--output-file`.
 ChatGPT reads metadata via `execution_summary` / `test_status`. Command output
 is a separate opt-in: `execution_output` (`list` then `read`). The agent nominates
@@ -157,7 +157,7 @@ NEEDS:
 
 ### HANDOFF (agent → new ChatGPT conversation)
 
-`awemind session --json` → `conversation.mode` chooses how chats are grouped.
+`awehitch session --json` → `conversation.mode` chooses how chats are grouped.
 
 - **long-chat:** one long-lived C2C conversation per workspace. The agent opens a
   replacement chat only when the user asks, the old chat lags, or the chat was
@@ -213,7 +213,7 @@ The local agent owns execution.
 You own high-level reasoning, planning and review.
 
 You have access to the current local workspace through the
-"awemind" MCP connector.
+"awehitch" MCP connector.
 
 Rules:
 
@@ -258,7 +258,7 @@ This Project is bound only to:
 - Connector (use this one only): {{connector_name}}
 
 When you call tools, use ONLY that connector. Do not use any other
-awemind connector. If workspace_info names a different
+awehitch connector. If workspace_info names a different
 workspace, stop. Do not plan. Do not use this Project's memory.
 
 Read code, git, diffs, and any released command output through that

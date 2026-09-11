@@ -23,8 +23,8 @@ import { isNamedTunnelReady, needsTunnelChoice, readTunnelState } from "../src/t
 import { cleanup, isolateStateDir, makeTmpDir, write } from "./helpers.js";
 
 const stateDirs: string[] = [];
-const previousStateDir = process.env.AWEMIND_STATE_DIR;
-const previousCloudflaredPath = process.env.AWEMIND_CLOUDFLARED_PATH;
+const previousStateDir = process.env.AWEHITCH_STATE_DIR;
+const previousCloudflaredPath = process.env.AWEHITCH_CLOUDFLARED_PATH;
 const QUICK_URL = "https://random-words-here-1234.trycloudflare.com";
 type FetchImpl = NonNullable<CloudflaredQuickTunnelOptions["fetchImpl"]>;
 
@@ -56,25 +56,25 @@ function announceUrl(child: FakeCloudflaredProcess): void {
 }
 
 function healthResponse(): Response {
-  return new Response(JSON.stringify({ service: "awemind-bridge", status: "ok" }), { status: 200 });
+  return new Response(JSON.stringify({ service: "awehitch-bridge", status: "ok" }), { status: 200 });
 }
 
 afterEach(() => {
   while (stateDirs.length) cleanup(stateDirs.pop()!);
-  if (previousStateDir === undefined) delete process.env.AWEMIND_STATE_DIR;
-  else process.env.AWEMIND_STATE_DIR = previousStateDir;
-  if (previousCloudflaredPath === undefined) delete process.env.AWEMIND_CLOUDFLARED_PATH;
-  else process.env.AWEMIND_CLOUDFLARED_PATH = previousCloudflaredPath;
+  if (previousStateDir === undefined) delete process.env.AWEHITCH_STATE_DIR;
+  else process.env.AWEHITCH_STATE_DIR = previousStateDir;
+  if (previousCloudflaredPath === undefined) delete process.env.AWEHITCH_CLOUDFLARED_PATH;
+  else process.env.AWEHITCH_CLOUDFLARED_PATH = previousCloudflaredPath;
 });
 
 describe("findBinary", () => {
-  it("uses AWEMIND_CLOUDFLARED_PATH for an accessible cloudflared executable", () => {
+  it("uses AWEHITCH_CLOUDFLARED_PATH for an accessible cloudflared executable", () => {
     const dir = makeTmpDir("cloudflared-path");
     stateDirs.push(dir);
     const filename = process.platform === "win32" ? "cloudflared.exe" : "cloudflared";
     const configured = write(dir, filename, "placeholder");
     if (process.platform !== "win32") fs.chmodSync(configured, 0o755);
-    process.env.AWEMIND_CLOUDFLARED_PATH = configured;
+    process.env.AWEHITCH_CLOUDFLARED_PATH = configured;
     expect(findBinary("cloudflared")).toBe(configured);
   });
 });

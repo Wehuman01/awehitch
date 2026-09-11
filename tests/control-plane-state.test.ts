@@ -16,13 +16,13 @@ let previousStateDir: string | undefined;
 
 beforeEach(() => {
   stateDir = makeTmpDir("control-plane-state");
-  previousStateDir = process.env.AWEMIND_STATE_DIR;
-  process.env.AWEMIND_STATE_DIR = stateDir;
+  previousStateDir = process.env.AWEHITCH_STATE_DIR;
+  process.env.AWEHITCH_STATE_DIR = stateDir;
 });
 
 afterEach(() => {
-  if (previousStateDir === undefined) delete process.env.AWEMIND_STATE_DIR;
-  else process.env.AWEMIND_STATE_DIR = previousStateDir;
+  if (previousStateDir === undefined) delete process.env.AWEHITCH_STATE_DIR;
+  else process.env.AWEHITCH_STATE_DIR = previousStateDir;
   cleanup(stateDir);
 });
 
@@ -46,10 +46,10 @@ describe("control-plane state", () => {
       chatUrl: "https://chatgpt.com/c/abc",
       savedAt: new Date().toISOString(),
     });
-    const next = mergeControlPlaneState("ws123", { title: "C2C awemind" });
+    const next = mergeControlPlaneState("ws123", { title: "C2C awehitch" });
     expect(next.chatUrl).toBe("https://chatgpt.com/c/abc");
-    expect(next.title).toBe("C2C awemind");
-    expect(readControlPlaneState("ws123")?.title).toBe("C2C awemind");
+    expect(next.title).toBe("C2C awehitch");
+    expect(readControlPlaneState("ws123")?.title).toBe("C2C awehitch");
   });
 
   it("isolates state per workspace", () => {

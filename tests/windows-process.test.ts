@@ -59,7 +59,7 @@ describe("Windows background subprocess windowsHide: true (RED verification)", (
   });
 
   it("3. searchWithRipgrep in src/workspace/search.ts passes windowsHide: true for search process", async () => {
-    process.env.AWEMIND_RG_PATH = "fake-rg";
+    process.env.AWEHITCH_RG_PATH = "fake-rg";
     resetRipgrepCache();
     write(tmpDir, "sample.txt", "hello windowsHide\n");
     const ws = new Workspace(tmpDir);
@@ -69,7 +69,7 @@ describe("Windows background subprocess windowsHide: true (RED verification)", (
     } catch {
       // rg execution may fail with fake binary, but spawn was called
     } finally {
-      delete process.env.AWEMIND_RG_PATH;
+      delete process.env.AWEHITCH_RG_PATH;
       resetRipgrepCache();
     }
     const searchCall = spawnCalls.find((c) => c.file === "fake-rg");

@@ -60,7 +60,7 @@ export function makeGitRepo(dir: string): void {
 /** Point the persistent state dir at an isolated temp location. */
 export function isolateStateDir(): string {
   const dir = makeTmpDir("state");
-  process.env.AWEMIND_STATE_DIR = dir;
+  process.env.AWEHITCH_STATE_DIR = dir;
   return dir;
 }
 

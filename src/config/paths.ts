@@ -4,20 +4,20 @@ import fs from "node:fs";
 
 /**
  * State directory resolution, following OS conventions.
- * Override with AWEMIND_STATE_DIR (used heavily by tests).
+ * Override with AWEHITCH_STATE_DIR (used heavily by tests).
  */
 export function getStateDir(): string {
-  const override = process.env.AWEMIND_STATE_DIR;
+  const override = process.env.AWEHITCH_STATE_DIR;
   if (override && override.trim() !== "") return path.resolve(override);
   const home = os.homedir();
   switch (process.platform) {
     case "darwin":
-      return path.join(home, "Library", "Application Support", "awemind");
+      return path.join(home, "Library", "Application Support", "awehitch");
     case "win32":
-      return path.join(process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local"), "awemind");
+      return path.join(process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local"), "awehitch");
     default: {
       const base = process.env.XDG_STATE_HOME ?? path.join(home, ".local", "state");
-      return path.join(base, "awemind");
+      return path.join(base, "awehitch");
     }
   }
 }

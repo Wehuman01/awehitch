@@ -58,7 +58,7 @@ import { appendExecutionRecord } from "../execution/records.js";
 import { saveExecutionOutput } from "../execution/output.js";
 import { runStdioServer } from "../control-plane/server.js";
 import { interactiveLogin } from "../control-plane/browser.js";
-import { HARNESS_IDS, HarnessId, awemindCliEntry, harnessLabel } from "../adapters/paths.js";
+import { HARNESS_IDS, HarnessId, awehitchCliEntry, harnessLabel } from "../adapters/paths.js";
 import { loadAdapter } from "../adapters/index.js";
 
 const program = new Command();
@@ -216,7 +216,7 @@ async function ensureBridgeAndTunnel(
 }
 
 program
-  .name("awemind")
+  .name("awehitch")
   .description(`${PRODUCT_NAME} — ChatGPT thinks. Your agent works.`)
   .version(VERSION, "-v, --version")
   .configureHelp({ sortSubcommands: true });
@@ -332,7 +332,7 @@ program
         const impl = await loadAdapter(harness);
         const result = impl.setup({
           workspaceRoot: root,
-          cliEntry: awemindCliEntry(),
+          cliEntry: awehitchCliEntry(),
           connectorName,
         });
         adapter = { harness, ...result };
@@ -368,7 +368,7 @@ program
       say(`配对码：${pairingResult.code}（${Math.round((pairingResult.expiresAt - Date.now()) / 60000)} 分钟内有效）`);
       say("");
       say("下一步：在 ChatGPT 的连接器设置中添加以上地址（OAuth），并在授权页输入配对码。");
-      say("如果你在用 awemind skill 的 agent，这一步会自动完成。");
+      say("如果你在用 awehitch skill 的 agent，这一步会自动完成。");
     } catch (error) {
       handleCliError(error, opts.json);
     }
@@ -387,7 +387,7 @@ program
       const loggedIn = await interactiveLogin(workspace.id);
       if (opts.json) say(JSON.stringify({ ok: loggedIn, workspaceId: workspace.id }));
       else if (loggedIn) check("ChatGPT 已登录（控制面浏览器就绪）");
-      else cross("等待登录超时，请重试 awemind login");
+      else cross("等待登录超时，请重试 awehitch login");
       if (!loggedIn) process.exitCode = 1;
     } catch (error) {
       handleCliError(error, opts.json);
@@ -445,7 +445,7 @@ program
     }
     if (observation.state === "stopped") {
       if (opts.json) say(JSON.stringify({ ok: false, running: false }));
-      else say("Bridge 未运行。使用 `awemind start` 启动。");
+      else say("Bridge 未运行。使用 `awehitch start` 启动。");
       return;
     }
     const runtime = observation.runtime;
@@ -771,7 +771,7 @@ program
           ? "本地已就绪，还需要在 ChatGPT 删除并重新添加该连接。"
           : namedRepair.needed
             ? "固定域名还没连上，需要先登录 Cloudflare。"
-            : "仍有问题未解决，可尝试 `awemind restart --tunnel`。"
+            : "仍有问题未解决，可尝试 `awehitch restart --tunnel`。"
     );
     if (!allOk || namedRepair.needed) process.exitCode = 1;
   });

@@ -23,13 +23,13 @@ beforeEach(() => {
   previousEnv = {
     CODEX_HOME: process.env.CODEX_HOME,
     OPENCODE_CONFIG: process.env.OPENCODE_CONFIG,
-    AWEMIND_STATE_DIR: process.env.AWEMIND_STATE_DIR,
+    AWEHITCH_STATE_DIR: process.env.AWEHITCH_STATE_DIR,
     ZCODE_HOME: process.env.ZCODE_HOME,
   };
   process.env.CODEX_HOME = path.join(home, "codex");
   process.env.OPENCODE_CONFIG = path.join(home, "opencode");
   process.env.ZCODE_HOME = path.join(home, "zcode");
-  process.env.AWEMIND_STATE_DIR = stateDir;
+  process.env.AWEHITCH_STATE_DIR = stateDir;
 });
 
 afterEach(() => {
@@ -42,13 +42,13 @@ afterEach(() => {
   cleanup(stateDir);
 });
 
-const cliEntry = { cmd: process.execPath, args: ["/opt/awemind/dist/cli/index.js", "control-plane"] };
+const cliEntry = { cmd: process.execPath, args: ["/opt/awehitch/dist/cli/index.js", "control-plane"] };
 
 describe("skill template", () => {
   it("fills harness and connector name", () => {
-    const skill = renderSkill({ harness: "ZCode", connectorName: "awemind · Demo" });
+    const skill = renderSkill({ harness: "ZCode", connectorName: "awehitch · Demo" });
     expect(skill).toContain("ZCode works.");
-    expect(skill).toContain('named "awemind · Demo" in ChatGPT');
+    expect(skill).toContain('named "awehitch · Demo" in ChatGPT');
     expect(skill).not.toContain("{{HARNESS}}");
     expect(skill).not.toContain("{{CONNECTOR_NAME}}");
   });
@@ -60,12 +60,12 @@ describe("codex adapter", () => {
     const result = setupCodexAdapter({
       workspaceRoot: workDir,
       cliEntry,
-      connectorName: "awemind · Demo",
+      connectorName: "awehitch · Demo",
     });
     expect(fs.existsSync(result.skillPath)).toBe(true);
     expect(result.configPath).toBe(path.join(home, "codex", "config.toml"));
     const config = fs.readFileSync(result.configPath, "utf8");
-    expect(config).toContain("[mcp_servers.awemind]");
+    expect(config).toContain("[mcp_servers.awehitch]");
     expect(config).toContain('type = "stdio"');
     expect(config).toContain(workDir);
     // sandbox: state dir was added to writable_roots
@@ -79,10 +79,10 @@ describe("codex adapter", () => {
 
   it("is idempotent and never duplicates the MCP table", async () => {
     const { setupCodexAdapter } = await import("../src/adapters/codex.js");
-    setupCodexAdapter({ workspaceRoot: workDir, cliEntry, connectorName: "awemind" });
-    setupCodexAdapter({ workspaceRoot: workDir, cliEntry, connectorName: "awemind" });
+    setupCodexAdapter({ workspaceRoot: workDir, cliEntry, connectorName: "awehitch" });
+    setupCodexAdapter({ workspaceRoot: workDir, cliEntry, connectorName: "awehitch" });
     const config = fs.readFileSync(path.join(home, "codex", "config.toml"), "utf8");
-    expect(config.match(/\[mcp_servers\.awemind\]/g)?.length).toBe(1);
+    expect(config.match(/\[mcp_servers\.awehitch\]/g)?.length).toBe(1);
   });
 
   it("preserves unrelated config content", async () => {
@@ -90,11 +90,11 @@ describe("codex adapter", () => {
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, `model = "gpt-5"\n\n[mcp_servers.fetch]\ntype = "stdio"\ncommand = "uvx"\n`);
     const { setupCodexAdapter } = await import("../src/adapters/codex.js");
-    setupCodexAdapter({ workspaceRoot: workDir, cliEntry, connectorName: "awemind" });
+    setupCodexAdapter({ workspaceRoot: workDir, cliEntry, connectorName: "awehitch" });
     const config = fs.readFileSync(configPath, "utf8");
     expect(config).toContain('model = "gpt-5"');
     expect(config).toContain("[mcp_servers.fetch]");
-    expect(config).toContain("[mcp_servers.awemind]");
+    expect(config).toContain("[mcp_servers.awehitch]");
   });
 });
 
@@ -104,12 +104,12 @@ describe("opencode adapter", () => {
     const result = setupOpencodeAdapter({
       workspaceRoot: workDir,
       cliEntry,
-      connectorName: "awemind · Demo",
+      connectorName: "awehitch · Demo",
     });
     expect(fs.existsSync(result.skillPath)).toBe(true);
     const config = JSON.parse(fs.readFileSync(result.configPath, "utf8"));
-    expect(config.mcp.awemind.type).toBe("local");
-    expect(config.mcp.awemind.command).toContain(workDir);
+    expect(config.mcp.awehitch.type).toBe("local");
+    expect(config.mcp.awehitch.command).toContain(workDir);
 
     const status = opencodeAdapterStatus();
     expect(status.skillInstalled).toBe(true);
@@ -124,11 +124,11 @@ describe("opencode adapter", () => {
       `{\n  // my prefs\n  "theme": "dark",\n  "mcp": { "other": { "type": "remote", "url": "https://x.example/mcp" } }\n}\n`
     );
     const { setupOpencodeAdapter } = await import("../src/adapters/opencode.js");
-    setupOpencodeAdapter({ workspaceRoot: workDir, cliEntry, connectorName: "awemind" });
+    setupOpencodeAdapter({ workspaceRoot: workDir, cliEntry, connectorName: "awehitch" });
     const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
     expect(config.theme).toBe("dark");
     expect(config.mcp.other.url).toBe("https://x.example/mcp");
-    expect(config.mcp.awemind.type).toBe("local");
+    expect(config.mcp.awehitch.type).toBe("local");
   });
 });
 
@@ -143,25 +143,25 @@ describe("zcode adapter", () => {
     const result = setupZcodeAdapter({
       workspaceRoot: workDir,
       cliEntry,
-      connectorName: "awemind · Demo",
+      connectorName: "awehitch · Demo",
     });
     expect(fs.existsSync(result.skillPath)).toBe(true);
     const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
     expect(config.hooks.enabled).toBe(true);
-    expect(config.mcpServers.awemind.command).toBe(process.execPath);
-    expect(config.mcpServers.awemind.args).toContain(workDir);
+    expect(config.mcpServers.awehitch.command).toBe(process.execPath);
+    expect(config.mcpServers.awehitch.args).toContain(workDir);
 
     const status = zcodeAdapterStatus();
     expect(status.skillInstalled).toBe(true);
     expect(status.mcpRegistered).toBe(true);
   });
 
-  it("is idempotent (no duplicate awemind entry)", async () => {
+  it("is idempotent (no duplicate awehitch entry)", async () => {
     const { setupZcodeAdapter } = await import("../src/adapters/zcode.js");
-    setupZcodeAdapter({ workspaceRoot: workDir, cliEntry, connectorName: "awemind" });
-    setupZcodeAdapter({ workspaceRoot: workDir, cliEntry, connectorName: "awemind" });
+    setupZcodeAdapter({ workspaceRoot: workDir, cliEntry, connectorName: "awehitch" });
+    setupZcodeAdapter({ workspaceRoot: workDir, cliEntry, connectorName: "awehitch" });
     const configPath = path.join(home, "zcode", "config.json");
     const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
-    expect(Object.keys(config.mcpServers).filter((name) => name === "awemind").length).toBe(1);
+    expect(Object.keys(config.mcpServers).filter((name) => name === "awehitch").length).toBe(1);
   });
 });

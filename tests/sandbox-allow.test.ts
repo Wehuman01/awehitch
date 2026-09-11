@@ -12,13 +12,13 @@ import { makeTmpDir, cleanup } from "./helpers.js";
 
 describe("sandbox allowlist", () => {
   it("treats Windows slash variants as the same path", () => {
-    expect(pathsEquivalent("C:\\Users\\Ada\\AppData\\Local\\awemind", "C:/Users/Ada/AppData/Local/awemind")).toBe(
+    expect(pathsEquivalent("C:\\Users\\Ada\\AppData\\Local\\awehitch", "C:/Users/Ada/AppData/Local/awehitch")).toBe(
       true
     );
-    expect(pathsEquivalent("C:/Users/Ada/AppData/Local/awemind/", "c:\\users\\ada\\appdata\\local\\awemind")).toBe(
+    expect(pathsEquivalent("C:/Users/Ada/AppData/Local/awehitch/", "c:\\users\\ada\\appdata\\local\\awehitch")).toBe(
       true
     );
-    expect(toTomlPath("C:\\Users\\Ada\\AppData\\Local\\awemind").includes("\\")).toBe(false);
+    expect(toTomlPath("C:\\Users\\Ada\\AppData\\Local\\awehitch").includes("\\")).toBe(false);
   });
 
   it("creates the table when config.toml is missing", () => {
@@ -44,13 +44,13 @@ describe("sandbox allowlist", () => {
       'trust_level = "trusted"',
       "",
     ].join("\n");
-    const next = upsertWritableRoot(original, "/Users/ada/Library/Application Support/awemind");
+    const next = upsertWritableRoot(original, "/Users/ada/Library/Application Support/awehitch");
     expect(next).toContain('model = "gpt-5.6-luna"');
     expect(next).toContain("[features]");
     expect(next).toContain('trust_level = "trusted"');
     expect(next).toContain("[sandbox_workspace_write]");
     expect(next).toContain(
-      `writable_roots = ["${toTomlPath("/Users/ada/Library/Application Support/awemind")}"]`
+      `writable_roots = ["${toTomlPath("/Users/ada/Library/Application Support/awehitch")}"]`
     );
   });
 
@@ -62,10 +62,10 @@ describe("sandbox allowlist", () => {
   it("adds to a single-line array and keeps other roots", () => {
     const next = upsertWritableRoot(
       '[sandbox_workspace_write]\nwritable_roots = ["/already"]\n',
-      "/Users/ada/Library/Application Support/awemind"
+      "/Users/ada/Library/Application Support/awehitch"
     );
     expect(next).toContain(`"${toTomlPath("/already")}"`);
-    expect(next).toContain(`"${toTomlPath("/Users/ada/Library/Application Support/awemind")}"`);
+    expect(next).toContain(`"${toTomlPath("/Users/ada/Library/Application Support/awehitch")}"`);
   });
 
   it("adds to a multiline Windows-style array", () => {
@@ -77,10 +77,10 @@ describe("sandbox allowlist", () => {
         "]",
         "",
       ].join("\n"),
-      "C:\\Users\\Ada\\AppData\\Local\\awemind"
+      "C:\\Users\\Ada\\AppData\\Local\\awehitch"
     );
     expect(next).toContain("C:/Users/Ada/other");
-    expect(next).toContain("C:/Users/Ada/AppData/Local/awemind");
+    expect(next).toContain("C:/Users/Ada/AppData/Local/awehitch");
   });
 
   it("is idempotent when the path is already listed with the other slash style", () => {

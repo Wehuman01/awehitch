@@ -184,7 +184,7 @@ export class ControlPlaneBrowser {
     } catch {
       throw new ControlPlaneError(
         "CHATGPT_DOM_CHANGED",
-        "Composer not found. ChatGPT layout may have changed; run awemind doctor."
+        "Composer not found. ChatGPT layout may have changed; run awehitch doctor."
       );
     }
     await composer.fill("");

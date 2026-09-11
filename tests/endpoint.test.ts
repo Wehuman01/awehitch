@@ -34,7 +34,7 @@ describe("connectorNameFor", () => {
       connectorNameFor({
         workspaceName: "EchoMind",
         workspaceId: "abc123abc123",
-        previousName: "awemind",
+        previousName: "awehitch",
         hadEndpointBefore: true,
       })
     ).toBe(DEFAULT_CONNECTOR_NAME);
@@ -57,7 +57,7 @@ describe("connectorNameFor", () => {
         workspaceId: "def456def456",
         hadEndpointBefore: false,
       })
-    ).toBe("awemind · Landing");
+    ).toBe("awehitch · Landing");
   });
 });
 

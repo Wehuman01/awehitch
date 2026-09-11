@@ -1,11 +1,11 @@
 {
-  "name": "awemind",
+  "name": "awehitch",
   "version": "0.1.0",
   "description": "ChatGPT web as the planning brain for any coding agent. The agent executes; ChatGPT thinks.",
   "type": "module",
   "license": "MIT",
   "bin": {
-    "awemind": "./bin/awemind.js"
+    "awehitch": "./bin/awehitch.js"
   },
   "engines": {
     "node": ">=20"

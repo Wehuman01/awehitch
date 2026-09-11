@@ -16,10 +16,10 @@ import { PRODUCT_NAME, VERSION } from "../version.js";
  * else) gets the ChatGPT conversation as four semantic tools — no raw browser
  * surface is ever exposed to the model:
  *
- *   awemind_open_chat    open or take over the ChatGPT conversation
- *   awemind_send_state   send one [C2C] control message
- *   awemind_wait_reply   poll for a reply (cheap DOM checks; timeout != failure)
- *   awemind_read_reply   read the current reply
+ *   awehitch_open_chat    open or take over the ChatGPT conversation
+ *   awehitch_send_state   send one [C2C] control message
+ *   awehitch_wait_reply   poll for a reply (cheap DOM checks; timeout != failure)
+ *   awehitch_read_reply   read the current reply
  *
  * Design constraints (from the original Codex skill, kept deliberately):
  * - polling is 20-30s cheap DOM checks, never long waits, never screenshots
@@ -73,7 +73,7 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
   );
 
   server.registerTool(
-    "awemind_open_chat",
+    "awehitch_open_chat",
     {
       title: "Open ChatGPT conversation",
       description:
@@ -96,7 +96,7 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
   );
 
   server.registerTool(
-    "awemind_send_state",
+    "awehitch_send_state",
     {
       title: "Send [C2C] state message",
       description:
@@ -126,7 +126,7 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
   );
 
   server.registerTool(
-    "awemind_wait_reply",
+    "awehitch_wait_reply",
     {
       title: "Wait for ChatGPT reply",
       description:
@@ -154,7 +154,7 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
   );
 
   server.registerTool(
-    "awemind_read_reply",
+    "awehitch_read_reply",
     {
       title: "Read current reply",
       description:
@@ -176,7 +176,7 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
   // Convenience: the saved conversation state, so the harness skill can show
   // the bound chat URL without scraping the browser.
   server.registerTool(
-    "awemind_chat_info",
+    "awehitch_chat_info",
     {
       title: "Chat binding info",
       description: `Show which ChatGPT conversation URL is bound to this workspace. ${UNTRUSTED_NOTE}`,
@@ -195,7 +195,7 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
   return server;
 }
 
-/** Entry point for `awemind control-plane --workspace <root>` (stdio MCP). */
+/** Entry point for `awehitch control-plane --workspace <root>` (stdio MCP). */
 export async function runStdioServer(workspaceRoot: string): Promise<void> {
   const logger = new Logger({ name: "control-plane", console: false });
   const workspace = new Workspace(workspaceRoot);

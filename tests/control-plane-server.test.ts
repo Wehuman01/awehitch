@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { cleanup, makeTmpDir, write } from "./helpers.js";
 
 /**
- * End-to-end: spawn `awemind control-plane --workspace <tmp>` as a real
+ * End-to-end: spawn `awehitch control-plane --workspace <tmp>` as a real
  * stdio MCP server and talk MCP to it. The browser is only launched lazily
  * (open/send), which these tests avoid — they verify the protocol surface:
  * tool list, [C2C] validation, and JSON error shapes.
@@ -39,7 +39,7 @@ async function connect(): Promise<Client> {
   transport = new StdioClientTransport({
     command: process.execPath,
     args: ["--import", "tsx", entry, "--workspace", workDir],
-    env: { ...process.env, AWEMIND_STATE_DIR: stateDir },
+    env: { ...process.env, AWEHITCH_STATE_DIR: stateDir },
   });
   client = new Client({ name: "cp-test", version: "1.0.0" });
   await client.connect(transport);
@@ -53,18 +53,18 @@ describe("control-plane MCP server (stdio)", () => {
     const names = tools.tools.map((tool) => tool.name);
     expect(names).toEqual(
       expect.arrayContaining([
-        "awemind_open_chat",
-        "awemind_send_state",
-        "awemind_wait_reply",
-        "awemind_read_reply",
-        "awemind_chat_info",
+        "awehitch_open_chat",
+        "awehitch_send_state",
+        "awehitch_wait_reply",
+        "awehitch_read_reply",
+        "awehitch_chat_info",
       ])
     );
   });
 
   it("rejects messages that are not [C2C] control messages", async () => {
     const c = await connect();
-    const result = await c.callTool({ name: "awemind_send_state", arguments: { message: "hello there" } });
+    const result = await c.callTool({ name: "awehitch_send_state", arguments: { message: "hello there" } });
     expect(result.isError).toBe(true);
     const payload = JSON.parse((result.content as { text: string }[])[0].text);
     expect(payload.error).toBe("INVALID_MESSAGE");
@@ -73,7 +73,7 @@ describe("control-plane MCP server (stdio)", () => {
   it("rejects oversized control messages", async () => {
     const c = await connect();
     const result = await c.callTool({
-      name: "awemind_send_state",
+      name: "awehitch_send_state",
       arguments: { message: `[C2C]\nSTATE: INIT\n${"x".repeat(3000)}` },
     });
     expect(result.isError).toBe(true);
@@ -83,7 +83,7 @@ describe("control-plane MCP server (stdio)", () => {
 
   it("answers chat_info with the saved binding (null when unset)", async () => {
     const c = await connect();
-    const result = await c.callTool({ name: "awemind_chat_info", arguments: {} });
+    const result = await c.callTool({ name: "awehitch_chat_info", arguments: {} });
     const payload = JSON.parse((result.content as { text: string }[])[0].text);
     expect(payload.chatUrl).toBeNull();
   });

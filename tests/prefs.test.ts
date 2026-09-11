@@ -15,7 +15,7 @@ describe("ui prefs", () => {
   afterEach(() => {
     for (const dir of dirs) cleanup(dir);
     dirs.length = 0;
-    delete process.env.AWEMIND_STATE_DIR;
+    delete process.env.AWEHITCH_STATE_DIR;
   });
 
   it("starts empty and is not bound to a workspace", () => {

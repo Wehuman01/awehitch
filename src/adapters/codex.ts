@@ -9,9 +9,9 @@ import { renderSkill } from "./skill-template.js";
 /**
  * codex adapter.
  *
- * 1. MCP registration: `[mcp_servers.awemind]` stdio entry in config.toml
- * 2. Instructions: `~/.codex/skills/awemind/SKILL.md`
- * 3. Sandbox: awemind state dir into `[sandbox_workspace_write].writable_roots`
+ * 1. MCP registration: `[mcp_servers.awehitch]` stdio entry in config.toml
+ * 2. Instructions: `~/.codex/skills/awehitch/SKILL.md`
+ * 3. Sandbox: awehitch state dir into `[sandbox_workspace_write].writable_roots`
  */
 
 export function setupCodexAdapter(opts: {
@@ -22,7 +22,7 @@ export function setupCodexAdapter(opts: {
   const home = harnessHome("codex");
 
   // 1. Skill (instructions)
-  const skillDir = path.join(home, "skills", "awemind");
+  const skillDir = path.join(home, "skills", "awehitch");
   fs.mkdirSync(skillDir, { recursive: true });
   const skillPath = path.join(skillDir, "SKILL.md");
   fs.writeFileSync(
@@ -31,7 +31,7 @@ export function setupCodexAdapter(opts: {
     { mode: 0o644 }
   );
 
-  // 2. MCP entry (idempotent TOML upsert; the awemind entry is ours alone)
+  // 2. MCP entry (idempotent TOML upsert; the awehitch entry is ours alone)
   const configPath = getCodexConfigPath();
   fs.mkdirSync(path.dirname(configPath), { recursive: true, mode: 0o700 });
   const previous = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "";
@@ -60,13 +60,13 @@ export function codexAdapterStatus(): {
   configPath: string;
 } {
   const home = harnessHome("codex");
-  const skillPath = path.join(home, "skills", "awemind", "SKILL.md");
+  const skillPath = path.join(home, "skills", "awehitch", "SKILL.md");
   const configPath = getCodexConfigPath();
   let mcpRegistered = false;
   let sandboxAllowed = false;
   try {
     const content = fs.readFileSync(configPath, "utf8");
-    mcpRegistered = /\[mcp_servers\.awemind\]/.test(content);
+    mcpRegistered = /\[mcp_servers\.awehitch\]/.test(content);
     sandboxAllowed = isStateDirAllowlisted(content, getStateDir());
   } catch {
     // missing config -> both false
@@ -79,13 +79,13 @@ function upsertCodexMcpEntry(
   cliEntry: { cmd: string; args: string[] },
   workspaceRoot: string
 ): string {
-  const TABLE = "mcp_servers.awemind";
+  const TABLE = "mcp_servers.awehitch";
   const body = [
     `[${TABLE}]`,
     `type = "stdio"`,
     `command = ${tomlString(cliEntry.cmd)}`,
     `args = ${tomlArray([...cliEntry.args, "--workspace", workspaceRoot])}`,
-    `env = { AWEMIND_CONTROL_PLANE = "1" }`,
+    `env = { AWEHITCH_CONTROL_PLANE = "1" }`,
   ].join("\n");
 
   const existing = findTableToml(content, TABLE);

@@ -6,18 +6,18 @@ import { renderSkill } from "./skill-template.js";
 /**
  * zcode adapter.
  *
- * 1. MCP registration: `"mcpServers": { "awemind": { …stdio… } }` in
+ * 1. MCP registration: `"mcpServers": { "awehitch": { …stdio… } }` in
  *    ~/.zcode/cli/config.json (idempotent merge that preserves all other keys)
- * 2. Instructions: `~/.zcode/agents/awemind.md` (agent file with YAML
+ * 2. Instructions: `~/.zcode/agents/awehitch.md` (agent file with YAML
  *    frontmatter; zcode loads agents from this directory)
  * 3. Sandbox: none needed (zcode has hooks, no writable_roots equivalent)
  */
 
-const AGENT_BODY = `You can delegate planning and review to ChatGPT with awemind.
+const AGENT_BODY = `You can delegate planning and review to ChatGPT with awehitch.
 
 When the user says "用 ChatGPT 帮我规划" / "use ChatGPT to plan", follow the
-awemind skill (installed at ~/.zcode/skills or referenced by the awemind CLI):
-exchange [C2C] control messages through the awemind MCP tools, execute plans
+awehitch skill (installed at ~/.zcode/skills or referenced by the awehitch CLI):
+exchange [C2C] control messages through the awehitch MCP tools, execute plans
 yourself, and let ChatGPT review the real diff via the read-only connector.
 `;
 
@@ -29,7 +29,7 @@ export function setupZcodeAdapter(opts: {
   const home = harnessHome("zcode");
 
   // 1. Skill (instructions) — zcode plugin-style skills dir
-  const skillDir = path.join(home, "skills", "awemind");
+  const skillDir = path.join(home, "skills", "awehitch");
   fs.mkdirSync(skillDir, { recursive: true });
   const skillPath = path.join(skillDir, "SKILL.md");
   fs.writeFileSync(skillPath, renderSkill({ harness: "ZCode", connectorName: opts.connectorName }), {
@@ -41,10 +41,10 @@ export function setupZcodeAdapter(opts: {
   fs.mkdirSync(path.dirname(configPath), { recursive: true, mode: 0o700 });
   const config = readJson(configPath);
   config.mcpServers ??= {};
-  config.mcpServers.awemind = {
+  config.mcpServers.awehitch = {
     command: opts.cliEntry.cmd,
     args: [...opts.cliEntry.args, "--workspace", opts.workspaceRoot],
-    env: { AWEMIND_CONTROL_PLANE: "1" },
+    env: { AWEHITCH_CONTROL_PLANE: "1" },
   };
   writeJson(configPath, config);
 
@@ -57,12 +57,12 @@ export function zcodeAdapterStatus(): {
   configPath: string;
 } {
   const home = harnessHome("zcode");
-  const skillPath = path.join(home, "skills", "awemind", "SKILL.md");
+  const skillPath = path.join(home, "skills", "awehitch", "SKILL.md");
   const configPath = path.join(home, "config.json");
   let mcpRegistered = false;
   try {
     const config = readJson(configPath);
-    mcpRegistered = Boolean(config.mcpServers?.awemind);
+    mcpRegistered = Boolean(config.mcpServers?.awehitch);
   } catch {
     // missing or unparsable -> false
   }

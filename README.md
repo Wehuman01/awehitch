@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>awemind: ChatGPT Web as the Brain for Any Coding Agent</h1>
+  <h1>awehitch: ChatGPT Web as the Brain for Any Coding Agent</h1>
   <p><strong>ChatGPT thinks. Your agent works.</strong></p>
   <p>Use the ChatGPT web subscription you already pay for as the planning and review layer — while any coding agent (codex / opencode / zcode) keeps full ownership of execution.</p>
   <p>
@@ -19,13 +19,13 @@
 
 > ChatGPT thinks. Your agent works.
 
-awemind turns the ChatGPT web app into the "external brain" of any coding agent: ChatGPT plans and reviews, the local agent executes. Your repository is never uploaded — ChatGPT reads exactly the lines it needs through a secure, OAuth-protected, **read-only** MCP connection to your workspace. No API keys, no reverse proxy.
+awehitch turns the ChatGPT web app into the "external brain" of any coding agent: ChatGPT plans and reviews, the local agent executes. Your repository is never uploaded — ChatGPT reads exactly the lines it needs through a secure, OAuth-protected, **read-only** MCP connection to your workspace. No API keys, no reverse proxy.
 
 ## Install
 
 ```bash
-git clone <this repo> awemind
-cd awemind
+git clone <this repo> awehitch
+cd awehitch
 corepack pnpm install && corepack pnpm build
 ```
 
@@ -36,14 +36,14 @@ Requirements: Node.js >= 20, git. `cloudflared` for the public connection (auto-
 Tell your coding agent (codex / opencode / zcode):
 
 ```text
-请帮我完整安装并配置 awemind，全程自动。
+请帮我完整安装并配置 awehitch，全程自动。
 ```
 
 Or run the CLI yourself:
 
 ```bash
-awemind setup -w /path/to/project --harness codex --json
-awemind login -w /path/to/project        # log in to ChatGPT once in the opened window
+awehitch setup -w /path/to/project --harness codex --json
+awehitch login -w /path/to/project        # log in to ChatGPT once in the opened window
 ```
 
 `setup --harness` wires everything: the bridge, the secure tunnel, a pairing code, and the adapter for that harness (MCP registration + skill installation + sandbox tweaks). Then use your agent normally: "用 ChatGPT 帮我规划 XXX".
@@ -57,10 +57,10 @@ awemind login -w /path/to/project        # log in to ChatGPT once in the opened 
       ↕  工具调用（stdio MCP）
 本地 Agent（codex / opencode / zcode）
       ↕  数据面：只读 MCP
-awemind Bridge（本地，工作区只读网关 + OAuth + 隧道）
+awehitch Bridge（本地，工作区只读网关 + OAuth + 隧道）
 ```
 
-- **Control plane** — the agent and ChatGPT exchange tiny structured `[C2C]` messages (`INIT → PLAN → EXECUTED → REVIEW → DONE`). A local **control-plane proxy** wraps the ChatGPT web conversation (Playwright, dedicated profile) into four semantic tools: `awemind_open_chat`, `awemind_send_state`, `awemind_wait_reply`, `awemind_read_reply`. Cheap DOM polling (20–30 s), timeouts are not failures, one tab, never resend. This decouples the original Codex-only browser control plane from any specific harness — an agent just needs "can call tools".
+- **Control plane** — the agent and ChatGPT exchange tiny structured `[C2C]` messages (`INIT → PLAN → EXECUTED → REVIEW → DONE`). A local **control-plane proxy** wraps the ChatGPT web conversation (Playwright, dedicated profile) into four semantic tools: `awehitch_open_chat`, `awehitch_send_state`, `awehitch_wait_reply`, `awehitch_read_reply`. Cheap DOM polling (20–30 s), timeouts are not failures, one tab, never resend. This decouples the original Codex-only browser control plane from any specific harness — an agent just needs "can call tools".
 - **Data plane** — ChatGPT pulls files, diffs, search results, test records itself through 9 read-only tools over an OAuth 2.1 + PKCE + dynamic-client-registration tunnel. Independent review: after EXECUTED, ChatGPT inspects the real git diff — it never trusts "all tests passed".
 - **Adapters** — codex (`~/.codex/skills` + `config.toml` MCP + sandbox writable_roots), opencode (`~/.config/opencode` skill + `opencode.json` MCP), zcode (`~/.zcode/cli/config.json` mcpServers + skill). Each is thin; none import each other.
 
@@ -80,14 +80,14 @@ Per-workspace `.c2c.json`:
 ## Commands
 
 ```bash
-awemind setup -w <workspace> [--harness codex|opencode|zcode] [--json]
-awemind start | stop | restart -w <workspace>
-awemind status -w <workspace> [--json]
-awemind doctor -w <workspace> [--json]      # diagnose + auto-repair
-awemind login -w <workspace> [--json]       # control-plane ChatGPT login
-awemind pair | unpair -w <workspace>        # pairing codes / revoke all tokens
-awemind session get|set|clear -w <workspace> # conversation + checkpoint state
-awemind sandbox-allow [--json]              # codex writable_roots (idempotent)
+awehitch setup -w <workspace> [--harness codex|opencode|zcode] [--json]
+awehitch start | stop | restart -w <workspace>
+awehitch status -w <workspace> [--json]
+awehitch doctor -w <workspace> [--json]      # diagnose + auto-repair
+awehitch login -w <workspace> [--json]       # control-plane ChatGPT login
+awehitch pair | unpair -w <workspace>        # pairing codes / revoke all tokens
+awehitch session get|set|clear -w <workspace> # conversation + checkpoint state
+awehitch sandbox-allow [--json]              # codex writable_roots (idempotent)
 ```
 
 All commands support `--json`. Internal: `serve`, `control-plane` (stdio MCP), `record`, `update-check`.
@@ -96,7 +96,7 @@ All commands support `--json`. Internal: `serve`, `control-plane` (stdio MCP), `
 
 ```bash
 corepack pnpm install
-corepack pnpm build     # -> dist/, exposes the awemind bin
+corepack pnpm build     # -> dist/, exposes the awehitch bin
 corepack pnpm test      # 188 tests: path security, OAuth, pairing, MCP e2e, adapters
 ```
 
@@ -104,7 +104,9 @@ Docs: [architecture](docs/architecture.md) · [protocol](docs/protocol.md) · [s
 
 ## Status & disclaimer
 
-Alpha. The control plane depends on the current ChatGPT DOM; when it changes, `awemind_wait_reply` fails honestly with `CHATGPT_DOM_CHANGED` — run doctor, fix selectors. Not affiliated with or endorsed by OpenAI.
+Alpha. The control plane depends on the current ChatGPT DOM; when it changes, `awehitch_wait_reply` fails honestly with `CHATGPT_DOM_CHANGED` — run doctor, fix selectors. Not affiliated with or endorsed by OpenAI.
+
+Data plane adapted from [codex-with-chatgpt](https://github.com/mugpeng/codex-with-chatgpt) (forked from [XiaoDuoYa/codex-with-chatgpt](https://github.com/XiaoDuoYa/codex-with-chatgpt)) — MIT.
 
 ## License
 

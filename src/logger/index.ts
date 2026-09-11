@@ -38,7 +38,7 @@ export class Logger {
 
   constructor(opts: LoggerOptions = {}) {
     this.name = opts.name ?? "c2c";
-    this.level = LEVELS[opts.level ?? (process.env.AWEMIND_LOG_LEVEL as LogLevel) ?? "info"] ?? LEVELS.info;
+    this.level = LEVELS[opts.level ?? (process.env.AWEHITCH_LOG_LEVEL as LogLevel) ?? "info"] ?? LEVELS.info;
     this.useConsole = opts.console ?? false;
     if (opts.file === undefined) {
       const dir = ensureDir(path.join(getStateDir(), "logs"));
