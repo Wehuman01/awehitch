@@ -15,8 +15,8 @@
    reads the conversation text with fixed selectors; page content beyond the
    `[C2C]` protocol itself is never treated as instructions to the proxy.
    Selector drift fails closed with `CHATGPT_DOM_CHANGED` instead of guessing.
-   The proxy browser runs in a dedicated per-workspace profile (isolated from
-   the user's daily browser session) and only ever opens `chatgpt.com` URLs.
+   The proxy browser runs in a dedicated shared profile, one per machine and
+   isolated from the user's daily browser session and only ever opens `chatgpt.com` URLs.
 
 ## Threat model → mitigations
 

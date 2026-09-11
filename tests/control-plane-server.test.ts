@@ -121,6 +121,9 @@ describe("control-plane MCP server (stdio)", () => {
 class RecordingDriver extends ControlPlaneBrowser {
   opened: { chatUrl?: string; opts: { taskId?: string; fresh?: boolean } }[] = [];
   sent: string[] = [];
+  closeCount = 0;
+  /** When set, openConversation waits on it (simulates a slow call). */
+  openGate: Promise<void> | null = null;
 
   constructor() {
     super("fake-ws", {});
@@ -130,6 +133,7 @@ class RecordingDriver extends ControlPlaneBrowser {
     chatUrl?: string,
     opts: { taskId?: string; fresh?: boolean } = {}
   ): Promise<string> {
+    if (this.openGate) await this.openGate;
     this.opened.push({ chatUrl, opts });
     return chatUrl ?? "https://chatgpt.com/";
   }
@@ -146,6 +150,11 @@ class RecordingDriver extends ControlPlaneBrowser {
   override async waitReply() {
     return this.readReply();
   }
+
+  override async close(): Promise<void> {
+    this.closeCount++;
+    await super.close();
+  }
 }
 
 describe("control-plane MCP server (in-process, fake driver)", () => {
@@ -161,11 +170,15 @@ describe("control-plane MCP server (in-process, fake driver)", () => {
     delete process.env.AWEHITCH_STATE_DIR;
   });
 
-  async function connectFake(driver: RecordingDriver): Promise<Client> {
+  async function connectFake(
+    driver: RecordingDriver,
+    serverOpts: { idleCloseMs?: number } = {}
+  ): Promise<Client> {
     const server = await createControlPlaneServer({
       workspaceRoot: workDir,
       workspaceId: "fake-ws",
       driver,
+      ...serverOpts,
     });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await server.connect(serverTransport);
@@ -210,6 +223,36 @@ describe("control-plane MCP server (in-process, fake driver)", () => {
     expect(payload.message).toContain("STATE: HANDOFF");
     expect(payload.message).toContain("ORIGINAL_GOAL:\nImplement dark mode.");
     expect(driver.sent).toEqual([payload.message]);
+    await c.close().catch(() => undefined);
+  });
+
+  it("closes the driver after the idle period so the shared browser is freed", async () => {
+    const driver = new RecordingDriver();
+    const c = await connectFake(driver, { idleCloseMs: 30 });
+    await c.callTool({ name: "awehitch_chat_info", arguments: {} });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(driver.closeCount).toBe(1);
+    // A later tool call must still work: the real driver relaunches lazily.
+    await c.callTool({ name: "awehitch_chat_info", arguments: {} });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(driver.closeCount).toBe(2);
+    await c.close().catch(() => undefined);
+  });
+
+  it("never closes the driver while a tool call is in flight", async () => {
+    const driver = new RecordingDriver();
+    let release!: () => void;
+    driver.openGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const c = await connectFake(driver, { idleCloseMs: 30 });
+    const pending = c.callTool({ name: "awehitch_open_chat", arguments: {} });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(driver.closeCount).toBe(0);
+    release();
+    await pending;
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(driver.closeCount).toBe(1);
     await c.close().catch(() => undefined);
   });
 });

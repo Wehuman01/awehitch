@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+**One ChatGPT login per machine.** The control-plane browser profile is now
+shared by every workspace instead of one profile per project, so
+`awehitch login` is run once, not once per workspace.
+
+- The profile lives at `browser-profile/shared/` and is guarded by a
+  cross-process lock. A genuine collision reports the holding pid and
+  workspace (and stops) instead of failing with a Playwright singleton stack
+  trace; a lock left by a crashed process is stolen automatically.
+- A session closes the browser after a few idle minutes — while the harness
+  codes, no other workspace is blocked — and relaunches it on the next tool
+  call, reopening the bound conversation.
+- The stdio MCP server and the CLI both multiplex tabs inside the one shared
+  context, so workspaces sharing a process each keep their own tab.
+- Upgrading: old per-workspace profile directories are ignored; log in once.
+
 **`awehitch connector-setup`** — the ChatGPT connector is now created and
 repaired automatically, for every harness.
 

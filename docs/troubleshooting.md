@@ -98,11 +98,15 @@ One chat per task. Open a replacement with `awehitch_open_chat` for that
 protocol from the checkpoint state — do not restart the task.
 
 ### Each new workspace asks me to log in to ChatGPT again
-Known limitation: the control-plane browser profile is per workspace
-(isolation by default), so the ChatGPT login lives once per workspace.
-Sharing one profile across workspaces needs a single-browser lock first
-(Playwright persistent contexts cannot share a profile directory
-concurrently) — deliberately deferred.
+Fixed: the control-plane browser uses ONE shared profile for every workspace
+on the machine. Log in once with `awehitch login -w <workspace>`; every other
+workspace reuses it.
+
+The shared profile can be held by only one process at a time. Sessions close
+the browser after a few idle minutes and relaunch it when needed; a genuine
+collision reports the holding pid and workspace instead of a Playwright stack
+trace. Upgrading from a pre-sharing version: old per-workspace profiles under
+`browser-profile/` are ignored — log in once.
 
 ### Completely stuck
 ```

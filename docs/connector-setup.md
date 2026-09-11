@@ -52,27 +52,35 @@ This command opens its **own** Chrome window. It does not use — and never
 touches — your everyday Chrome, so nothing of yours is logged in there and no
 credentials are read from it.
 
-The profile lives in the state dir, one per workspace:
+The profile lives in the state dir and is **shared by every workspace on the
+machine** — one ChatGPT login, not one per project:
 
 ```
-~/Library/Application Support/awehitch/control-plane/browser-profile/<workspace-id>/
-%LOCALAPPDATA%\awehitch\control-plane\browser-profile\<workspace-id>\
+~/Library/Application Support/awehitch/control-plane/browser-profile/shared/
+%LOCALAPPDATA%\awehitch\control-plane\browser-profile\shared\
 ```
 
-So **each workspace needs one ChatGPT login**:
+Log in once:
 
 ```bash
-awehitch login -w /path/to/your/project
+awehitch login -w /path/to/any/project
 ```
 
-After that the session persists in that profile and both the control plane and
+After that the session persists and every workspace's control plane and
 `connector-setup` reuse it. `connector-setup` also waits for you if it hits a
 login wall, so the explicit `awehitch login` is mostly a convenience.
 
-Per-workspace profiles are deliberate: it keeps one project's session separate
-from another's, and lets two workspaces run at once (a browser profile can
-only be held by one process at a time). The cost is logging in once per
-workspace.
+**One holder at a time.** A Chromium profile directory cannot be opened by two
+processes at once, so the profile is guarded by a lock. While a workspace is
+actually driving ChatGPT it holds the browser; sessions close it after a few
+idle minutes and relaunch it when needed. If you do collide with a live
+holder, the error names the holding pid and workspace instead of failing with
+a Playwright stack trace — stop that session (or wait for it to idle out) and
+retry. Fully parallel driving across workspaces would need a browser-host
+daemon; deliberately not built.
+
+Upgrading from a pre-sharing version: old per-workspace profile directories
+under `browser-profile/` are ignored; run `awehitch login` once.
 
 ## Selectors
 
