@@ -1,0 +1,204 @@
+---
+name: awemind
+description: >
+  Use ChatGPT (web) as the planning and review brain for coding sessions in
+  this harness, while the agent keeps full execution ownership. Use when the
+  user says "用 ChatGPT 帮我规划" / "use ChatGPT to plan" / "awemind", when they
+  ask to connect ChatGPT to the current workspace, disconnect it, or run a
+  task through the ChatGPT planning loop.
+---
+
+# awemind
+
+ChatGPT thinks. {{HARNESS}} works.
+
+You (the harness agent) own execution: editing, shell, git, tests, recovery.
+ChatGPT owns high-level reasoning: understanding, planning, review, debug
+strategy. Two connections make this work:
+
+1. **Read-only MCP connector** (named "{{CONNECTOR_NAME}}" in ChatGPT) —
+   ChatGPT reads files, diffs, search results by itself. Never paste file
+   contents, diffs, or logs to ChatGPT.
+2. **Control-plane tools** (local MCP, `awemind_*`) — you exchange tiny
+   structured `[C2C]` state messages with the ChatGPT conversation:
+   `awemind_open_chat`, `awemind_send_state`, `awemind_wait_reply`,
+   `awemind_read_reply`.
+
+**Golden rules**
+
+1. NEVER paste file contents, diffs, or logs into ChatGPT. ChatGPT reads them
+   through the read-only connector.
+2. NEVER show the user technical internals (MCP, OAuth, PKCE, tunnel, ports,
+   localhost). Speak in terms of "连接 ChatGPT / 安全连接 / 配对".
+3. The pairing code is the ONLY credential ever typed into a browser page.
+   Never touch OAuth tokens, cookies, or session storage.
+4. Control-message discipline:
+   - `awemind_wait_reply` returning `status=generating` or `status=timeout`
+     is NOT a failure. Call it again. NEVER resend a message because a wait
+     timed out.
+   - Only one conversation per workspace. `awemind_open_chat` handles URL
+     bookkeeping; never open a second chat tab.
+5. If something fails, run `awemind doctor -w <workspace> --json` and repair
+   silently. Only involve the user for logins, CAPTCHA, or 2FA — and then give
+   them ONE action at a time.
+
+## Locations
+
+- CLI: `awemind <command>` (all commands support `--json`).
+- Always pass `-w <workspace root>` (the project the user is working on).
+
+## Workflow: first-time setup（"使用 awemind 完成首次配置"）
+
+1. Check prerequisites yourself: Node.js >= 20, git. Install missing pieces
+   (macOS: Homebrew; Windows: winget). Also ensure `cloudflared` exists.
+2. `awemind setup -w <workspace> --json`
+   → returns `{ mcpUrl, pairingCode, workspaceName, connectorName, ... }`.
+3. The ChatGPT connector must be configured once in the browser (OAuth +
+   pairing code). `awemind setup` prints exact steps; guide the user through
+   them ONE action at a time, or automate if this harness controls a browser.
+   Never open third-party pages; only `chatgpt.com`.
+4. `awemind login -w <workspace> --json` opens the control-plane browser and
+   waits for the ChatGPT login. Tell the user: "请在打开的窗口里登录 ChatGPT，
+   完成后告诉我『好了』".
+5. First conversation: `awemind_open_chat`, then send the boot prompt (below),
+   then the workspace_info check (below). Confirm the reply names the current
+   workspace before continuing.
+6. Report in this shape (no internals):
+
+```
+awemind
+
+✓ 当前项目已识别
+✓ Workspace Bridge 已启动
+✓ 安全连接已建立
+✓ ChatGPT 已连接
+✓ 文件读取测试通过
+
+Ready.
+```
+
+### Boot prompt (send once per new ChatGPT conversation)
+
+```
+You are the planning and review layer of a coding session.
+
+The local agent owns execution.
+You own high-level reasoning, planning and review.
+
+You have access to the current local workspace through the
+"{{CONNECTOR_NAME}}" MCP connector.
+
+Rules:
+
+1. Do not ask the agent to paste files that are available through MCP.
+2. Inspect only the files needed for the task.
+3. Use MCP to inspect current code, git status and diff.
+4. Produce concise executable plans.
+5. The agent will execute your plan using its own harness.
+6. After the agent reports EXECUTED, independently inspect the diff.
+   If execution_output lists a readable item for this iteration, list
+   then read it. If status is restricted, ignore the body and review
+   from git.
+7. Do not assume an implementation succeeded just because the agent says so.
+8. Continue until the implementation satisfies the success criteria.
+9. Avoid unnecessary rewrites.
+10. Return C2C structured control messages.
+11. Be substantive. PLAN and review replies must carry rationale, per-file
+    natural-language suggestions, risks worth checking, and test advice.
+    Never reply with a bare one-liner. No 40-step epics either.
+12. If you receive a HANDOFF message, this conversation continues an
+    existing task. Trust the handoff brief, re-read code through MCP, and
+    resume from NEXT_EXPECTED_STEP.
+```
+
+## Workflow: coding task（"用 ChatGPT 帮我规划/实现 XXX"）
+
+Protocol states exchanged with ChatGPT:
+`INIT → PLAN → EXECUTING → EXECUTED → REVIEW → (PLAN | DONE | BLOCKED)`.
+All control messages start with `[C2C]`, keep them under 1 KB.
+Store progress in the session checkpoint via `awemind session set`.
+
+0. `awemind doctor -w <workspace> --json` (auto-repairs). Doctor gate: if
+   local is not green, do not open ChatGPT and do not send INIT. Follow its
+   `chatgptRepair` / `namedRepair` guidance first.
+1. `awemind session -w <workspace> --json` → resume from `session.checkpoint`
+   before any INIT (details in `awemind session get --json`). Never re-pair or
+   recreate the connector just to resume.
+2. `awemind_open_chat`. On a NEW conversation send the boot prompt, then:
+
+```
+Use the "{{CONNECTOR_NAME}}" connector: call workspace_info and read hello-style top-level file. Reply with the workspace name.
+```
+
+   Confirm the reply names this workspace.
+3. Send INIT via `awemind_send_state`:
+
+```
+[C2C]
+STATE: INIT
+TASK_ID: {{TASK_ID}}
+ITERATION: 0
+
+GOAL:
+<user's goal, one paragraph>
+
+INSTRUCTION:
+Inspect the connected workspace through the {{CONNECTOR_NAME}} MCP connector.
+Produce a C2C PLAN message.
+```
+
+   Then `awemind session set -w <ws> --task {{TASK_ID}} --iteration 0 --state INIT --protocol-state INIT --waiting-for GPT_PLAN --goal "<short goal>" --next-step "wait for PLAN"`.
+4. `awemind_wait_reply` (expect_state=PLAN). Read GOAL/ACTIONS/TESTS/
+   SUCCESS_CRITERIA. If the PLAN is a bare one-liner, ask once for rationale
+   and per-file suggestions. Then `awemind session set --protocol-state PLAN_RECEIVED --waiting-for none --next-step "execute PLAN"`.
+5. Execute the plan yourself with your own tools. Before starting:
+   `awemind session set --protocol-state EXECUTING --waiting-for none --next-step "finish PLAN then record"`.
+6. Record the execution (metadata always; command output when a test/build/
+   lint ran):
+
+```
+awemind record -w <ws> --task {{TASK_ID}} --iteration 1 --changed-files "src/a.ts,src/b.ts" --tests "27 passed" --exit-status ok
+awemind record … --command "npm test" --output-file <temp> --exit-code 0
+```
+
+7. Send EXECUTED (no diffs, no logs):
+
+```
+[C2C]
+STATE: EXECUTED
+TASK_ID: {{TASK_ID}}
+ITERATION: 1
+
+RESULT:
+Execution finished.
+
+CHANGED_FILES:
+4
+
+TESTS:
+27 passed
+
+Please independently inspect the workspace and current git diff through MCP.
+If execution_output lists a readable item for this iteration, list then read it.
+If status is restricted, ignore it and review from git_diff.
+```
+
+   Then `awemind session set --protocol-state EXECUTED_SENT --waiting-for GPT_REVIEW --next-step "wait for PLAN or DONE"`.
+8. `awemind_wait_reply`. ChatGPT reviews via MCP and replies DONE / PLAN
+   (next iteration) / BLOCKED. Loop; respect maxIterations (`.c2c.json`,
+   default 12) — at the limit ask the user whether to continue.
+9. On DONE: summarize in plain language and
+   `awemind session set --state DONE --clear-checkpoint`.
+10. On BLOCKED: surface the reason or the single decision the user must make.
+
+## Workflow: reconnect after address reclaim
+
+When doctor reports `chatgptRepair.needed`: tell the user its `userMessage`,
+then Delete + recreate THIS workspace's connector (`connectorName`) with the
+new `mcpUrl` and pairing code. Never click Reconnect. Then doctor again.
+
+## Workflow: disconnect（"断开 ChatGPT"）
+
+1. `awemind unpair -w <workspace>` (revokes all tokens immediately).
+2. Optionally remove the connector at chatgpt.com/plugins.
+3. Tell the user: "已断开 ChatGPT 对该项目的访问。"
