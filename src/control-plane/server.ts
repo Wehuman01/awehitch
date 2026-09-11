@@ -113,7 +113,7 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
       if (!message.startsWith("[C2C]")) {
         return fail("INVALID_MESSAGE", "Control messages must start with [C2C].");
       }
-      if (Buffer.byteLength(message, "utf8") > 2048) {
+      if (Buffer.byteLength(message, "utf8") > 1024) {
         return fail("INVALID_MESSAGE", "Keep control messages under 1 KB.");
       }
       try {
@@ -132,8 +132,10 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
       description:
         `Poll for the latest ChatGPT reply with cheap DOM checks (20-30s interval). Returns ` +
         `status=generating (still typing — call again, NEVER resend), status=timeout (not a ` +
-        `failure; call again), or status=replied. Optionally expect_state (e.g. PLAN, DONE, ` +
-        `BLOCKED) to keep polling until that [C2C] state arrives. ${UNTRUSTED_NOTE}`,
+        `failure; call again; includes the current latest text), or status=replied — meaning a ` +
+        `reply that arrived AFTER your last awehitch_send_state (older replies are not ` +
+        `re-reported). Optionally expect_state (e.g. PLAN, DONE, BLOCKED) to keep polling until ` +
+        `that [C2C] state arrives. ${UNTRUSTED_NOTE}`,
       inputSchema: {
         timeout_seconds: z.number().int().min(30).max(600).default(300),
         expect_state: z.string().optional().describe("Expected [C2C] STATE value, e.g. PLAN"),
