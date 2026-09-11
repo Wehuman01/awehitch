@@ -53,14 +53,14 @@ awehitch login -w /path/to/project        # 在打开的窗口里登录一次 Ch
 ```
 远端大脑（ChatGPT 网页）
       ↕  控制面：[C2C] 状态消息（<1 KB）
-控制面代理（本地，Playwright → 4 个语义化 MCP 工具）
+控制面代理（本地，Playwright → 5 个语义化 MCP 工具）
       ↕  工具调用（stdio MCP）
 本地 Agent（codex / opencode / zcode）
       ↕  数据面：只读 MCP
 awehitch Bridge（本地，工作区只读网关 + OAuth + 隧道）
 ```
 
-- **控制面** — agent 与 ChatGPT 交换极小的结构化 `[C2C]` 消息（`INIT → PLAN → EXECUTED → REVIEW → DONE`）。本地**控制面代理**用 Playwright（独立浏览器配置目录）把 ChatGPT 会话封装成四个语义化工具：`awehitch_open_chat`、`awehitch_send_state`、`awehitch_wait_reply`、`awehitch_read_reply`。轮询是 20–30 秒的廉价 DOM 检查；超时不等于失败；只用一个标签页；绝不因超时重发。原方案里绑死 Codex 内置浏览器的控制面被彻底解耦——任何 agent 只要"能调工具"就能接入。
+- **控制面** — agent 与 ChatGPT 交换极小的结构化 `[C2C]` 消息（`INIT → PLAN → EXECUTED → REVIEW → DONE`）。本地**控制面代理**用 Playwright（独立浏览器配置目录）把 ChatGPT 会话封装成五个语义化工具：`awehitch_open_chat`、`awehitch_send_state`、`awehitch_send_handoff`、`awehitch_wait_reply`、`awehitch_read_reply`。一个任务一条聊天：新 TASK_ID 自动开新聊天，同一任务的恢复与多轮审查始终复用它绑定的聊天；原聊天丢失时 `awehitch_send_handoff` 从本地检查点自动生成交接简报（绝不包含文件、diff 或日志）。轮询是 20–30 秒的廉价 DOM 检查；超时不等于失败；只用一个标签页；绝不因超时重发。原方案里绑死 Codex 内置浏览器的控制面被彻底解耦——任何 agent 只要"能调工具"就能接入。
 - **数据面** — ChatGPT 通过 9 个只读工具自行拉取文件、diff、搜索结果、测试记录，走 OAuth 2.1 + PKCE + 动态客户端注册的隧道。独立审查：EXECUTED 之后 ChatGPT 亲自看真实 git diff，绝不轻信"测试全过"。
 - **Adapter** — codex（`~/.codex/skills` + `config.toml` MCP + 沙箱 writable_roots）、opencode（`~/.config/opencode` skill + `opencode.json` MCP）、zcode（`~/.zcode/cli/config.json` mcpServers + skill）。每个 adapter 都很薄，互不 import。
 
@@ -97,7 +97,7 @@ awehitch sandbox-allow [--json]              # codex writable_roots（幂等）
 ```bash
 corepack pnpm install
 corepack pnpm build     # -> dist/，暴露 awehitch 命令
-corepack pnpm test      # 188 个测试：路径安全、OAuth、配对、MCP 端到端、adapter
+corepack pnpm test      # 196 个测试：路径安全、OAuth、配对、MCP 端到端、adapter
 ```
 
 文档：[架构](docs/architecture.md) · [协议](docs/protocol.md) · [安全](docs/security.md) · [harness 能力矩阵](docs/harness-matrix.md)

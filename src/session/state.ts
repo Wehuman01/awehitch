@@ -282,3 +282,66 @@ export function clearChatPointer(workspaceId: string): { cleared: boolean; keptP
   fs.rmSync(sessionFile(workspaceId), { force: true });
   return { cleared: true, keptProject: false };
 }
+
+// ---------------------------------------------------------------- HANDOFF
+
+/**
+ * Byte budgets per HANDOFF section. The checkpoint caps (500/800/800/400
+ * chars) can exceed the 2 KB control-message limit once headers and CJK
+ * multi-byte chars are counted, so the composer trims again, by bytes.
+ */
+const HANDOFF_SECTION_BUDGETS = {
+  originalGoal: 400,
+  completedSubtasks: 600,
+  knownIssues: 400,
+  nextExpectedStep: 300,
+} as const;
+
+function fitUtf8(text: string, maxBytes: number): string {
+  const ellipsis = "…";
+  const room = maxBytes - Buffer.byteLength(ellipsis, "utf8");
+  let used = 0;
+  let out = "";
+  for (const ch of text) {
+    const bytes = Buffer.byteLength(ch, "utf8");
+    if (used + bytes > room) return out + ellipsis;
+    out += ch;
+    used += bytes;
+  }
+  return out;
+}
+
+/**
+ * Compose the [C2C] HANDOFF brief for a replacement conversation from the
+ * local checkpoint. A brief, never a dump: only the capped checkpoint fields
+ * (goal, progress, issues, next step) — never files, diffs, or logs. The new
+ * chat re-reads code through MCP.
+ */
+export function buildHandoffMessage(checkpoint: TaskCheckpoint): string {
+  const section = (label: string, body: string) => `${label}\n${body}`;
+  return [
+    "[C2C]",
+    "STATE: HANDOFF",
+    `TASK_ID: ${checkpoint.taskId}`,
+    `ITERATION: ${checkpoint.iteration}`,
+    "",
+    section(
+      "ORIGINAL_GOAL:",
+      fitUtf8(checkpoint.originalGoal?.trim() || "(not recorded)", HANDOFF_SECTION_BUDGETS.originalGoal)
+    ),
+    "",
+    section(
+      "PROGRESS:",
+      fitUtf8(checkpoint.completedSubtasks?.trim() || "(not recorded)", HANDOFF_SECTION_BUDGETS.completedSubtasks)
+    ),
+    "",
+    section("CURRENT_STATE:", `${checkpoint.protocolState} (waiting for ${checkpoint.waitingFor})`),
+    "",
+    section("KNOWN_ISSUES:", fitUtf8(checkpoint.knownIssues?.trim() || "(none)", HANDOFF_SECTION_BUDGETS.knownIssues)),
+    "",
+    section(
+      "NEXT_EXPECTED_STEP:",
+      fitUtf8(checkpoint.nextExpectedStep?.trim() || "(not recorded)", HANDOFF_SECTION_BUDGETS.nextExpectedStep)
+    ),
+  ].join("\n");
+}

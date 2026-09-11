@@ -21,8 +21,8 @@ strategy. Two connections make this work:
    contents, diffs, or logs to ChatGPT.
 2. **Control-plane tools** (local MCP, `awehitch_*`) — you exchange tiny
    structured `[C2C]` state messages with the ChatGPT conversation:
-   `awehitch_open_chat`, `awehitch_send_state`, `awehitch_wait_reply`,
-   `awehitch_read_reply`.
+   `awehitch_open_chat`, `awehitch_send_state`, `awehitch_send_handoff`,
+   `awehitch_wait_reply`, `awehitch_read_reply`.
 
 **Golden rules**
 
@@ -36,8 +36,10 @@ strategy. Two connections make this work:
    - `awehitch_wait_reply` returning `status=generating` or `status=timeout`
      is NOT a failure. Call it again. NEVER resend a message because a wait
      timed out.
-   - Only one conversation per workspace. `awehitch_open_chat` handles URL
-     bookkeeping; never open a second chat tab.
+   - One chat per task, one tab always. `awehitch_open_chat` with `task_id`
+     binds each task to its own conversation and handles URL bookkeeping;
+     never open a second chat tab. A known task reopens its bound chat —
+     never resend the boot prompt, INIT, or EXECUTED there.
 5. If something fails, run `awehitch doctor -w <workspace> --json` and repair
    silently. Only involve the user for logins, CAPTCHA, or 2FA — and then give
    them ONE action at a time.
@@ -60,9 +62,9 @@ strategy. Two connections make this work:
 4. `awehitch login -w <workspace> --json` opens the control-plane browser and
    waits for the ChatGPT login. Tell the user: "请在打开的窗口里登录 ChatGPT，
    完成后告诉我『好了』".
-5. First conversation: `awehitch_open_chat`, then send the boot prompt (below),
-   then the workspace_info check (below). Confirm the reply names the current
-   workspace before continuing.
+5. First conversation: `awehitch_open_chat` (no task yet), then send the boot
+   prompt (below), then the workspace_info check (below). Confirm the reply
+   names the current workspace before continuing.
 6. Report in this shape (no internals):
 
 ```
@@ -124,13 +126,21 @@ Store progress in the session checkpoint via `awehitch session set`.
 1. `awehitch session -w <workspace> --json` → resume from `session.checkpoint`
    before any INIT (details in `awehitch session get --json`). Never re-pair or
    recreate the connector just to resume.
-2. `awehitch_open_chat`. On a NEW conversation send the boot prompt, then:
+2. `awehitch_open_chat` with `task_id={{TASK_ID}}`. A NEW task automatically
+   gets a fresh chat; a task with an existing binding reopens ITS chat —
+   never resend the boot prompt, INIT, or EXECUTED there. On a NEW
+   conversation send the boot prompt, then:
 
 ```
 Use the "{{CONNECTOR_NAME}}" connector: call workspace_info and read hello-style top-level file. Reply with the workspace name.
 ```
 
    Confirm the reply names this workspace.
+   If the task's saved chat is gone (404 / lost) or the user asks for a new
+   chat: `awehitch_open_chat` with `task_id={{TASK_ID}}` and `fresh=true`,
+   send the boot prompt + workspace check, then `awehitch_send_handoff`
+   (composes the HANDOFF brief from the checkpoint). Resume the protocol
+   from the checkpoint state — do not restart the task.
 3. Send INIT via `awehitch_send_state`:
 
 ```

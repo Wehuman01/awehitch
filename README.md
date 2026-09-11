@@ -53,14 +53,14 @@ awehitch login -w /path/to/project        # log in to ChatGPT once in the opened
 ```
 远端大脑（ChatGPT 网页）
       ↕  控制面：[C2C] 状态消息（<1 KB）
-控制面代理（本地，Playwright → 4 个语义化 MCP 工具）
+控制面代理（本地，Playwright → 5 个语义化 MCP 工具）
       ↕  工具调用（stdio MCP）
 本地 Agent（codex / opencode / zcode）
       ↕  数据面：只读 MCP
 awehitch Bridge（本地，工作区只读网关 + OAuth + 隧道）
 ```
 
-- **Control plane** — the agent and ChatGPT exchange tiny structured `[C2C]` messages (`INIT → PLAN → EXECUTED → REVIEW → DONE`). A local **control-plane proxy** wraps the ChatGPT web conversation (Playwright, dedicated profile) into four semantic tools: `awehitch_open_chat`, `awehitch_send_state`, `awehitch_wait_reply`, `awehitch_read_reply`. Cheap DOM polling (20–30 s), timeouts are not failures, one tab, never resend. This decouples the original Codex-only browser control plane from any specific harness — an agent just needs "can call tools".
+- **Control plane** — the agent and ChatGPT exchange tiny structured `[C2C]` messages (`INIT → PLAN → EXECUTED → REVIEW → DONE`). A local **control-plane proxy** wraps the ChatGPT web conversation (Playwright, dedicated profile) into five semantic tools: `awehitch_open_chat`, `awehitch_send_state`, `awehitch_send_handoff`, `awehitch_wait_reply`, `awehitch_read_reply`. One chat per task: a new TASK_ID automatically opens a fresh chat, and resuming the same task (across review iterations and agent restarts) always reuses its bound chat; when the old chat is lost, `awehitch_send_handoff` composes the resume brief from the local checkpoint (never files, diffs, or logs). Cheap DOM polling (20–30 s), timeouts are not failures, one tab, never resend. This decouples the original Codex-only browser control plane from any specific harness — an agent just needs "can call tools".
 - **Data plane** — ChatGPT pulls files, diffs, search results, test records itself through 9 read-only tools over an OAuth 2.1 + PKCE + dynamic-client-registration tunnel. Independent review: after EXECUTED, ChatGPT inspects the real git diff — it never trusts "all tests passed".
 - **Adapters** — codex (`~/.codex/skills` + `config.toml` MCP + sandbox writable_roots), opencode (`~/.config/opencode` skill + `opencode.json` MCP), zcode (`~/.zcode/cli/config.json` mcpServers + skill). Each is thin; none import each other.
 
@@ -97,7 +97,7 @@ All commands support `--json`. Internal: `serve`, `control-plane` (stdio MCP), `
 ```bash
 corepack pnpm install
 corepack pnpm build     # -> dist/, exposes the awehitch bin
-corepack pnpm test      # 188 tests: path security, OAuth, pairing, MCP e2e, adapters
+corepack pnpm test      # 196 tests: path security, OAuth, pairing, MCP e2e, adapters
 ```
 
 Docs: [architecture](docs/architecture.md) · [protocol](docs/protocol.md) · [security](docs/security.md) · [harness capability matrix](docs/harness-matrix.md)

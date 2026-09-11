@@ -4,6 +4,7 @@ import { z } from "zod";
 import path from "node:path";
 import { ControlPlaneBrowser, ControlPlaneError, type ReplyView } from "./browser.js";
 import { readControlPlaneState } from "./state.js";
+import { buildHandoffMessage, readSession } from "../session/state.js";
 import { Logger } from "../logger/index.js";
 import { Workspace } from "../workspace/manager.js";
 import { getStateDir } from "../config/paths.js";
@@ -13,13 +14,14 @@ import { PRODUCT_NAME, VERSION } from "../version.js";
  * The control-plane proxy as a local MCP server (stdio).
  *
  * Any harness that can consume MCP (codex / opencode / zcode, and anything
- * else) gets the ChatGPT conversation as four semantic tools — no raw browser
+ * else) gets the ChatGPT conversation as five semantic tools — no raw browser
  * surface is ever exposed to the model:
  *
- *   awehitch_open_chat    open or take over the ChatGPT conversation
- *   awehitch_send_state   send one [C2C] control message
- *   awehitch_wait_reply   poll for a reply (cheap DOM checks; timeout != failure)
- *   awehitch_read_reply   read the current reply
+ *   awehitch_open_chat      open or take over the chat for a task (one chat per task)
+ *   awehitch_send_state     send one [C2C] control message
+ *   awehitch_send_handoff   send the [C2C] HANDOFF brief from the checkpoint
+ *   awehitch_wait_reply     poll for a reply (cheap DOM checks; timeout != failure)
+ *   awehitch_read_reply     read the current reply
  *
  * Design constraints (from the original Codex skill, kept deliberately):
  * - polling is 20-30s cheap DOM checks, never long waits, never screenshots
@@ -77,17 +79,22 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
     {
       title: "Open ChatGPT conversation",
       description:
-        `Open or take over the ChatGPT conversation bound to this workspace (saved URL, ` +
-        `or a fresh chat). Call this before send/wait. If NOT_LOGGED_IN appears, tell the ` +
-        `user to log in in the opened browser window, then retry. ${UNTRUSTED_NOTE}`,
+        `Open or take over the ChatGPT conversation for a task. Pass task_id: a KNOWN task ` +
+        `reopens its bound chat (never resend boot/INIT there); an UNKNOWN task opens a ` +
+        `FRESH chat. Pass fresh=true to force a replacement chat for a known task (old chat ` +
+        `lost, 404, or the user asked). Without task_id, falls back to the workspace-level ` +
+        `saved chat. Call this before send/wait. If NOT_LOGGED_IN appears, tell the user to ` +
+        `log in in the opened browser window, then retry. ${UNTRUSTED_NOTE}`,
       inputSchema: {
         url: z.string().optional().describe("Optional chatgpt.com conversation URL to bind"),
+        task_id: z.string().optional().describe("Task id whose chat to open (recommended)"),
+        fresh: z.boolean().optional().describe("Force a NEW chat instead of the bound one"),
       },
       annotations: { readOnlyHint: false },
     },
     async (args) => {
       try {
-        const url = await driver.openConversation(args.url);
+        const url = await driver.openConversation(args.url, { taskId: args.task_id, fresh: args.fresh });
         return ok({ ok: true, url });
       } catch (error) {
         return mapError(error);
@@ -119,6 +126,43 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
       try {
         const result = await driver.sendMessage(message);
         return ok({ ok: true, sent: result.sent, url: result.url });
+      } catch (error) {
+        return mapError(error);
+      }
+    }
+  );
+
+  server.registerTool(
+    "awehitch_send_handoff",
+    {
+      title: "Send [C2C] HANDOFF from checkpoint",
+      description:
+        `Compose the [C2C] HANDOFF brief from the local session checkpoint (goal, progress, ` +
+        `state, issues, next step — never files, diffs, or logs) and send it to the CURRENTLY ` +
+        `OPEN chat. Use right after the boot prompt on a replacement chat for an EXISTING ` +
+        `task (old chat lost / 404 / user asked for a new one). NEVER send HANDOFF for a new ` +
+        `task. Fails with NO_CHECKPOINT when there is nothing to resume. ${UNTRUSTED_NOTE}`,
+      inputSchema: {},
+      annotations: { readOnlyHint: false },
+    },
+    async () => {
+      const checkpoint = readSession(workspaceId)?.checkpoint;
+      if (!checkpoint) {
+        return fail(
+          "NO_CHECKPOINT",
+          "No session checkpoint for this workspace — nothing to hand off."
+        );
+      }
+      const message = buildHandoffMessage(checkpoint);
+      try {
+        const result = await driver.sendMessage(message);
+        return ok({
+          ok: true,
+          sent: result.sent,
+          taskId: checkpoint.taskId,
+          url: result.url,
+          message,
+        });
       } catch (error) {
         return mapError(error);
       }
@@ -179,14 +223,20 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
     "awehitch_chat_info",
     {
       title: "Chat binding info",
-      description: `Show which ChatGPT conversation URL is bound to this workspace. ${UNTRUSTED_NOTE}`,
-      inputSchema: {},
+      description:
+        `Show which ChatGPT conversation URL is bound to this workspace, and optionally the ` +
+        `chat bound to a specific task. ${UNTRUSTED_NOTE}`,
+      inputSchema: {
+        task_id: z.string().optional().describe("Task id whose bound chat to look up"),
+      },
       annotations: { readOnlyHint: true },
     },
-    async () => {
+    async (args) => {
       const saved = readControlPlaneState(workspaceId);
+      const taskId = args.task_id?.trim();
       return ok({
         chatUrl: saved?.chatUrl ?? null,
+        taskChatUrl: taskId ? saved?.taskChats?.[taskId] ?? null : null,
         projectUrl: saved?.projectUrl ?? null,
       });
     }

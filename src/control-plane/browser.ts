@@ -4,8 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import {
   browserProfileDir,
-  readControlPlaneState,
-  writeControlPlaneState,
+  resolveChatTarget,
+  applyChatBinding,
   normalizeChatUrl,
 } from "./state.js";
 import { ensureDir, getStateDir } from "../config/paths.js";
@@ -76,6 +76,8 @@ export class ControlPlaneError extends Error {
 export class ControlPlaneBrowser {
   private context: BrowserContext | null = null;
   private page: Page | null = null;
+  /** Task whose conversation is currently open; bindings apply to it. */
+  private activeTaskId: string | null = null;
   private readonly logger: Logger;
 
   constructor(
@@ -137,17 +139,37 @@ export class ControlPlaneBrowser {
   }
 
   /**
-   * Open (or take over) the ChatGPT conversation for this workspace.
-   * Uses the saved chat URL; falls back to a fresh chat on the home page.
-   * Returns the conversation URL actually used.
+   * Open (or take over) the ChatGPT conversation for a task.
+   *
+   * Resolution: an explicit URL wins; otherwise a known task_id reopens its
+   * bound chat, an unknown task_id (or fresh=true) starts a NEW chat on the
+   * home page, and no task_id falls back to the workspace-level saved chat.
+   * Returns the conversation URL actually used. One chat per task; the same
+   * task must always reuse its chat so review context survives.
    */
-  async openConversation(chatUrl?: string): Promise<string> {
+  async openConversation(
+    chatUrl?: string,
+    opts: { taskId?: string; fresh?: boolean } = {}
+  ): Promise<string> {
     const page = await this.ensurePage();
-    const saved = readControlPlaneState(this.workspaceId);
-    const target = normalizeChatUrl(chatUrl ?? saved?.chatUrl ?? CHATGPT_HOME);
-    if (!target) throw new ControlPlaneError("INVALID_URL", `Not a ChatGPT URL: ${chatUrl}`);
+    const taskId = opts.taskId?.trim() || null;
+    this.activeTaskId = taskId;
 
-    if (page.url() === target || (target === CHATGPT_HOME && page.url().startsWith(CHATGPT_HOME))) {
+    let target: string | null = null;
+    if (chatUrl) {
+      target = normalizeChatUrl(chatUrl);
+      if (!target) throw new ControlPlaneError("INVALID_URL", `Not a ChatGPT URL: ${chatUrl}`);
+    } else {
+      const bound = resolveChatTarget(this.workspaceId, {
+        taskId: taskId ?? undefined,
+        fresh: opts.fresh,
+      });
+      target = bound ? normalizeChatUrl(bound) : null;
+    }
+    if (!target) target = CHATGPT_HOME;
+
+    const onHome = /^[a-z]+:\/\/(?:www\.)?chatgpt\.com\/?$/.test(page.url());
+    if (page.url() === target || (target === CHATGPT_HOME && onHome)) {
       // Already there — do not goto the URL we are on.
     } else {
       await page.goto(target, { waitUntil: "domcontentloaded", timeout: 45_000 });
@@ -163,10 +185,15 @@ export class ControlPlaneBrowser {
       );
     }
     const url = page.url().startsWith(CHATGPT_HOME) ? page.url() : target;
-    if (saved?.chatUrl !== url) {
-      writeControlPlaneState(this.workspaceId, { ...saved, chatUrl: url, savedAt: new Date().toISOString() });
-    }
+    this.bindConversationUrl(url);
     return url;
+  }
+
+  /** Persist the conversation binding for the active task (no-op on home). */
+  private bindConversationUrl(rawUrl: string): void {
+    const url = normalizeChatUrl(rawUrl);
+    if (!url) return;
+    applyChatBinding(this.workspaceId, url, this.activeTaskId);
   }
 
   /** The composer is contenteditable in current ChatGPT; fill + submit. */
@@ -190,6 +217,12 @@ export class ControlPlaneBrowser {
     await composer.fill("");
     await composer.type(text, { delay: 10 });
     await page.keyboard.press("Enter");
+
+    // A brand-new chat only gets its permanent /c/<id> URL after the first
+    // message lands. Capture it once so the task binding survives restarts;
+    // on a wait timeout the next open/bind picks it up instead.
+    await page.waitForURL(/chatgpt\.com\/c\//, { timeout: 10_000 }).catch(() => undefined);
+    this.bindConversationUrl(page.url());
 
     // Cheap confirmation: the composer empties and the message appears in the log.
     const sent = await composer

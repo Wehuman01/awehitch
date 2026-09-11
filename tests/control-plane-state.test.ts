@@ -2,13 +2,16 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import {
+  applyChatBinding,
   browserProfileDir,
   controlPlaneStateFile,
   mergeControlPlaneState,
   normalizeChatUrl,
   readControlPlaneState,
+  resolveChatTarget,
   writeControlPlaneState,
 } from "../src/control-plane/state.js";
+import { writeSession } from "../src/session/state.js";
 import { cleanup, makeTmpDir } from "./helpers.js";
 
 let stateDir: string;
@@ -78,5 +81,51 @@ describe("normalizeChatUrl", () => {
     expect(normalizeChatUrl("https://evil.example.com/c/abc")).toBeNull();
     expect(normalizeChatUrl("not a url")).toBeNull();
     expect(normalizeChatUrl("")).toBeNull();
+  });
+});
+
+describe("task chat bindings", () => {
+  it("resolves bound task chats and falls back to legacy sessions", () => {
+    // Unknown task with no state → new chat.
+    expect(resolveChatTarget("ws-task", { taskId: "t1" })).toBeNull();
+
+    // Legacy session: the checkpoint's task may claim the workspace chat.
+    writeSession("ws-task", {
+      url: "https://chatgpt.com/c/legacy",
+      savedAt: "2026-01-01T00:00:00.000Z",
+      checkpoint: {
+        taskId: "t1",
+        iteration: 2,
+        protocolState: "EXECUTING",
+        waitingFor: "none",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    });
+    expect(resolveChatTarget("ws-task", { taskId: "t1" })).toBe("https://chatgpt.com/c/legacy");
+    // A different task never claims the legacy chat.
+    expect(resolveChatTarget("ws-task", { taskId: "t2" })).toBeNull();
+
+    // An explicit binding wins over the legacy fallback.
+    applyChatBinding("ws-task", "https://chatgpt.com/c/new", "t1");
+    expect(resolveChatTarget("ws-task", { taskId: "t1" })).toBe("https://chatgpt.com/c/new");
+    // fresh forces a replacement chat even when a binding exists.
+    expect(resolveChatTarget("ws-task", { taskId: "t1", fresh: true })).toBeNull();
+  });
+
+  it("binds per task, mirrors to the workspace chat, and ignores the home page", () => {
+    applyChatBinding("ws-mirror", "https://chatgpt.com/c/one", "t1");
+    applyChatBinding("ws-mirror", "https://chatgpt.com/c/two", "t2");
+    const saved = readControlPlaneState("ws-mirror");
+    expect(saved?.taskChats).toEqual({
+      t1: "https://chatgpt.com/c/one",
+      t2: "https://chatgpt.com/c/two",
+    });
+    // chatUrl mirrors the last used conversation, for task-less callers.
+    expect(saved?.chatUrl).toBe("https://chatgpt.com/c/two");
+    expect(resolveChatTarget("ws-mirror")).toBe("https://chatgpt.com/c/two");
+
+    // The home page has no conversation id yet — nothing to bind.
+    expect(applyChatBinding("ws-mirror", "https://chatgpt.com/", "t3")).toBeNull();
+    expect(readControlPlaneState("ws-mirror")?.taskChats?.t3).toBeUndefined();
   });
 });

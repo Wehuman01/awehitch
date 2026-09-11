@@ -43,10 +43,14 @@
   now use the whole loop — the bar drops from "has a built-in browser" to
   "can call MCP tools".
 - **Semantic tools, not a raw browser.** The model never drives the browser
-  directly. It gets exactly four tools (`awehitch_open_chat`,
-  `awehitch_send_state`, `awehitch_wait_reply`, `awehitch_read_reply`) plus a
-  read-only `awehitch_chat_info`. Hard-wired rules from the original skill:
-  cheap DOM polling every 20–30 s, timeout ≠ failure, one tab, never resend.
+  directly. It gets exactly five tools (`awehitch_open_chat`,
+  `awehitch_send_state`, `awehitch_send_handoff`, `awehitch_wait_reply`,
+  `awehitch_read_reply`) plus a read-only `awehitch_chat_info`. Hard-wired
+  rules from the original skill: cheap DOM polling every 20–30 s, timeout ≠
+  failure, one tab, never resend. One chat per task: `open_chat` with a
+  `task_id` binds a fresh chat to a new task and reopens the bound chat on
+  resume; a replacement chat gets an automatic HANDOFF composed from the
+  session checkpoint.
 - **MCP = data plane**: ChatGPT pulls files/diffs/search results itself.
 - **Read-only by design**: no write/exec tools exist at all.
 - **Workspace is the security boundary**: one bridge = one workspace = one
@@ -58,7 +62,7 @@
 | --- | --- |
 | `bridge/` | Express app assembly, loopback-only listener, port fallback, runtime state, admin API |
 | `mcp/` | Data-plane McpServer with 9 read-only tools; stateless Streamable HTTP transport |
-| `control-plane/` | **New.** Playwright driver over the ChatGPT conversation + stdio MCP server exposing the 4 semantic tools; per-workspace browser profile and chat binding |
+| `control-plane/` | **New.** Playwright driver over the ChatGPT conversation + stdio MCP server exposing the 5 semantic tools; per-workspace browser profile, per-task chat bindings |
 | `auth/` | OAuth 2.1 authorization server: discovery metadata (RFC 8414 + Protected Resource Metadata), dynamic client registration (RFC 7591), authorization-code + PKCE (S256 only), refresh rotation, revocation (RFC 7009). Opaque tokens stored as SHA-256 hashes |
 | `pairing/` | PairingCode lifecycle: CSPRNG generation, TTL, attempt limits, IP rate limit, one-time use |
 | `workspace/` | Canonical-path containment, sensitive-file policy, `.c2cignore`, paginated read/list, ripgrep search with Node fallback, git status/diff with pagination |
@@ -66,7 +70,7 @@
 | `tunnel/` | `TunnelProvider` interface + Cloudflare Quick and workspace-configured Named Tunnel implementations |
 | `execution/` | JSONL execution records plus optional sanitized command output (`execution_output`) |
 | `process/` | Daemon spawn/reuse, health probing, graceful shutdown |
-| `session/` | ChatGPT conversation + Project binding + resume checkpoints |
+| `session/` | Resume checkpoints + HANDOFF composition (legacy long-chat/project fields stay readable) |
 | `cli/` | `awehitch` commands; `--json` everywhere for the skills |
 | `config/`, `logger/` | OS-convention state dir, secret-redacting logger |
 

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  buildHandoffMessage,
   clearChatPointer,
   mergeSession,
   normalizeProjectUrl,
@@ -7,6 +8,7 @@ import {
   readSession,
   resolveConversation,
   writeSession,
+  type TaskCheckpoint,
 } from "../src/session/state.js";
 import { cleanup, makeTmpDir } from "./helpers.js";
 
@@ -229,5 +231,57 @@ describe("clearChatPointer", () => {
     });
     expect(clearChatPointer("def456def456")).toEqual({ cleared: true, keptProject: false });
     expect(readSession("def456def456")).toBeNull();
+  });
+});
+
+describe("buildHandoffMessage", () => {
+  const checkpoint: TaskCheckpoint = {
+    taskId: "c2c_f81a",
+    iteration: 4,
+    protocolState: "EXECUTED_SENT",
+    waitingFor: "GPT_REVIEW",
+    originalGoal: "Implement dark mode.",
+    completedSubtasks: "- Iter 1-2: theme context + toggle\n- Iter 3: persistence",
+    knownIssues: "Flash-on-load fix needs verification.",
+    nextExpectedStep: "Review iteration 4 via git_diff, reply PLAN or DONE.",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+
+  it("renders the [C2C] HANDOFF brief with headers and sections", () => {
+    const message = buildHandoffMessage(checkpoint);
+    expect(message.startsWith("[C2C]\nSTATE: HANDOFF")).toBe(true);
+    expect(message).toContain("TASK_ID: c2c_f81a");
+    expect(message).toContain("ITERATION: 4");
+    expect(message).toContain("ORIGINAL_GOAL:\nImplement dark mode.");
+    expect(message).toContain("PROGRESS:\n- Iter 1-2: theme context + toggle");
+    expect(message).toContain("CURRENT_STATE:\nEXECUTED_SENT (waiting for GPT_REVIEW)");
+    expect(message).toContain("KNOWN_ISSUES:\nFlash-on-load fix needs verification.");
+    expect(message).toContain("NEXT_EXPECTED_STEP:\nReview iteration 4 via git_diff");
+  });
+
+  it("states missing fields honestly instead of inventing history", () => {
+    const message = buildHandoffMessage({
+      taskId: "c2c_0000",
+      iteration: 0,
+      protocolState: "INIT",
+      waitingFor: "GPT_PLAN",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    expect(message).toContain("ORIGINAL_GOAL:\n(not recorded)");
+    expect(message).toContain("PROGRESS:\n(not recorded)");
+    expect(message).toContain("KNOWN_ISSUES:\n(none)");
+    expect(message).toContain("NEXT_EXPECTED_STEP:\n(not recorded)");
+  });
+
+  it("stays under the 2 KB control-message limit even with capped CJK fields", () => {
+    const message = buildHandoffMessage({
+      ...checkpoint,
+      originalGoal: "暗".repeat(500),
+      completedSubtasks: "进".repeat(800),
+      knownIssues: "问".repeat(800),
+      nextExpectedStep: "步".repeat(400),
+    });
+    expect(Buffer.byteLength(message, "utf8")).toBeLessThanOrEqual(2048);
+    expect(message).toContain("…");
   });
 });

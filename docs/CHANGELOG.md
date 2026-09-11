@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+Task-scoped ChatGPT conversations with automatic HANDOFF.
+
+- **One chat per task**: `awehitch_open_chat` takes a `task_id`. A new task
+  opens a fresh chat and binds it; resuming the same task (review iterations,
+  agent restarts) always reopens that bound chat. `fresh=true` forces a
+  replacement chat when the old one is lost or the user asks. Bindings live
+  in control-plane state (`taskChats`); legacy workspace-level sessions are
+  still honored for the checkpoint's task.
+- **Automatic HANDOFF**: new tool `awehitch_send_handoff` composes the
+  `[C2C] STATE: HANDOFF` brief from the session checkpoint (goal, progress,
+  state, issues, next step — byte-budgeted, never files/diffs/logs) and
+  sends it to the currently open replacement chat. Fails with
+  `NO_CHECKPOINT` when there is nothing to resume.
+- `awehitch_chat_info` accepts `task_id` to look up a task's bound chat.
+- Docs/skill updated to the task-scoped model; legacy long-chat/project
+  fields remain readable but are no longer part of the flow.
+
 ## v0.1.0
 
 Initial release: awehitch — hitch the ChatGPT web brain to any coding agent
