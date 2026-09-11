@@ -62,10 +62,10 @@ describe("control-plane state", () => {
     expect(readControlPlaneState("ws-b")?.chatUrl).toBe("https://chatgpt.com/c/b");
   });
 
-  it("gives each workspace its own browser profile directory", () => {
-    const a = browserProfileDir("ws-a");
-    const b = browserProfileDir("ws-b");
-    expect(a).not.toBe(b);
+  it("shares one browser profile across workspaces (one login per machine)", () => {
+    const a = browserProfileDir();
+    const b = browserProfileDir();
+    expect(a).toBe(b);
     expect(a).toContain(path.join(stateDir, "control-plane", "browser-profile"));
   });
 });

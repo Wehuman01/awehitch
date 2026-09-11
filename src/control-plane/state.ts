@@ -52,11 +52,15 @@ export function mergeControlPlaneState(
 
 /**
  * Persistent browser profile for the control plane. A dedicated profile keeps
- * the ChatGPT login isolated from the user's daily Chrome profile and lets
- * the proxy relaunch headless between sessions.
+ * the ChatGPT login isolated from the user's daily Chrome profile.
+ *
+ * The profile is SHARED by every workspace on the machine: one ChatGPT login
+ * instead of one per project. Only one process may hold it at a time (see
+ * `control-plane/browser-lock.ts`); sessions release the browser after a few
+ * idle minutes so a parked workspace never blocks another.
  */
-export function browserProfileDir(workspaceId: string): string {
-  return path.join(getStateDir(), "control-plane", "browser-profile", workspaceId);
+export function browserProfileDir(): string {
+  return path.join(getStateDir(), "control-plane", "browser-profile", "shared");
 }
 
 export function normalizeChatUrl(url: string): string | null {

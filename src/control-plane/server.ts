@@ -61,13 +61,45 @@ export interface ControlPlaneServerOptions {
   driver?: ControlPlaneBrowser;
   /** Test seam: workspace id override. */
   workspaceId?: string;
+  /** Test seam: how long the browser may sit idle before it is closed. */
+  idleCloseMs?: number;
 }
+
+/** Idle period after which a session frees the shared browser (and its lock). */
+const DEFAULT_IDLE_CLOSE_MS = 3 * 60_000;
 
 export async function createControlPlaneServer(opts: ControlPlaneServerOptions): Promise<McpServer> {
   const logger = opts.logger ?? new Logger({ name: "control-plane", console: false });
   const workspace = new Workspace(opts.workspaceRoot);
   const workspaceId = opts.workspaceId ?? workspace.id;
   const driver = opts.driver ?? new ControlPlaneBrowser(workspaceId, {}, logger);
+
+  // The control-plane browser is a machine-global resource (one profile, one
+  // ChatGPT login). A session must not hold it while the harness is quietly
+  // coding, so the browser is closed after a few idle minutes — it relaunches
+  // on the next tool call and reopens the bound conversation.
+  const idleCloseMs = opts.idleCloseMs ?? DEFAULT_IDLE_CLOSE_MS;
+  let inFlight = 0;
+  let idleTimer: NodeJS.Timeout | null = null;
+  const armIdleClose = (): void => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      idleTimer = null;
+      if (inFlight === 0) void driver.close().catch(() => undefined);
+    }, idleCloseMs);
+    idleTimer.unref();
+  };
+  const run = <T>(fn: () => Promise<T>): Promise<T> => {
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+    inFlight++;
+    return fn().finally(() => {
+      inFlight--;
+      armIdleClose();
+    });
+  };
 
   const server = new McpServer(
     { name: `${PRODUCT_NAME}-control-plane`, version: VERSION },
@@ -92,14 +124,15 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
       },
       annotations: { readOnlyHint: false },
     },
-    async (args) => {
-      try {
-        const url = await driver.openConversation(args.url, { taskId: args.task_id, fresh: args.fresh });
-        return ok({ ok: true, url });
-      } catch (error) {
-        return mapError(error);
-      }
-    }
+    async (args) =>
+      run(async () => {
+        try {
+          const url = await driver.openConversation(args.url, { taskId: args.task_id, fresh: args.fresh });
+          return ok({ ok: true, url });
+        } catch (error) {
+          return mapError(error);
+        }
+      })
   );
 
   server.registerTool(
@@ -115,21 +148,22 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
       },
       annotations: { readOnlyHint: false },
     },
-    async (args) => {
-      const message = args.message.trim();
-      if (!message.startsWith("[C2C]")) {
-        return fail("INVALID_MESSAGE", "Control messages must start with [C2C].");
-      }
-      if (Buffer.byteLength(message, "utf8") > 1024) {
-        return fail("INVALID_MESSAGE", "Keep control messages under 1 KB.");
-      }
-      try {
-        const result = await driver.sendMessage(message);
-        return ok({ ok: true, sent: result.sent, url: result.url });
-      } catch (error) {
-        return mapError(error);
-      }
-    }
+    async (args) =>
+      run(async () => {
+        const message = args.message.trim();
+        if (!message.startsWith("[C2C]")) {
+          return fail("INVALID_MESSAGE", "Control messages must start with [C2C].");
+        }
+        if (Buffer.byteLength(message, "utf8") > 1024) {
+          return fail("INVALID_MESSAGE", "Keep control messages under 1 KB.");
+        }
+        try {
+          const result = await driver.sendMessage(message);
+          return ok({ ok: true, sent: result.sent, url: result.url });
+        } catch (error) {
+          return mapError(error);
+        }
+      })
   );
 
   server.registerTool(
@@ -145,28 +179,29 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
       inputSchema: {},
       annotations: { readOnlyHint: false },
     },
-    async () => {
-      const checkpoint = readSession(workspaceId)?.checkpoint;
-      if (!checkpoint) {
-        return fail(
-          "NO_CHECKPOINT",
-          "No session checkpoint for this workspace — nothing to hand off."
-        );
-      }
-      const message = buildHandoffMessage(checkpoint);
-      try {
-        const result = await driver.sendMessage(message);
-        return ok({
-          ok: true,
-          sent: result.sent,
-          taskId: checkpoint.taskId,
-          url: result.url,
-          message,
-        });
-      } catch (error) {
-        return mapError(error);
-      }
-    }
+    async () =>
+      run(async () => {
+        const checkpoint = readSession(workspaceId)?.checkpoint;
+        if (!checkpoint) {
+          return fail(
+            "NO_CHECKPOINT",
+            "No session checkpoint for this workspace — nothing to hand off."
+          );
+        }
+        const message = buildHandoffMessage(checkpoint);
+        try {
+          const result = await driver.sendMessage(message);
+          return ok({
+            ok: true,
+            sent: result.sent,
+            taskId: checkpoint.taskId,
+            url: result.url,
+            message,
+          });
+        } catch (error) {
+          return mapError(error);
+        }
+      })
   );
 
   server.registerTool(
@@ -186,17 +221,18 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
       },
       annotations: { readOnlyHint: true },
     },
-    async (args) => {
-      try {
-        const reply = await driver.waitReply({
-          timeoutMs: args.timeout_seconds * 1000,
-          expectState: args.expect_state,
-        });
-        return ok(reply);
-      } catch (error) {
-        return mapError(error);
-      }
-    }
+    async (args) =>
+      run(async () => {
+        try {
+          const reply = await driver.waitReply({
+            timeoutMs: args.timeout_seconds * 1000,
+            expectState: args.expect_state,
+          });
+          return ok(reply);
+        } catch (error) {
+          return mapError(error);
+        }
+      })
   );
 
   server.registerTool(
@@ -209,14 +245,15 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },
-    async () => {
-      try {
-        const reply = await driver.readReply();
-        return ok(reply);
-      } catch (error) {
-        return mapError(error);
-      }
-    }
+    async () =>
+      run(async () => {
+        try {
+          const reply = await driver.readReply();
+          return ok(reply);
+        } catch (error) {
+          return mapError(error);
+        }
+      })
   );
 
   // Convenience: the saved conversation state, so the harness skill can show
@@ -233,15 +270,16 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
       },
       annotations: { readOnlyHint: true },
     },
-    async (args) => {
-      const saved = readControlPlaneState(workspaceId);
-      const taskId = args.task_id?.trim();
-      return ok({
-        chatUrl: saved?.chatUrl ?? null,
-        taskChatUrl: taskId ? saved?.taskChats?.[taskId] ?? null : null,
-        projectUrl: saved?.projectUrl ?? null,
-      });
-    }
+    async (args) =>
+      run(async () => {
+        const saved = readControlPlaneState(workspaceId);
+        const taskId = args.task_id?.trim();
+        return ok({
+          chatUrl: saved?.chatUrl ?? null,
+          taskChatUrl: taskId ? saved?.taskChats?.[taskId] ?? null : null,
+          projectUrl: saved?.projectUrl ?? null,
+        });
+      })
   );
 
   return server;

@@ -10,6 +10,7 @@ import {
 } from "./state.js";
 import { typeMultiline, normalizeForCompare, lastUserText } from "./composer.js";
 import { loadSiteSelectors, type SiteSelectors } from "./selectors.js";
+import { acquireBrowserLock, type BrowserLock } from "./browser-lock.js";
 import { ensureDir, getStateDir } from "../config/paths.js";
 import { Logger, nullLogger } from "../logger/index.js";
 
@@ -100,9 +101,70 @@ export class ControlPlaneError extends Error {
   }
 }
 
+/**
+ * The control-plane browser is machine-global: one Chromium on one shared
+ * profile (one ChatGPT login for every workspace), guarded by a cross-process
+ * lock while it runs. Every `ControlPlaneBrowser` instance drives its OWN tab
+ * inside that context, so workspaces sharing a process never fight over
+ * `goto`. Per-instance rule 1 below still applies to each tab.
+ */
+interface SharedBrowser {
+  context: BrowserContext;
+  lock: BrowserLock;
+  /** Instances currently driving a tab in this context. */
+  refs: number;
+  /** Chromium opens one blank tab at launch; the first instance claims it. */
+  initialPageClaimed: boolean;
+}
+
+let shared: SharedBrowser | null = null;
+
+async function launchSharedContext(workspaceId: string): Promise<SharedBrowser> {
+  const acquired = acquireBrowserLock(workspaceId);
+  if ("heldBy" in acquired) {
+    throw new ControlPlaneError(
+      "BROWSER_LAUNCH_FAILED",
+      `ChatGPT 控制面浏览器正被另一个进程使用（pid ${acquired.heldBy.pid}，workspace ${acquired.heldBy.workspaceId}）。` +
+        "闲置的会话几分钟后会自动释放浏览器；也可以停掉那个会话后重试。"
+    );
+  }
+  const profile = browserProfileDir();
+  fs.mkdirSync(profile, { recursive: true });
+  const launchOptions = {
+    headless: false,
+    args: ["--disable-blink-features=AutomationControlled"],
+  };
+  let context: BrowserContext;
+  try {
+    // Prefer the system Chrome binary (no extra download). The profile is a
+    // dedicated directory — the user's daily Chrome login state is NOT reused.
+    context = await chromium.launchPersistentContext(profile, {
+      ...launchOptions,
+      channel: "chrome",
+    });
+  } catch (firstError) {
+    try {
+      context = await chromium.launchPersistentContext(profile, launchOptions);
+    } catch {
+      // Never leave the lock held by a failed launch.
+      acquired.lock.release();
+      throw firstError;
+    }
+  }
+  const s: SharedBrowser = { context, lock: acquired.lock, refs: 0, initialPageClaimed: false };
+  // The user can close the window, or Chrome can crash: drop the shared
+  // handle and free the profile lock so the next driver call relaunches.
+  s.context.once("close", () => {
+    if (shared === s) shared = null;
+    s.lock.release();
+  });
+  return s;
+}
+
 export class ControlPlaneBrowser {
-  private context: BrowserContext | null = null;
   private page: Page | null = null;
+  /** The shared browser this instance currently holds a tab ref on. */
+  private sharedRef: SharedBrowser | null = null;
   /** Task whose conversation is currently open; bindings apply to it. */
   private activeTaskId: string | null = null;
   private replyAnchor: ReplyAnchor | null = null;
@@ -119,39 +181,63 @@ export class ControlPlaneBrowser {
     this.site = loadSiteSelectors().site;
   }
 
-  /** Lazy-launch a dedicated-profile Chromium. Uses system Chrome when present. */
+  /** Lazy-launch (or attach a tab to) the shared Chromium. */
   private async ensurePage(): Promise<Page> {
     if (this.page && this.page.isClosed()) {
       this.page = null;
-      this.context = null;
+      this.dropSharedRef();
     }
     if (this.page) return this.page;
 
-    const profile = browserProfileDir(this.workspaceId);
-    fs.mkdirSync(profile, { recursive: true });
-    const launchOptions = {
-      headless: false,
-      args: ["--disable-blink-features=AutomationControlled"],
-    };
-    try {
-      // Prefer the system Chrome binary (no extra download). The profile is a
-      // dedicated directory — the user's daily Chrome login state is NOT reused.
-      this.context = await chromium.launchPersistentContext(profile, {
-        ...launchOptions,
-        channel: "chrome",
-      });
-    } catch {
-      this.context = await chromium.launchPersistentContext(profile, launchOptions);
+    // One relaunch allowed per call: a context may die under us (the user
+    // closed the window, Chrome crashed); anything beyond that is a real
+    // failure and must surface.
+    for (let attempt = 0; ; attempt++) {
+      if (!shared) shared = await launchSharedContext(this.workspaceId);
+      const s = shared;
+      try {
+        const initial = s.context.pages()[0];
+        if (initial && !initial.isClosed() && !s.initialPageClaimed) {
+          // Chromium opens one blank tab at launch; the first instance uses
+          // it so no empty tab lingers in the window.
+          s.initialPageClaimed = true;
+          s.refs++;
+          this.sharedRef = s;
+          this.page = initial;
+          return initial;
+        }
+        const page = await s.context.newPage();
+        s.refs++;
+        this.sharedRef = s;
+        this.page = page;
+        return page;
+      } catch (error) {
+        if (attempt > 0 || !s.context.isClosed()) throw error;
+        // The context died before/while we used it. Its 'close' listener
+        // clears `shared` and the lock; do it here too in case the event has
+        // not been delivered yet. Both are idempotent.
+        if (shared === s) shared = null;
+        s.lock.release();
+      }
     }
-    const pages = this.context.pages();
-    this.page = pages[0] ?? (await this.context.newPage());
-    return this.page;
+  }
+
+  /** One fewer live tab; the last one out closes the browser and the lock. */
+  private dropSharedRef(): void {
+    const s = this.sharedRef;
+    this.sharedRef = null;
+    if (!s) return;
+    if (--s.refs > 0) return;
+    if (shared === s) shared = null;
+    void s.context.close().catch(() => undefined);
+    s.lock.release();
   }
 
   async close(): Promise<void> {
-    await this.context?.close().catch(() => undefined);
+    const page = this.page;
     this.page = null;
-    this.context = null;
+    await page?.close().catch(() => undefined);
+    this.dropSharedRef();
   }
 
   /** Current page handle (for diagnostics and login helpers). */
