@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.1.1
+
+Task-scoped ChatGPT conversations with automatic HANDOFF.
 
 Task-scoped ChatGPT conversations with automatic HANDOFF.
 
