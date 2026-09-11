@@ -44,9 +44,12 @@ Or run the CLI yourself:
 ```bash
 awehitch setup -w /path/to/project --harness codex --json
 awehitch login -w /path/to/project        # log in to ChatGPT once in the opened window
+awehitch connector-setup -w /path/to/project  # create the ChatGPT connector
 ```
 
-`setup --harness` wires everything: the bridge, the secure tunnel, a pairing code, and the adapter for that harness (MCP registration + skill installation + sandbox tweaks). Then use your agent normally: "用 ChatGPT 帮我规划 XXX".
+`setup --harness` wires everything: the bridge, the secure tunnel, a pairing code, and the adapter for that harness (MCP registration + skill installation + sandbox tweaks). `connector-setup` then creates or repairs the ChatGPT connector in the same control-plane browser — you do not have to copy an address or a pairing code by hand. Then use your agent normally: "用 ChatGPT 帮我规划 XXX".
+
+Only one step can need you: logging in to ChatGPT.
 
 ## How it works
 
@@ -85,6 +88,7 @@ awehitch start | stop | restart -w <workspace>
 awehitch status -w <workspace> [--json]
 awehitch doctor -w <workspace> [--json]      # diagnose + auto-repair
 awehitch login -w <workspace> [--json]       # control-plane ChatGPT login
+awehitch connector-setup -w <workspace> [--dry-run] [--json]  # create/repair the ChatGPT connector
 awehitch pair | unpair -w <workspace>        # pairing codes / revoke all tokens
 awehitch session get|set|clear -w <workspace> # conversation + checkpoint state
 awehitch sandbox-allow [--json]              # codex writable_roots (idempotent)
@@ -97,14 +101,14 @@ All commands support `--json`. Internal: `serve`, `control-plane` (stdio MCP), `
 ```bash
 corepack pnpm install
 corepack pnpm build     # -> dist/, exposes the awehitch bin
-corepack pnpm test      # 210 tests: path security, OAuth, pairing, MCP e2e, adapters
+corepack pnpm test      # 225 tests: path security, OAuth, pairing, MCP e2e, adapters, connector setup
 ```
 
-Docs: [architecture](docs/architecture.md) · [protocol](docs/protocol.md) · [security](docs/security.md) · [harness capability matrix](docs/harness-matrix.md)
+Docs: [architecture](docs/architecture.md) · [protocol](docs/protocol.md) · [security](docs/security.md) · [connector setup](docs/connector-setup.md) · [harness capability matrix](docs/harness-matrix.md)
 
 ## Status & disclaimer
 
-Alpha. The control plane depends on the current ChatGPT DOM; when it changes, `awehitch_wait_reply` fails honestly with `CHATGPT_DOM_CHANGED` — run `awehitch doctor --control-plane` to pinpoint the broken selector, or fix it via a selector override file in the state dir. Not affiliated with or endorsed by OpenAI.
+Alpha. The control plane depends on the current ChatGPT DOM; when it changes, `awehitch_wait_reply` fails honestly with `CHATGPT_DOM_CHANGED` — run `awehitch doctor --control-plane` to pinpoint the broken selector, or fix it via a selector override file in the state dir. The connector pages use the same pack: `awehitch connector-setup --dry-run` reports which connector selectors resolved, and anything missing degrades to a guided manual setup rather than a failure. Not affiliated with or endorsed by OpenAI.
 
 Data plane adapted from [codex-with-chatgpt](https://github.com/mugpeng/codex-with-chatgpt) (forked from [XiaoDuoYa/codex-with-chatgpt](https://github.com/XiaoDuoYa/codex-with-chatgpt)) — MIT.
 

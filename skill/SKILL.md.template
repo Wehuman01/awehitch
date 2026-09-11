@@ -55,13 +55,28 @@ strategy. Two connections make this work:
    (macOS: Homebrew; Windows: winget). Also ensure `cloudflared` exists.
 2. `awehitch setup -w <workspace> --json`
    → returns `{ mcpUrl, pairingCode, workspaceName, connectorName, ... }`.
-3. The ChatGPT connector must be configured once in the browser (OAuth +
-   pairing code). `awehitch setup` prints exact steps; guide the user through
-   them ONE action at a time, or automate if this harness controls a browser.
-   Never open third-party pages; only `chatgpt.com`.
-4. `awehitch login -w <workspace> --json` opens the control-plane browser and
-   waits for the ChatGPT login. Tell the user: "请在打开的窗口里登录 ChatGPT，
-   完成后告诉我『好了』".
+3. `awehitch login -w <workspace> --json` opens the control-plane browser and
+   waits for the ChatGPT login. Only involve the user if a login wall appears —
+   then ONE action: "请在打开的窗口里登录 ChatGPT，完成后告诉我『好了』".
+4. `awehitch connector-setup -w <workspace> --json` — **run it, do not talk the
+   user through the ChatGPT settings.** It opens the same control-plane
+   browser and fills in the Security / plugins / connector pages itself.
+   - `ok: true` → continue at step 5.
+   - `error.code === "CONNECTOR_NEEDS_HUMAN"` → the browser is not logged in.
+     Ask the user to log in (ONE action), then re-run the same command.
+   - `error.code === "CONNECTOR_DOM_CHANGED"` → the ChatGPT layout changed and
+     the automation cannot find an element. Use `manualFallback.steps` and
+     guide ONE action at a time; the connector must still end up created.
+     Consider `awehitch prefs set --setup-mode manual --json` if the user
+     prefers being walked through it.
+   - `error.code === "CONNECTOR_PAIRING_REJECTED"` → the pairing code was
+     refused or expired: `awehitch pair -w <workspace> --json` for a fresh one,
+     then re-run the command.
+   - `awehitch connector-setup -w <workspace> --dry-run --json` resolves every
+     page element and reports what matched, changing nothing. Use it to see
+     whether automation can work before committing to it.
+   Never open a third-party browser yourself, and never type anything into a
+   page beyond what `manualFallback` tells you.
 5. First conversation: `awehitch_open_chat` (no task yet), then send the boot
    prompt (below), then the workspace_info check (below). Confirm the reply
    names the current workspace before continuing.
@@ -203,9 +218,16 @@ If status is restricted, ignore it and review from git_diff.
 
 ## Workflow: reconnect after address reclaim
 
-When doctor reports `chatgptRepair.needed`: tell the user its `userMessage`,
-then Delete + recreate THIS workspace's connector (`connectorName`) with the
-new `mcpUrl` and pairing code. Never click Reconnect. Then doctor again.
+When doctor reports `chatgptSetup.needed` or `chatgptRepair.needed`: tell the
+user its `userMessage`, then run `awehitch connector-setup -w <workspace>
+--json` (or `chatgptSetup.command`). It deletes THIS workspace's connector and
+recreates it with the new address — it never clicks Reconnect, and never
+touches another workspace's connector. Then doctor again.
+
+If that command fails, fall back to the manual path in the first-time setup
+workflow: Delete + recreate `connectorName` with the new `mcpUrl` and a fresh
+pairing code. Never click Reconnect — the old address is dead and that page
+hangs on "This site cannot be reached".
 
 ## Workflow: disconnect（"断开 ChatGPT"）
 

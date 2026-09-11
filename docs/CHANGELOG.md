@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+**`awehitch connector-setup`** — the ChatGPT connector is now created and
+repaired automatically, for every harness.
+
+Previously only Codex could do this, because it owns a built-in browser that
+the original design drove through; opencode and zcode had to fall back to
+teaching the user, which meant copying a public address and a pairing code by
+hand. The control plane already ships a persistent, logged-in Playwright
+profile, so the same flow now runs there instead:
+
+- One command covers login → developer mode → delete stale connector →
+  create → pairing code → verify. Only a login wall should interrupt the user.
+- Success is verified against the bridge (`tokenCount` grew), not a DOM badge.
+- Delete only ever matches a connector title **exactly** (normalized), so
+  `awehitch · proj` cannot take out `awehitch · proj2`; duplicate titles stop
+  the run instead of picking one.
+- Never clicks Reconnect on a reclaimed address.
+- Any failure returns a `manualFallback` with the real address, pairing code
+  and step list, so a broken selector degrades to the old guided flow.
+- `--dry-run` resolves every page element and reports which selector matched,
+  changing nothing. Connector selectors join the existing override pack
+  (`connector.<target>` replaces a target's candidate list).
+- `awehitch doctor` now reports `chatgptSetup` (action + command) alongside
+  `chatgptRepair`.
+- 17 offline tests (loopback fixture, real Chromium, no network): exact-title
+  safety, ambiguity refusal, honest DOM-change failure, rejected pairing code,
+  login wall, and that `--dry-run` mutates nothing.
+
 Control-plane fixes from issue #1 (code review).
 
 - **P0 — multi-line send**: `locator.type()` pressed a plain Enter per `\n`

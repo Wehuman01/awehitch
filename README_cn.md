@@ -44,9 +44,12 @@ corepack pnpm install && corepack pnpm build
 ```bash
 awehitch setup -w /path/to/project --harness codex --json
 awehitch login -w /path/to/project        # 在打开的窗口里登录一次 ChatGPT
+awehitch connector-setup -w /path/to/project  # 自动创建 ChatGPT 连接器
 ```
 
-`setup --harness` 一次搞定：启动 bridge、建立安全连接、生成配对码、并接入所选 harness 的 adapter（MCP 注册 + skill 安装 + 沙箱处理）。之后正常使用："用 ChatGPT 帮我规划 XXX"。
+`setup --harness` 一次搞定：启动 bridge、建立安全连接、生成配对码、并接入所选 harness 的 adapter（MCP 注册 + skill 安装 + 沙箱处理）。`connector-setup` 接着在同一个控制面浏览器里创建或修复 ChatGPT 连接器——你不需要手抄地址，也不需要手抄配对码。之后正常使用："用 ChatGPT 帮我规划 XXX"。
+
+唯一可能需要你动手的，是登录 ChatGPT。
 
 ## 工作原理
 
@@ -85,6 +88,7 @@ awehitch start | stop | restart -w <workspace>
 awehitch status -w <workspace> [--json]
 awehitch doctor -w <workspace> [--json]      # 诊断 + 自动修复
 awehitch login -w <workspace> [--json]       # 控制面 ChatGPT 登录
+awehitch connector-setup -w <workspace> [--dry-run] [--json]  # 创建/修复 ChatGPT 连接器
 awehitch pair | unpair -w <workspace>        # 配对码 / 吊销全部令牌
 awehitch session get|set|clear -w <workspace> # 会话 + 检查点
 awehitch sandbox-allow [--json]              # codex writable_roots（幂等）
@@ -97,14 +101,14 @@ awehitch sandbox-allow [--json]              # codex writable_roots（幂等）
 ```bash
 corepack pnpm install
 corepack pnpm build     # -> dist/，暴露 awehitch 命令
-corepack pnpm test      # 210 个测试：路径安全、OAuth、配对、MCP 端到端、adapter
+corepack pnpm test      # 225 个测试：路径安全、OAuth、配对、MCP 端到端、adapter、连接器配置
 ```
 
-文档：[架构](docs/architecture.md) · [协议](docs/protocol.md) · [安全](docs/security.md) · [harness 能力矩阵](docs/harness-matrix.md)
+文档：[架构](docs/architecture.md) · [协议](docs/protocol.md) · [安全](docs/security.md) · [连接器配置](docs/connector-setup.md) · [harness 能力矩阵](docs/harness-matrix.md)
 
 ## 状态与声明
 
-Alpha。控制面依赖当前 ChatGPT 页面结构；页面改时 `awehitch_wait_reply` 会诚实地报 `CHATGPT_DOM_CHANGED`——跑 `awehitch doctor --control-plane` 定位失效选择器，或通过状态目录的选择器覆盖文件修复。非 OpenAI 官方项目。
+Alpha。控制面依赖当前 ChatGPT 页面结构；页面改时 `awehitch_wait_reply` 会诚实地报 `CHATGPT_DOM_CHANGED`——跑 `awehitch doctor --control-plane` 定位失效选择器，或通过状态目录的选择器覆盖文件修复。连接器页面共用同一套选择器包：`awehitch connector-setup --dry-run` 会报告每一项定位到了什么，定位不到的部分自动退回"手动教学配置"，不会把你卡死。非 OpenAI 官方项目。
 
 数据面改造自 [codex-with-chatgpt](https://github.com/mugpeng/codex-with-chatgpt)（fork 自 [XiaoDuoYa/codex-with-chatgpt](https://github.com/XiaoDuoYa/codex-with-chatgpt)）—— MIT。
 

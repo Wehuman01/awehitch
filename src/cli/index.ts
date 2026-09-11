@@ -58,6 +58,11 @@ import { appendExecutionRecord } from "../execution/records.js";
 import { saveExecutionOutput } from "../execution/output.js";
 import { runStdioServer } from "../control-plane/server.js";
 import { ControlPlaneBrowser, interactiveLogin } from "../control-plane/browser.js";
+import {
+  runConnectorSetup,
+  type ConnectorSetupResult,
+  type ConnectorStep,
+} from "../control-plane/connector.js";
 import { loadSiteSelectors, probeSelectors, type SelectorProbe } from "../control-plane/selectors.js";
 import { HARNESS_IDS, HarnessId, awehitchCliEntry, harnessLabel } from "../adapters/paths.js";
 import { loadAdapter } from "../adapters/index.js";
@@ -368,8 +373,8 @@ program
       say(`连接地址：${mcpUrl ?? `http://127.0.0.1:${runtime.port}/mcp`}`);
       say(`配对码：${pairingResult.code}（${Math.round((pairingResult.expiresAt - Date.now()) / 60000)} 分钟内有效）`);
       say("");
-      say("下一步：在 ChatGPT 的连接器设置中添加以上地址（OAuth），并在授权页输入配对码。");
-      say("如果你在用 awehitch skill 的 agent，这一步会自动完成。");
+      say("下一步：运行 `awehitch connector-setup -w <workspace>` 自动创建 ChatGPT 连接器。");
+      say("（地址与配对码无需手抄；若你用的是 awehitch skill 的 agent，这一步它会自动跑。）");
     } catch (error) {
       handleCliError(error, opts.json);
     }
@@ -390,6 +395,135 @@ program
       else if (loggedIn) check("ChatGPT 已登录（控制面浏览器就绪）");
       else cross("等待登录超时，请重试 awehitch login");
       if (!loggedIn) process.exitCode = 1;
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+// ---------------------------------------------------------------- connector-setup
+
+const STEP_MARK: Record<ConnectorStep["status"], string> = {
+  done: "✓",
+  skipped: "·",
+  planned: "·",
+  "needs-human": "!",
+  failed: "✗",
+};
+
+function renderConnectorResult(result: ConnectorSetupResult, dryRun: boolean): void {
+  say(PRODUCT_NAME);
+  say("");
+  for (const step of result.steps) {
+    const suffix = step.detail ? `（${step.detail}）` : "";
+    say(`${STEP_MARK[step.status]} ${step.label}${suffix}`);
+  }
+  if (dryRun && result.probe) {
+    say("");
+    say("元素定位：");
+    for (const [target, hit] of Object.entries(result.probe)) {
+      say(`· ${target}：${hit.selector ? `命中 ${hit.selector}（${hit.count} 个）` : "未命中"}`);
+    }
+    if (result.unresolved && result.unresolved.length > 0) {
+      say("");
+      say(`未定位到的必需元素：${result.unresolved.join("、")}`);
+      say("可在 selectors.json 里覆盖对应项后重试。");
+    }
+  }
+  say("");
+  if (result.ok) {
+    say(dryRun ? "元素定位检查完成（未改动任何设置）。" : "Ready.");
+    return;
+  }
+  if (result.error) {
+    say(`问题：${result.error.message}`);
+    say("");
+  }
+  // A dry run has no real address or pairing code, so its fallback is noise.
+  if (!dryRun && result.manualFallback) {
+    say("可以手动完成这几步：");
+    for (const line of result.manualFallback.steps) say(`· ${line}`);
+    say("");
+    say("配对码约 5 分钟过期；过期后运行 awehitch pair 取一个新的。");
+  }
+}
+
+program
+  .command("connector-setup")
+  .alias("connector")
+  .description("Create or repair this workspace's ChatGPT connector automatically")
+  .option("-w, --workspace <path>")
+  .option("--dry-run", "resolve the page elements and report them, change nothing", false)
+  .option("--timeout <minutes>", "how long to wait for the ChatGPT login", parseInteger, 5)
+  .option("--json", "machine-readable output", false)
+  .action(async (opts: { workspace?: string; dryRun: boolean; timeout: number; json: boolean }) => {
+    const root = resolveWorkspace(opts.workspace);
+    const onNotice = (message: string): void => {
+      if (!opts.json) process.stderr.write(`${message}\n`);
+    };
+    try {
+      const workspace = new Workspace(root);
+      const previous = readLastEndpoint(workspace.id);
+      const nameFor = (): string =>
+        connectorNameFor({
+          workspaceName: workspace.name,
+          workspaceId: workspace.id,
+          previousName: previous?.connectorName,
+          hadEndpointBefore: Boolean(previous),
+        });
+
+      if (opts.dryRun) {
+        // A dry run must not start daemons or tunnels: it only reports what
+        // the control-plane browser can currently see on the three pages.
+        const result = await runConnectorSetup({
+          workspaceId: workspace.id,
+          connectorName: nameFor(),
+          mcpUrl: previous?.mcpUrl ?? "",
+          pairingCode: "",
+          dryRun: true,
+          loginTimeoutMs: opts.timeout * 60_000,
+          onNotice,
+        });
+        if (opts.json) say(JSON.stringify(result));
+        else renderConnectorResult(result, true);
+        return;
+      }
+
+      const { runtime, info, mcpUrl } = await ensureBridgeAndTunnel(root, { tunnel: true });
+      const connectorName = mcpUrl
+        ? persistWorkspaceEndpoint({
+            workspaceId: info.workspaceId,
+            workspaceName: info.workspaceName,
+            port: runtime.port,
+            publicUrl: info.publicUrl,
+            mcpUrl,
+          })
+        : nameFor();
+      const resolvedMcpUrl = mcpUrl ?? `http://127.0.0.1:${runtime.port}/mcp`;
+      const pairing = await adminFetch<PairingResponse>(runtime, "POST", "/admin/pairing");
+
+      // Baseline BEFORE the run: a token left over from an earlier pairing
+      // must never be mistaken for this run's success.
+      const tokensBefore = info.tokenCount;
+      const result = await runConnectorSetup({
+        workspaceId: workspace.id,
+        connectorName,
+        mcpUrl: resolvedMcpUrl,
+        pairingCode: pairing.code,
+        dryRun: false,
+        loginTimeoutMs: opts.timeout * 60_000,
+        onNotice,
+        verifyAuthorized: async () => {
+          const current = await adminFetch<AdminInfo>(runtime, "GET", "/admin/info");
+          return current.tokenCount > tokensBefore;
+        },
+      });
+
+      if (opts.json) {
+        say(JSON.stringify({ ...result, connectorName, mcpUrl: resolvedMcpUrl }));
+      } else {
+        renderConnectorResult(result, false);
+      }
+      if (!result.ok) process.exitCode = 1;
     } catch (error) {
       handleCliError(error, opts.json);
     }
@@ -767,12 +901,23 @@ program
       }
     }
 
+    // The connector is now created/updated by the control-plane browser, so
+    // doctor points at that command instead of talking the user through it.
+    const connectorSetupCommand = `awehitch connector-setup -w ${root}`;
+    const chatgptSetup = {
+      needed: chatgptRepair.connectorAction !== "none",
+      action: chatgptRepair.connectorAction,
+      command: connectorSetupCommand,
+      dryRunCommand: `${connectorSetupCommand} --dry-run`,
+    };
+
     if (opts.json) {
       say(
         JSON.stringify({
           report,
           repairs: results,
           chatgptRepair,
+          chatgptSetup,
           namedRepair,
           adapters,
           selectors: {
@@ -823,11 +968,16 @@ program
       if (chatgptRepair.pairingCode) say(`配对码：${chatgptRepair.pairingCode}`);
       say("");
     }
+    if (chatgptSetup.needed) {
+      say(`可自动完成（会打开控制面浏览器）：${chatgptSetup.command}`);
+      say(`只想看看页面元素能不能定位：${chatgptSetup.dryRunCommand}`);
+      say("");
+    }
     say(
       allOk && !chatgptRepair.needed && !namedRepair.needed
         ? "Everything looks good."
         : chatgptRepair.needed
-          ? "本地已就绪，还需要在 ChatGPT 删除并重新添加该连接。"
+          ? "本地已就绪，ChatGPT 里的连接需要更新——运行 awehitch connector-setup 可自动完成。"
           : namedRepair.needed
             ? "固定域名还没连上，需要先登录 Cloudflare。"
             : "仍有问题未解决，可尝试 `awehitch restart --tunnel`。"
