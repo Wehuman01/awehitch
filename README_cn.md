@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>awehitch：让 ChatGPT 网页版成为任意编码 agent 的外挂大脑</h1>
+  <h1>awehitch：把 ChatGPT 网页大脑挂到任意编码 agent 上</h1>
   <p><strong>ChatGPT 负责思考，你的 agent 负责干活。</strong></p>
   <p>用你已付费的 ChatGPT 网页订阅做规划与审查层，任意编码 agent（codex / opencode / zcode）完整保留执行权。</p>
   <p>
@@ -19,7 +19,7 @@
 
 > ChatGPT 负责思考，你的 agent 负责干活。
 
-awehitch 把 ChatGPT 网页版变成编码 agent 的"外挂大脑"：ChatGPT 负责规划与审查，本地 agent 负责执行。你的仓库永远不会被上传——ChatGPT 通过一条安全的、OAuth 保护的**只读** MCP 连接按需读取当前工作区里它真正需要的那几行代码。不用 API Key，不搞逆向代理。
+awehitch 把 ChatGPT 网页大脑挂（hitch）到任意编码 agent 上：ChatGPT 负责规划与审查，本地 agent 负责执行。你的仓库永远不会被上传——ChatGPT 通过一条安全的、OAuth 保护的**只读** MCP 连接按需读取当前工作区里它真正需要的那几行代码。不用 API Key，不搞逆向代理。
 
 ## 安装
 

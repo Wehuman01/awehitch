@@ -2,8 +2,8 @@
 
 ## v0.1.0
 
-Initial release: awehitch — ChatGPT web as the planning and review brain for
-any coding agent (codex / opencode / zcode), with execution owned entirely
+Initial release: awehitch — hitch the ChatGPT web brain to any coding agent
+(codex / opencode / zcode), with execution owned entirely
 by the local agent. Forked in spirit from `codex-with-chatgpt` (Codex-only);
 the data plane is reused as-is, the control plane is rebuilt as a
 harness-independent proxy.

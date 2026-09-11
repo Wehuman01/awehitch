@@ -1,7 +1,7 @@
 {
   "name": "awehitch",
   "version": "0.1.0",
-  "description": "ChatGPT web as the planning brain for any coding agent. The agent executes; ChatGPT thinks.",
+  "description": "Hitch the ChatGPT web brain to any coding agent. The agent executes; ChatGPT thinks.",
   "type": "module",
   "license": "MIT",
   "bin": {

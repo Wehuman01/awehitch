@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>awehitch: ChatGPT Web as the Brain for Any Coding Agent</h1>
+  <h1>awehitch: Hitch the ChatGPT Web Brain to Any Coding Agent</h1>
   <p><strong>ChatGPT thinks. Your agent works.</strong></p>
   <p>Use the ChatGPT web subscription you already pay for as the planning and review layer — while any coding agent (codex / opencode / zcode) keeps full ownership of execution.</p>
   <p>
@@ -19,7 +19,7 @@
 
 > ChatGPT thinks. Your agent works.
 
-awehitch turns the ChatGPT web app into the "external brain" of any coding agent: ChatGPT plans and reviews, the local agent executes. Your repository is never uploaded — ChatGPT reads exactly the lines it needs through a secure, OAuth-protected, **read-only** MCP connection to your workspace. No API keys, no reverse proxy.
+awehitch hitches the ChatGPT web app onto any coding agent as its external brain: ChatGPT plans and reviews, the local agent executes. Your repository is never uploaded — ChatGPT reads exactly the lines it needs through a secure, OAuth-protected, **read-only** MCP connection to your workspace. No API keys, no reverse proxy.
 
 ## Install
 
