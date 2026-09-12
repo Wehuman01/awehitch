@@ -518,8 +518,22 @@ program
         },
       });
 
+      // A 409 conflict makes the flow retry under a bumped title; the final
+      // name must be persisted or the next run would rebuild under the
+      // taken name and conflict forever.
+      const finalName = result.connectorName ?? connectorName;
+      if (result.ok && finalName !== connectorName) {
+        writeLastEndpoint({
+          workspaceId: info.workspaceId,
+          port: runtime.port,
+          publicUrl: info.publicUrl,
+          mcpUrl: resolvedMcpUrl,
+          connectorName: finalName,
+        });
+      }
+
       if (opts.json) {
-        say(JSON.stringify({ ...result, connectorName, mcpUrl: resolvedMcpUrl }));
+        say(JSON.stringify({ ...result, connectorName: finalName, mcpUrl: resolvedMcpUrl }));
       } else {
         renderConnectorResult(result, false);
       }

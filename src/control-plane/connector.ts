@@ -1,4 +1,4 @@
-import type { Locator, Page } from "playwright";
+import type { Locator, Page, Response as PlaywrightResponse } from "playwright";
 import {
   loadSiteSelectors,
   resolveConnectorTarget,
@@ -67,6 +67,7 @@ export type ConnectorErrorCode =
   | "CONNECTOR_DOM_CHANGED"
   | "CONNECTOR_NEEDS_HUMAN"
   | "CONNECTOR_PAIRING_REJECTED"
+  | "CONNECTOR_NAME_CONFLICT"
   | "CONNECTOR_FAILED";
 
 export class ConnectorSetupError extends Error {
@@ -108,6 +109,13 @@ export interface ConnectorSetupResult {
   ok: boolean;
   dryRun: boolean;
   steps: ConnectorStep[];
+  /**
+   * The connector title this run actually used. Normally the requested one;
+   * ChatGPT reserves dev-connector names forever (uninstalling does not free
+   * them), so a conflict makes the flow retry under a bumped name — callers
+   * must persist this value for stable re-runs.
+   */
+  connectorName?: string;
   probe?: ConnectorTargetProbe;
   /** Required targets that did not resolve. Informational for `--dry-run`. */
   unresolved?: ConnectorTarget[];
@@ -136,6 +144,8 @@ export interface ConnectorSetupContext {
   authorizeTimeoutMs: number;
   /** How long to wait for the bridge to report an authorized token. */
   verifyTimeoutMs: number;
+  /** How long to wait for the create modal to close after submitting. */
+  createTimeoutMs: number;
   onNotice?: (message: string) => void;
   /** Real verification: does the bridge hold an authorized token yet? */
   verifyAuthorized?: () => Promise<boolean>;
@@ -145,7 +155,7 @@ export interface ConnectorSetupContext {
 const STEP_TARGETS: Record<ConnectorStepId, ConnectorTarget[]> = {
   login: [],
   "developer-mode": ["developerModeToggle"],
-  delete: ["connectorRow", "connectorRowName", "rowMenu", "menuDelete", "confirmDelete"],
+  delete: ["connectorRow", "connectorRowName"],
   create: [
     "nameField",
     "descriptionField",
@@ -168,7 +178,8 @@ const STEP_MARKERS = {
 const REQUIRED_TARGETS: ConnectorTarget[] = [
   "connectorRow",
   "connectorRowName",
-  "menuDelete",
+  "connectButton",
+  "signInButton",
   "nameField",
   "serverUrlField",
   "createButton",
@@ -200,6 +211,18 @@ export function normalizeConnectorName(name: string): string {
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
+}
+
+/**
+ * Next candidate title after ChatGPT rejected one as already taken: "X" →
+ * "X 2", "X 2" → "X 3". ChatGPT reserves dev-connector names forever (its
+ * "Uninstall" removes the installation, not the connector), so recreating a
+ * repair under the old title always 409s — a fresh title is the only path.
+ */
+export function bumpConnectorName(name: string): string {
+  const match = /^(.*) (\d+)$/.exec(name.trim());
+  if (match) return `${match[1]} ${Number(match[2]) + 1}`;
+  return `${name.trim()} 2`;
 }
 
 async function targetSelector(
@@ -372,78 +395,99 @@ async function waitForConnectorRows(
 }
 
 /**
- * Delete THIS workspace's connector, if present. Never clicks "Reconnect":
- * when the tunnel address changes the old URL is dead and that page hangs on
- * "This site cannot be reached", which reads to the user as a broken tool.
+ * List THIS account's dev connectors that carry EXACTLY this title
+ * (normalized), returning their connector ids. Runs inside the logged-in
+ * page so the session cookie authenticates the call.
+ *
+ * Why the backend API and not the settings UI: ChatGPT's "Uninstall" only
+ * removes the installation — the dev connector object stays behind and keeps
+ * the name reserved, so a recreate then fails with a silent 409 ("Connector
+ * with name '…' already exists"; the UI shows nothing). DELETE on the
+ * connector object is the only verified way to free the name.
+ */
+async function findConnectorBackendIds(page: Page, connectorName: string): Promise<string[]> {
+  return page.evaluate(async (wanted) => {
+    const normalize = (value?: string): string =>
+      (value ?? "")
+        .replace(/[\u200B\u200C\u200D\uFEFF]/g, "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
+    const session = await fetch("/api/auth/session").then((r) => r.json()).catch(() => null);
+    const headers: Record<string, string> = { accept: "application/json" };
+    if (session?.accessToken) headers.authorization = `Bearer ${session.accessToken}`;
+    const response = await fetch("/backend-api/ps/plugins/list?scope=USER&limit=50", { headers });
+    if (!response.ok) throw new Error(`plugins/list returned HTTP ${response.status}`);
+    const data = (await response.json()) as {
+      plugins?: { connector_id?: string; canonical_app_id?: string; id?: string; release?: { display_name?: string } }[];
+    };
+    return (data.plugins ?? [])
+      .filter((p) => normalize(p.release?.display_name) === normalize(wanted))
+      .map((p) => p.connector_id ?? p.canonical_app_id ?? p.id ?? "")
+      .filter((id) => id !== "");
+  }, connectorName);
+}
+
+/**
+ * Delete THIS workspace's connector, if present, by exact title.
+ * Never clicks "Reconnect": when the tunnel address changes the old URL is
+ * dead and that page hangs on "This site cannot be reached", which reads to
+ * the user as a broken tool.
+ *
+ * Runs entirely against the backend (see findConnectorBackendIds for why):
+ * exact-name match on the server's own display_name, refuse duplicates, then
+ * DELETE and confirm with a fresh list. The page must be on chatgpt.com so
+ * the session cookie is sent.
  */
 export async function deleteConnectorByName(
   page: Page,
-  site: SiteSelectors,
   connectorName: string
 ): Promise<{ status: ConnectorStepStatus; detail: string }> {
-  await waitForConnectorRows(page, site);
-  const match = await findConnectorRows(page, site, connectorName);
-  if (match.totalRows === 0) {
+  const ids = await findConnectorBackendIds(page, connectorName).catch((error: unknown) => {
     throw new ConnectorSetupError(
-      "CONNECTOR_DOM_CHANGED",
-      "连接器列表里一个条目都没有找到，可能页面还没加载完或界面已改版。",
-      "connectorRow"
+      "CONNECTOR_FAILED",
+      `查询连接器列表失败：${error instanceof Error ? error.message : String(error)}`
     );
-  }
-  if (match.rows.length === 0) {
+  });
+  if (ids.length === 0) {
     return { status: "skipped", detail: `没有名为「${connectorName}」的连接器，无需删除` };
   }
-  if (match.ambiguous) {
+  if (ids.length > 1) {
     throw new ConnectorSetupError(
-      "CONNECTOR_DOM_CHANGED",
-      `发现 ${match.rows.length} 个标题完全相同的「${connectorName}」连接器，为避免误删其它项目的连接已停止操作，请手动清理。`,
-      "connectorRowName"
+      "CONNECTOR_FAILED",
+      `发现 ${ids.length} 个标题完全相同的「${connectorName}」连接器，为避免误删其它项目的连接已停止操作，请手动清理。`
     );
   }
 
-  const row = match.rows[0];
-  const rowMenuSelector = await targetSelector(page, site, "rowMenu");
-  if (rowMenuSelector) {
-    const menu = row.locator(rowMenuSelector).first();
-    if ((await menu.count().catch(() => 0)) > 0) {
-      await menu.click().catch(() => undefined);
-      await sleep(400);
+  const deleted = await page.evaluate(async (id) => {
+    const session = await fetch("/api/auth/session").then((r) => r.json()).catch(() => null);
+    const headers: Record<string, string> = { accept: "application/json" };
+    if (session?.accessToken) headers.authorization = `Bearer ${session.accessToken}`;
+    const response = await fetch(`/backend-api/aip/connectors/${id}`, {
+      method: "DELETE",
+      headers,
+    });
+    return { ok: response.ok, status: response.status };
+  }, ids[0]);
+  if (!deleted.ok) {
+    return {
+      status: "failed",
+      detail: `删除「${connectorName}」的请求被拒绝（HTTP ${deleted.status}），请手动清理后重试`,
+    };
+  }
+
+  // Confirm with a fresh list; deletion can take a moment to propagate.
+  const deadline = Date.now() + 15_000;
+  for (;;) {
+    const remaining = await findConnectorBackendIds(page, connectorName).catch(() => ids);
+    if (remaining.length === 0) {
+      return { status: "done", detail: `已删除「${connectorName}」` };
     }
+    if (Date.now() >= deadline) {
+      return { status: "failed", detail: `「${connectorName}」仍然存在，删除可能没有生效` };
+    }
+    await sleep(1_000);
   }
-
-  const deleteSelector = await targetSelector(page, site, "menuDelete");
-  if (!deleteSelector) {
-    throw new ConnectorSetupError(
-      "CONNECTOR_DOM_CHANGED",
-      "找不到删除连接器的入口。可在 selectors.json 里覆盖 connector.menuDelete 后重试。",
-      "menuDelete"
-    );
-  }
-  // Prefer the entry inside this row; fall back to a page-level menu item
-  // (some layouts render the menu in a portal outside the row).
-  const scoped = row.locator(deleteSelector).first();
-  const item = (await scoped.count().catch(() => 0)) > 0 ? scoped : page.locator(deleteSelector).first();
-  if ((await item.count().catch(() => 0)) === 0) {
-    throw new ConnectorSetupError(
-      "CONNECTOR_DOM_CHANGED",
-      "菜单打开了但没看到「删除」项。可在 selectors.json 里覆盖 connector.menuDelete 后重试。",
-      "menuDelete"
-    );
-  }
-  await item.click();
-  await sleep(400);
-
-  const confirm = await targetLocator(page, site, "confirmDelete");
-  if (confirm) {
-    await confirm.click().catch(() => undefined);
-    await sleep(600);
-  }
-
-  const after = await findConnectorRows(page, site, connectorName);
-  if (after.rows.length > 0) {
-    return { status: "failed", detail: `「${connectorName}」仍然存在，删除可能没有生效` };
-  }
-  return { status: "done", detail: `已删除「${connectorName}」` };
 }
 
 async function fillField(locator: Locator, value: string): Promise<void> {
@@ -476,11 +520,12 @@ async function selectOAuth(page: Page, site: SiteSelectors): Promise<string> {
   return "身份验证已设为 OAuth";
 }
 
-/** Fill and submit the create-connector form. */
+/** Fill and submit the create-connector form, then verify it took effect. */
 export async function fillConnectorForm(
   page: Page,
   site: SiteSelectors,
-  spec: { connectorName: string; mcpUrl: string; description: string }
+  spec: { connectorName: string; mcpUrl: string; description: string },
+  createTimeoutMs = 45_000
 ): Promise<{ status: ConnectorStepStatus; detail: string }> {
   await fillField(await requireTarget(page, site, "nameField"), spec.connectorName);
 
@@ -498,8 +543,130 @@ export async function fillConnectorForm(
     if (!alreadyChecked) await consent.check().catch(() => consent.click().catch(() => undefined));
   }
 
-  await (await requireTarget(page, site, "createButton")).click();
+  // The create POST's status is the only reliable verdict: a 409 ("name
+  // already exists") can close the modal with no row created, and a silent
+  // dead click once looked "done" and cost 60s of confusion (run-2 lesson).
+  const conflictRef: { current: { status: number; message: string } | null } = { current: null };
+  let resolveVerdict!: () => void;
+  const verdictSeen = new Promise<void>((resolve) => {
+    resolveVerdict = resolve;
+  });
+  const watchCreateResponses = (response: PlaywrightResponse): void => {
+    if (!response.url().includes("/backend-api/aip/connectors/mcp")) return;
+    if (response.status() >= 200 && response.status() < 300) {
+      resolveVerdict();
+      return;
+    }
+    conflictRef.current = { status: response.status(), message: "" };
+    void response
+      .text()
+      .then((body) => {
+        const conflict = conflictRef.current;
+        if (conflict && !conflict.message) {
+          try {
+            conflict.message = (JSON.parse(body)?.detail?.message ?? body).slice(0, 200);
+          } catch {
+            conflict.message = body.slice(0, 200);
+          }
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => resolveVerdict());
+  };
+  page.on("response", watchCreateResponses);
+
+  try {
+    const createDeadline = Date.now() + createTimeoutMs;
+    await (await requireTarget(page, site, "createButton")).click();
+    // The modal can vanish mid-navigation before the POST response arrives,
+    // so never decide before the verdict lands (or the timeout fires).
+    await Promise.race([verdictSeen, sleep(createTimeoutMs)]);
+
+    // Creation is server-side validated and slow (~15s observed); the modal
+    // stays open until it finishes.
+    while ((await page.locator("#custom-connector-name").count().catch(() => 0)) > 0) {
+      if (Date.now() >= createDeadline) {
+        const alert = page
+          .locator("[data-testid='modal-create-custom-connector'] [role='alert']")
+          .first();
+        const alertText =
+          (await alert.count().catch(() => 0)) > 0
+            ? ((await alert.innerText().catch(() => "")) ?? "").trim()
+            : "";
+        throw new ConnectorSetupError(
+          "CONNECTOR_FAILED",
+          alertText
+            ? `提交连接器表单后没有创建成功，页面报错：${alertText}`
+            : "提交连接器表单后创建弹窗没有关闭，连接器没有创建成功。请检查页面上的报错（常见原因：ChatGPT 无法访问服务器 URL）后重试。"
+        );
+      }
+      await sleep(500);
+    }
+  } finally {
+    page.off("response", watchCreateResponses);
+  }
+
+  const conflict = conflictRef.current;
+  if (conflict) {
+    throw new ConnectorSetupError(
+      "CONNECTOR_NAME_CONFLICT",
+      `ChatGPT 拒绝了创建（HTTP ${conflict.status}）：${conflict.message || "名字已被占用"}`
+    );
+  }
+
   return { status: "done", detail: `已提交「${spec.connectorName}」· ${authDetail}` };
+}
+
+/**
+ * Trigger the OAuth authorize page after creation. Verified ChatGPT route
+ * (2026-09): submitting the create form returns to the connector list;
+ * opening the connector's settings detail shows a "Connect" row, and clicking
+ * it opens a consent dialog whose "Sign in with <name>" button is what
+ * actually navigates to the authorize page.
+ */
+async function openConnectorAndConnect(
+  ctx: ConnectorSetupContext,
+  connectorName: string
+): Promise<void> {
+  await ctx.navigate(ctx.urls.connectors, STEP_MARKERS.settings);
+  await waitForConnectorRows(ctx.page, ctx.site);
+  // The freshly created connector can take a while to show up in the list
+  // (server-side propagation + SPA cache); poll with fresh navigations.
+  const rowDeadline = Date.now() + 30_000;
+  let match = await findConnectorRows(ctx.page, ctx.site, connectorName);
+  while (match.rows.length === 0 && Date.now() < rowDeadline) {
+    await sleep(2_500);
+    await ctx.navigate(ctx.urls.connectors, STEP_MARKERS.settings).catch(() => undefined);
+    match = await findConnectorRows(ctx.page, ctx.site, connectorName);
+  }
+  if (match.rows.length === 0) {
+    // The create modal closed, yet the connector is not in the list: the
+    // submit died silently. Fail here instead of burning the authorize wait.
+    throw new ConnectorSetupError(
+      "CONNECTOR_FAILED",
+      "连接器创建没有生效：列表里没有出现「" + connectorName + "」。请重试，若反复失败请手动创建。"
+    );
+  }
+  if (match.ambiguous) {
+    throw new ConnectorSetupError(
+      "CONNECTOR_DOM_CHANGED",
+      `发现 ${match.rows.length} 个标题完全相同的「${connectorName}」连接器，请先手动清理再重试。`,
+      "connectorRowName"
+    );
+  }
+  await match.rows[0].locator("button").first().click().catch(() => undefined);
+  await sleep(1_500);
+
+  const connect = await targetLocator(ctx.page, ctx.site, "connectButton");
+  if (connect && (await connect.count().catch(() => 0)) > 0) {
+    await connect.click().catch(() => undefined);
+    await sleep(1_200);
+  }
+  // The consent dialog ("Add <name> to ChatGPT") carries the real trigger.
+  const signIn = await targetLocator(ctx.page, ctx.site, "signInButton");
+  if (signIn && (await signIn.count().catch(() => 0)) > 0) {
+    await signIn.click().catch(() => undefined);
+  }
 }
 
 /**
@@ -566,11 +733,16 @@ export async function submitPairingCode(
 
 // ---------------------------------------------------------------- flow
 
-function manualSteps(spec: ConnectorSetupSpec, urls: ConnectorPageUrls, description: string): string[] {
+function manualSteps(
+  connectorName: string,
+  spec: ConnectorSetupSpec,
+  urls: ConnectorPageUrls,
+  description: string
+): string[] {
   return [
     `打开 ${urls.developerMode} ，确认「开发人员模式」已开启。`,
-    `打开 ${urls.connectors} 。若已有名为「${spec.connectorName}」的连接器，删除它（不要点「重新连接」）。`,
-    `打开 ${urls.createConnector} ，新建连接器：名称「${spec.connectorName}」、描述「${description}」、服务器 URL「${spec.mcpUrl}」、身份验证选 OAuth。`,
+    `打开 ${urls.connectors} 。若已有名为「${connectorName}」的连接器，删除它（不要点「重新连接」）。`,
+    `打开 ${urls.createConnector} ，新建连接器：名称「${connectorName}」、描述「${description}」、服务器 URL「${spec.mcpUrl}」、身份验证选 OAuth。`,
     `点「创建」后，在授权页输入配对码：${spec.pairingCode}`,
   ];
 }
@@ -589,14 +761,18 @@ export async function runConnectorSetupFlow(
   const steps: ConnectorStep[] = [];
   const probe: ConnectorTargetProbe = {};
   const probeTargets = new Set<ConnectorTarget>();
+  // The title this run actually creates under. ChatGPT reserves dev-connector
+  // names forever, so a 409 makes create retry under a bumped title — every
+  // later step (authorize lookup, manual fallback) must follow it.
+  let currentName = spec.connectorName;
 
   const fallback = (): ConnectorManualFallback => ({
-    connectorName: spec.connectorName,
+    connectorName: currentName,
     mcpUrl: spec.mcpUrl,
     pairingCode: spec.pairingCode,
     description,
     pages: ctx.urls,
-    steps: manualSteps(spec, ctx.urls, description),
+    steps: manualSteps(currentName, spec, ctx.urls, description),
   });
 
   const dryProbe = async (stepId: ConnectorStepId): Promise<void> => {
@@ -674,8 +850,8 @@ export async function runConnectorSetupFlow(
 
   // 3. Delete a stale connector with the same title ------------------------
   try {
-    await ctx.navigate(ctx.urls.connectors, STEP_MARKERS.settings);
     if (ctx.dryRun) {
+      await ctx.navigate(ctx.urls.connectors, STEP_MARKERS.settings);
       await waitForConnectorRows(ctx.page, ctx.site);
       await dryProbe("delete");
       const match = await findConnectorRows(ctx.page, ctx.site, spec.connectorName);
@@ -686,7 +862,10 @@ export async function runConnectorSetupFlow(
         detail: `页面上共 ${match.totalRows} 个连接器，其中 ${match.rows.length} 个与本项目同名`,
       });
     } else {
-      const result = await deleteConnectorByName(ctx.page, ctx.site, spec.connectorName);
+      // Backend-driven (no UI): the settings Uninstall only removes the
+      // installation and leaves the connector object — and its name — behind,
+      // which would 409 the recreate below.
+      const result = await deleteConnectorByName(ctx.page, spec.connectorName);
       if (result.status === "failed") {
         steps.push({ id: "delete", label: STEP_LABELS.delete, status: "failed", detail: result.detail });
         return {
@@ -694,7 +873,7 @@ export async function runConnectorSetupFlow(
           dryRun: false,
           steps,
           manualFallback: fallback(),
-          error: { code: "CONNECTOR_FAILED", message: result.detail, target: "menuDelete" },
+          error: { code: "CONNECTOR_FAILED", message: result.detail },
         };
       }
       steps.push({
@@ -715,16 +894,40 @@ export async function runConnectorSetupFlow(
       await dryProbe("create");
       steps.push({ id: "create", label: STEP_LABELS.create, status: "planned", detail: "dry-run 未提交表单" });
     } else {
-      const result = await fillConnectorForm(ctx.page, ctx.site, {
-        connectorName: spec.connectorName,
-        mcpUrl: spec.mcpUrl,
-        description,
-      });
+      // ChatGPT reserves dev-connector names forever, so a stale name can
+      // 409 even after the old connector is gone from every UI surface.
+      // Retry under a bumped title before giving up.
+      let result: { status: ConnectorStepStatus; detail: string } | null = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          result = await fillConnectorForm(
+            ctx.page,
+            ctx.site,
+            {
+              connectorName: currentName,
+              mcpUrl: spec.mcpUrl,
+              description,
+            },
+            ctx.createTimeoutMs
+          );
+          break;
+        } catch (error) {
+          const isConflict =
+            error instanceof ConnectorSetupError && error.code === "CONNECTOR_NAME_CONFLICT";
+          if (!isConflict || attempt === 3) throw error;
+          const next = bumpConnectorName(currentName);
+          ctx.onNotice?.(
+            `连接器名「${currentName}」已被 ChatGPT 占用，改用「${next}」重试。`
+          );
+          currentName = next;
+          await ctx.navigate(ctx.urls.createConnector, STEP_MARKERS.createModal);
+        }
+      }
       steps.push({
         id: "create",
         label: STEP_LABELS.create,
-        status: result.status,
-        detail: result.detail,
+        status: result!.status,
+        detail: result!.detail,
       });
     }
   } catch (error) {
@@ -744,55 +947,69 @@ export async function runConnectorSetupFlow(
         detail: "dry-run 未提交表单，授权页不会出现，该页元素无法在此探测",
       });
     } else {
-      const authorizePage = await waitForAuthorizePage(
-        ctx.page,
-        ctx.authorizeTimeoutMs,
-        ctx.verifyAuthorized
-      );
-      if (!authorizePage) {
-        // No authorize page: either ChatGPT authorized without a prompt
-        // (already granted) or the form never submitted. Real state decides.
-        if (ctx.verifyAuthorized && (await ctx.verifyAuthorized())) {
-          steps.push({
-            id: "authorize",
-            label: STEP_LABELS.authorize,
-            status: "skipped",
-            detail: "ChatGPT 已授权，无需输入配对码",
-          });
-        } else {
-          throw new ConnectorSetupError(
-            "CONNECTOR_DOM_CHANGED",
-            "提交连接器表单后没有出现授权页，连接器可能没有创建成功。请检查页面上的报错，或手动在授权页输入配对码。"
-          );
-        }
-      } else {
-        const result = await submitPairingCode(
-          authorizePage,
-          ctx.site,
-          spec.pairingCode,
-          ctx.authorizeTimeoutMs
-        );
-        if (result.status !== "done") {
-          steps.push({
-            id: "authorize",
-            label: STEP_LABELS.authorize,
-            status: "failed",
-            detail: result.detail,
-          });
-          return {
-            ok: false,
-            dryRun: false,
-            steps,
-            manualFallback: fallback(),
-            error: { code: "CONNECTOR_PAIRING_REJECTED", message: result.detail },
-          };
-        }
+      // An existing grant can skip the prompt entirely; check real state
+      // before driving the UI. Otherwise the authorize page only shows up
+      // after opening the connector and clicking Connect (see run 1's
+      // lesson: waiting passively times out — ChatGPT never opens it).
+      if (ctx.verifyAuthorized && (await ctx.verifyAuthorized().catch(() => false))) {
         steps.push({
           id: "authorize",
           label: STEP_LABELS.authorize,
-          status: "done",
-          detail: result.detail,
+          status: "skipped",
+          detail: "ChatGPT 已授权，无需输入配对码",
         });
+      } else {
+        await openConnectorAndConnect(ctx, currentName);
+        const authorizePage = await waitForAuthorizePage(
+          ctx.page,
+          ctx.authorizeTimeoutMs,
+          ctx.verifyAuthorized
+        );
+        if (!authorizePage) {
+          // No authorize page: either ChatGPT authorized without a prompt
+          // (already granted) or the form never submitted. Real state decides.
+          if (ctx.verifyAuthorized && (await ctx.verifyAuthorized())) {
+            steps.push({
+              id: "authorize",
+              label: STEP_LABELS.authorize,
+              status: "skipped",
+              detail: "ChatGPT 已授权，无需输入配对码",
+            });
+          } else {
+            throw new ConnectorSetupError(
+              "CONNECTOR_DOM_CHANGED",
+              "点击 Connect 后没有出现授权页，连接器可能没有创建成功。请检查页面上的报错，或手动在授权页输入配对码。"
+            );
+          }
+        } else {
+          const result = await submitPairingCode(
+            authorizePage,
+            ctx.site,
+            spec.pairingCode,
+            ctx.authorizeTimeoutMs
+          );
+          if (result.status !== "done") {
+            steps.push({
+              id: "authorize",
+              label: STEP_LABELS.authorize,
+              status: "failed",
+              detail: result.detail,
+            });
+            return {
+              ok: false,
+              dryRun: false,
+              steps,
+              manualFallback: fallback(),
+              error: { code: "CONNECTOR_PAIRING_REJECTED", message: result.detail },
+            };
+          }
+          steps.push({
+            id: "authorize",
+            label: STEP_LABELS.authorize,
+            status: "done",
+            detail: result.detail,
+          });
+        }
       }
     }
   } catch (error) {
@@ -813,7 +1030,7 @@ export async function runConnectorSetupFlow(
         status: "planned",
         detail: unresolved.length === 0 ? "必需元素都能定位" : `未定位到：${unresolved.join("、")}`,
       });
-      return { ok: true, dryRun: true, steps, probe, unresolved };
+      return { ok: true, dryRun: true, steps, connectorName: currentName, probe, unresolved };
     }
     if (ctx.verifyAuthorized) {
       const deadline = Date.now() + ctx.verifyTimeoutMs;
@@ -857,7 +1074,7 @@ export async function runConnectorSetupFlow(
   }
 
   const ok = steps.every((step) => step.status === "done" || step.status === "skipped");
-  return { ok, dryRun: false, steps, manualFallback: ok ? undefined : fallback() };
+  return { ok, dryRun: false, steps, connectorName: currentName, manualFallback: ok ? undefined : fallback() };
 }
 
 export interface RunConnectorSetupOptions extends ConnectorSetupSpec {
@@ -866,6 +1083,8 @@ export interface RunConnectorSetupOptions extends ConnectorSetupSpec {
   loginTimeoutMs?: number;
   authorizeTimeoutMs?: number;
   verifyTimeoutMs?: number;
+  /** How long to wait for the create modal to close after submitting. */
+  createTimeoutMs?: number;
   site?: SiteSelectors;
   onNotice?: (message: string) => void;
   verifyAuthorized?: () => Promise<boolean>;
@@ -901,6 +1120,7 @@ export async function runConnectorSetup(opts: RunConnectorSetupOptions): Promise
         loginTimeoutMs: opts.loginTimeoutMs ?? 5 * 60_000,
         authorizeTimeoutMs: opts.authorizeTimeoutMs ?? 60_000,
         verifyTimeoutMs: opts.verifyTimeoutMs ?? 30_000,
+        createTimeoutMs: opts.createTimeoutMs ?? 45_000,
         onNotice: opts.onNotice,
         verifyAuthorized: opts.verifyAuthorized,
       },

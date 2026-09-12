@@ -42,8 +42,11 @@ export const CONNECTOR_TARGETS = [
   "connectorRow",
   "connectorRowName",
   "rowMenu",
+  "pluginActions",
   "menuDelete",
   "confirmDelete",
+  "connectButton",
+  "signInButton",
   "nameField",
   "descriptionField",
   "serverUrlField",
@@ -100,12 +103,26 @@ export const DEFAULT_SITE: SiteSelectors = {
       "[role='heading']",
     ],
     rowMenu: [
+      // Legacy: the current ChatGPT UI has no in-row menu for custom
+      // connectors (verified 2026-09). Kept so old selectors.json overrides
+      // still load; the delete flow uses the plugin detail page instead.
       "button[aria-haspopup='menu']",
       "button[data-testid*='menu' i]",
       "button[aria-label*='options' i]",
       "button[aria-label*='more' i]",
     ],
+    // Legacy: the detail page's "Plugin actions" kebab and its Uninstall
+    // item (verified 2026-09) are NOT used by the delete flow anymore —
+    // Uninstall only removes the installation and leaves the connector
+    // object (and its name) behind, so a recreate 409s. Kept so old
+    // selectors.json overrides still load.
+    pluginActions: [
+      "button[aria-label='Plugin actions']",
+      "button[aria-label*='actions' i]",
+      "button[aria-haspopup='menu']",
+    ],
     menuDelete: [
+      "[role='menuitem']:has-text('Uninstall')",
       "[role='menuitem']:has-text('Delete')",
       "[role='menuitem']:has-text('删除')",
       "[role='menuitem']:has-text('Remove')",
@@ -192,6 +209,20 @@ export const DEFAULT_SITE: SiteSelectors = {
       ".error",
       "[role='alert']",
       "[data-testid*='error' i]",
+    ],
+    // The settings-modal detail view gates OAuth on this row: after creating
+    // a connector, ChatGPT returns to the list and the authorize page only
+    // appears once this button is clicked (verified 2026-09).
+    connectButton: ["button:has-text('Connect')", "button:has-text('连接')"],
+    // Verified 2026-09: clicking Connect opens a consent dialog ("Add <name>
+    // to ChatGPT"); the authorize page opens only via its "Sign in with
+    // <name>" button.
+    signInButton: [
+      "[role='dialog'] button:has-text('Sign in with')",
+      "[role='alertdialog'] button:has-text('Sign in with')",
+      "[role='dialog'] button:has-text('Sign in')",
+      "[role='alertdialog'] button:has-text('Sign in')",
+      "[role='dialog'] button:has-text('登录')",
     ],
     connectedMarker: [
       "[data-testid*='connected' i]",

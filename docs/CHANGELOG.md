@@ -40,9 +40,10 @@ profile, so the same flow now runs there instead:
   (`connector.<target>` replaces a target's candidate list).
 - `awehitch doctor` now reports `chatgptSetup` (action + command) alongside
   `chatgptRepair`.
-- 17 offline tests (loopback fixture, real Chromium, no network): exact-title
+- 24 offline tests (loopback fixture, real Chromium, no network): exact-title
   safety, ambiguity refusal, honest DOM-change failure, rejected pairing code,
-  login wall, and that `--dry-run` mutates nothing.
+  login wall, conflict auto-rename, backend delete, and that `--dry-run`
+  mutates nothing.
 
 Live-verification pass against a logged-in ChatGPT (2026-09):
 
@@ -61,6 +62,35 @@ Live-verification pass against a logged-in ChatGPT (2026-09):
 - Quick-tunnel start timeout raised from 45s to 90s: on lossy networks the
   QUIC handshake to the Cloudflare edge can eat half the old budget before
   the health check even begins.
+
+Second live pass (2026-09-12, real machine; connector verified end to end —
+bridge `tokenCount` grew, delete+recreate closure confirmed):
+
+- **P0 tunnel timeout root-caused and fixed**: fresh `*.trycloudflare.com`
+  hostnames are NXDOMAIN-negative-cached by local resolvers (~300s), so the
+  public-name health probe always failed while ChatGPT reached the tunnel
+  fine. Readiness is now gated on cloudflared's local metrics `/ready`
+  (`--metrics 127.0.0.1:<port>`), which needs no DNS; start completes in
+  seconds. Fetch errors unwrap the undici `error.cause` chain so a future
+  DNS failure names itself (`getaddrinfo ENOTFOUND ...`).
+- **Delete goes through the backend**: ChatGPT's "Uninstall" only removes
+  the installation — the connector object stays server-side, keeps the name
+  reserved, and recreate then fails with a silent 409. The delete step lists
+  `ps/plugins/list` and `DELETE`s `aip/connectors/<id>` with the session
+  token, then re-lists to confirm.
+- **Create conflict auto-rename**: a 409 on create retries under a fresh
+  title (`X` → `X 2` → `X 3`, max 3 attempts); the final name is returned as
+  `result.connectorName` and persisted for future runs.
+- **Authorize path mapped**: connector row → Connection "Connect" → consent
+  dialog "Sign in with <name>" → authorize page. New `connectButton` and
+  `signInButton` targets. Known limitation: the automated click sequence did
+  not reach the authorize page in either live run, so the step degrades to
+  `manualFallback` (its values verified sufficient — a human finishes in
+  under a minute); when a bridge token already exists the step is skipped
+  and the run is fully automatic. Never a false success.
+- Connector tests: 24 offline contract tests (loopback ChatGPT-shaped
+  fixtures, real Chromium), covering conflict-rename, backend-delete safety
+  (exact title only, ambiguity refusal), and the consent-dialog path.
 
 Control-plane fixes from issue #1 (code review).
 

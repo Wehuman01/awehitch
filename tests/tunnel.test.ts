@@ -26,6 +26,7 @@ const stateDirs: string[] = [];
 const previousStateDir = process.env.AWEHITCH_STATE_DIR;
 const previousCloudflaredPath = process.env.AWEHITCH_CLOUDFLARED_PATH;
 const QUICK_URL = "https://random-words-here-1234.trycloudflare.com";
+const METRICS_PORT = 46001;
 type FetchImpl = NonNullable<CloudflaredQuickTunnelOptions["fetchImpl"]>;
 
 class FakeCloudflaredProcess extends EventEmitter {
@@ -47,6 +48,7 @@ function setupTunnel(fetchImpl: FetchImpl, startTimeoutMs = 1_000) {
     spawnImpl,
     fetchImpl,
     startTimeoutMs,
+    metricsPort: METRICS_PORT,
   });
   return { child, spawnImpl, tunnel };
 }
@@ -57,6 +59,32 @@ function announceUrl(child: FakeCloudflaredProcess): void {
 
 function healthResponse(): Response {
   return new Response(JSON.stringify({ service: "awehitch-bridge", status: "ok" }), { status: 200 });
+}
+
+function metricsResponse(readyConnections = 1): Response {
+  return new Response(JSON.stringify({ status: 200, readyConnections }), { status: 200 });
+}
+
+/** Fetch stub that routes 127.0.0.1 calls to cloudflared metrics and the rest to the public URL. */
+function routingFetch(
+  metrics: () => Response | Promise<Response> = () => metricsResponse(),
+  publicProbe: () => Response | Promise<Response> = () => healthResponse()
+): FetchImpl & { metricsCalls: () => number; publicCalls: () => number } {
+  let metricsCount = 0;
+  let publicCount = 0;
+  const impl = vi.fn(async (input: string | URL): Promise<Response> => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.startsWith("http://127.0.0.1")) {
+      metricsCount += 1;
+      return metrics();
+    }
+    publicCount += 1;
+    return publicProbe();
+  });
+  return Object.assign(impl as unknown as FetchImpl, {
+    metricsCalls: () => metricsCount,
+    publicCalls: () => publicCount,
+  });
 }
 
 afterEach(() => {
@@ -98,8 +126,8 @@ describe("parseQuickTunnelUrl", () => {
 });
 
 describe("CloudflaredQuickTunnel", () => {
-  it("resolves only after the public health endpoint identifies the bridge", async () => {
-    const fetchImpl = vi.fn(async () => healthResponse());
+  it("resolves after cloudflared's metrics endpoint reports edge connections", async () => {
+    const fetchImpl = routingFetch();
     const { child, spawnImpl, tunnel } = setupTunnel(fetchImpl);
     const starting = tunnel.start(3333);
     announceUrl(child);
@@ -107,9 +135,19 @@ describe("CloudflaredQuickTunnel", () => {
     await expect(starting).resolves.toBe(QUICK_URL);
     expect(spawnImpl).toHaveBeenCalledWith(
       "cloudflared",
-      ["tunnel", "--url", "http://127.0.0.1:3333", "--no-autoupdate"],
+      [
+        "tunnel",
+        "--url",
+        "http://127.0.0.1:3333",
+        "--no-autoupdate",
+        "--metrics",
+        `127.0.0.1:${METRICS_PORT}`,
+      ],
       { stdio: ["ignore", "pipe", "pipe"], windowsHide: true }
     );
+    expect(fetchImpl).toHaveBeenCalledWith(`http://127.0.0.1:${METRICS_PORT}/ready`, {
+      signal: expect.any(AbortSignal),
+    });
     expect(fetchImpl).toHaveBeenCalledWith(`${QUICK_URL}/health`, {
       redirect: "error",
       signal: expect.any(AbortSignal),
@@ -118,8 +156,26 @@ describe("CloudflaredQuickTunnel", () => {
     await tunnel.stop();
   });
 
+  it("resolves even when the public hostname is not resolvable yet", async () => {
+    // Fresh quick-tunnel hostnames stay negative-cached on some resolvers for
+    // minutes; readiness must not depend on resolving them locally.
+    const fetchImpl = routingFetch(
+      () => metricsResponse(2),
+      () => {
+        throw new TypeError("fetch failed <- getaddrinfo ENOTFOUND nope.trycloudflare.com");
+      }
+    );
+    const { child, tunnel } = setupTunnel(fetchImpl);
+    const starting = tunnel.start(3333);
+    announceUrl(child);
+
+    await expect(starting).resolves.toBe(QUICK_URL);
+    expect(fetchImpl.metricsCalls()).toBeGreaterThanOrEqual(1);
+    await tunnel.stop();
+  });
+
   it("keeps consuming cloudflared errors after the tunnel is ready", async () => {
-    const { child, tunnel } = setupTunnel(async () => healthResponse());
+    const { child, tunnel } = setupTunnel(routingFetch());
     const starting = tunnel.start(3333);
     announceUrl(child);
     await expect(starting).resolves.toBe(QUICK_URL);
@@ -130,16 +186,15 @@ describe("CloudflaredQuickTunnel", () => {
     await tunnel.stop();
   });
 
-  it("does not accept an HTTP 200 response from another service", async () => {
-    const { child, tunnel } = setupTunnel(
-      async () =>
-        new Response(JSON.stringify({ service: "cloudflare", status: "ok" }), { status: 200 }),
-      20
+  it("times out while metrics report no edge connections", async () => {
+    const fetchImpl = routingFetch(
+      () => new Response(JSON.stringify({ status: 200, readyConnections: 0 }), { status: 200 })
     );
+    const { child, tunnel } = setupTunnel(fetchImpl, 20);
     const starting = tunnel.start(3333);
     announceUrl(child);
 
-    await expect(starting).rejects.toThrow(/timed out/i);
+    await expect(starting).rejects.toThrow(/timed out.*no edge connections/i);
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
     expect(tunnel.status()).toMatchObject({ running: false, url: null });
   });
@@ -158,7 +213,7 @@ describe("CloudflaredQuickTunnel", () => {
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
   });
 
-  it("does not resolve if cloudflared exits while the health probe is in flight", async () => {
+  it("does not resolve if cloudflared exits while the readiness probe is in flight", async () => {
     let resolveFetch!: (response: Response) => void;
     const { child, tunnel } = setupTunnel(
       () => new Promise<Response>((resolve) => (resolveFetch = resolve))
@@ -169,13 +224,13 @@ describe("CloudflaredQuickTunnel", () => {
 
     child.exitCode = 1;
     child.emit("exit", 1, null);
-    resolveFetch(healthResponse());
+    resolveFetch(metricsResponse());
     await expect(starting).rejects.toThrow(/exited/i);
     expect(tunnel.status()).toMatchObject({ running: false, url: null });
   });
 
   it("rejects when spawning reports an asynchronous error", async () => {
-    const { child, tunnel } = setupTunnel(async () => new Response(null));
+    const { child, tunnel } = setupTunnel(routingFetch());
     const starting = tunnel.start(3333);
     await new Promise((resolve) => setImmediate(resolve));
     child.emit("error", new Error("spawn cloudflared ENOENT"));
@@ -184,21 +239,37 @@ describe("CloudflaredQuickTunnel", () => {
     expect(tunnel.status()).toMatchObject({ running: false, url: null });
   });
 
-  it("retries a non-ready health response before resolving", async () => {
-    let calls = 0;
+  it("retries a non-ready metrics response before resolving", async () => {
     const cancelBody = vi.fn(async () => undefined);
-    const { child, tunnel } = setupTunnel(async () => {
-      calls += 1;
-      return calls === 1
-        ? ({ ok: false, status: 503, body: { cancel: cancelBody } } as unknown as Response)
-        : healthResponse();
-    });
+    const fetchImpl = routingFetch(
+      (() => {
+        let calls = 0;
+        return () => {
+          calls += 1;
+          return calls === 1
+            ? ({ ok: false, status: 503, body: { cancel: cancelBody } } as unknown as Response)
+            : metricsResponse();
+        };
+      })()
+    );
+    const { child, tunnel } = setupTunnel(fetchImpl);
     const starting = tunnel.start(3333);
     announceUrl(child);
 
     await expect(starting).resolves.toBe(QUICK_URL);
-    expect(calls).toBe(2);
+    expect(fetchImpl.metricsCalls()).toBe(2);
     expect(cancelBody).toHaveBeenCalledTimes(1);
+    await tunnel.stop();
+  });
+
+  it("waits for the quick-tunnel URL even when edge connections come up first", async () => {
+    const fetchImpl = routingFetch();
+    const { child, tunnel } = setupTunnel(fetchImpl, 2_000);
+    const starting = tunnel.start(3333);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    announceUrl(child);
+
+    await expect(starting).resolves.toBe(QUICK_URL);
     await tunnel.stop();
   });
 });

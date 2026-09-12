@@ -134,31 +134,57 @@ Codes:
 | `CONNECTOR_PAIRING_REJECTED` | The pairing code was refused or expired. |
 | `CONNECTOR_FAILED` | Something else; the message says what. |
 
-## TODO — verified against a logged-in ChatGPT (2026-09)
+## Verified against a logged-in ChatGPT (2026-09)
 
-The create-connector form selectors (`nameField`, `descriptionField`,
-`serverUrlField`, `authSelect`, `authOAuthOption`, `consentCheckbox`,
-`createButton`) and `developerModeToggle` are now verified against a real,
-logged-in ChatGPT — the create modal exposes stable ids
-(`#custom-connector-name`, `#custom-connector-url`, `#custom-connector-auth`,
-`#trust-checkbox`).
+Real-machine pass (2026-09-12), twice, on a live account:
 
-Still to verify on a live account:
+- `login`, `developer-mode`, `delete`, `create` all ran and reported `done`.
+  The delete step removed the previous connector through the **backend**
+  (see below) and the recreate succeeded — the delete+recreate closure is
+  verified.
+- The connector form exposes stable ids (`#custom-connector-name`,
+  `#custom-connector-url`, `#custom-connector-auth`, `#trust-checkbox`);
+  `developerModeToggle` is `button[role='switch'][aria-label='Developer mode']`.
+- After the manual Connect → pairing, the bridge logged
+  `Pairing verified` → `Issued access token` and `tokenCount` grew from 0
+  to 2 — the success criterion, verified.
 
-1. `connectorRowName` / `rowMenu` / `menuDelete` — the row shape of an
-   **existing custom connector**. A first run creates the connector; the
-   second run exercises the delete path against that real row.
-2. `confirmDelete` — only appears when a delete is actually confirmed.
+Three facts about ChatGPT learned the hard way:
 
-Two things to know while doing this:
-
+- **"Uninstall" is not deletion.** The settings UI's Uninstall only removes
+  the installation; the connector object stays server-side and keeps the
+  name reserved. Recreating then fails with a *silent* 409
+  (`Connector with name 'X' already exists`) even though the modal closes
+  normally. The delete step therefore lists
+  `/backend-api/ps/plugins/list?scope=USER` and issues
+  `DELETE /backend-api/aip/connectors/<id>` directly, with the session
+  token, and re-lists to confirm. If the name is still taken at create time
+  (409), the flow retries under a fresh title (`X` → `X 2` → `X 3`) and the
+  final name is returned as `connectorName` and persisted.
+- **The authorize page only appears after three clicks**: connector row →
+  the Connection row's **Connect** button → the consent dialog's
+  **"Sign in with <name>"**. There is no path from the create modal.
 - **Headless will not work.** Headless Chrome is stopped by the Cloudflare
   Turnstile challenge on `chatgpt.com`. The driver is headful on purpose; do
   not "fix" it into headless.
-- The authorize page (`pairingCodeField`, `authorizeButton`, `pairingError`)
-  is ours, so those defaults are exact and do not need touching.
-- ChatGPT is a SPA: every step waits for a rendered-page marker after
-  navigation. A missing marker is reported as `CONNECTOR_DOM_CHANGED`.
+
+Known limitation, honestly stated: in both live runs the **automated**
+authorize step could not reach the authorize page after clicking Connect →
+Sign in with (no navigation observed within the wait). The step degrades to
+`manualFallback`, whose values (address, pairing code, pages, steps) were
+verified sufficient — a human completes it in under a minute, which is how
+the pass above finished. When the connector is already authorized
+(`verifyAuthorized` sees a bridge token), the step is skipped entirely and
+the whole run is automatic. Root-causing the popup/navigation is the next
+task; the failure is loud and safe, never a false success.
+
+Tunnel note (P0 from the previous pass): fresh `*.trycloudflare.com`
+hostnames are NXDOMAIN-negative-cached by local resolvers for ~300s, so a
+public-name health probe always failed even though the tunnel was up —
+`Tunnel start timed out` blocked every run. Readiness is now gated on
+cloudflared's local metrics endpoint (`--metrics`, `GET /ready`), which
+needs no DNS; the tunnel reports ready in seconds. Undici `fetch failed`
+errors are unwrapped (`error.cause` chain) so the next DNS bug names itself.
 
 ## Agent contract
 
