@@ -134,28 +134,31 @@ Codes:
 | `CONNECTOR_PAIRING_REJECTED` | The pairing code was refused or expired. |
 | `CONNECTOR_FAILED` | Something else; the message says what. |
 
-## TODO — not verified yet
+## TODO — verified against a logged-in ChatGPT (2026-09)
 
-The ChatGPT-side form selectors are **best-effort defaults**. They were not
-validated against a logged-in ChatGPT: the only live run so far happened on a
-profile that was not logged in, so `nameField`, `serverUrlField`,
-`createButton`, `connectorRowName` and `menuDelete` came back unresolved. That
-is expected, and it is what `--dry-run` exists to surface — but they need
-filling in before this is trustworthy:
+The create-connector form selectors (`nameField`, `descriptionField`,
+`serverUrlField`, `authSelect`, `authOAuthOption`, `consentCheckbox`,
+`createButton`) and `developerModeToggle` are now verified against a real,
+logged-in ChatGPT — the create modal exposes stable ids
+(`#custom-connector-name`, `#custom-connector-url`, `#custom-connector-auth`,
+`#trust-checkbox`).
 
-1. `awehitch login -w <a real project you are logged into>`
-2. `awehitch connector-setup -w <that project> --dry-run --json`
-3. For every target reported as unmatched, find the real element and write it
-   into `<stateDir>/control-plane/selectors.json` under `connector.<target>`.
-4. Re-run `--dry-run` until `unresolved` is empty, then run it for real.
+Still to verify on a live account:
+
+1. `connectorRowName` / `rowMenu` / `menuDelete` — the row shape of an
+   **existing custom connector**. A first run creates the connector; the
+   second run exercises the delete path against that real row.
+2. `confirmDelete` — only appears when a delete is actually confirmed.
 
 Two things to know while doing this:
 
 - **Headless will not work.** Headless Chrome is stopped by the Cloudflare
-  Turnstile challenge on `chatgpt.com/plugins`. The driver is headful on
-  purpose; do not "fix" it into headless.
+  Turnstile challenge on `chatgpt.com`. The driver is headful on purpose; do
+  not "fix" it into headless.
 - The authorize page (`pairingCodeField`, `authorizeButton`, `pairingError`)
   is ours, so those defaults are exact and do not need touching.
+- ChatGPT is a SPA: every step waits for a rendered-page marker after
+  navigation. A missing marker is reported as `CONNECTOR_DOM_CHANGED`.
 
 ## Agent contract
 

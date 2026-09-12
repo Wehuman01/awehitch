@@ -44,6 +44,21 @@ profile, so the same flow now runs there instead:
   safety, ambiguity refusal, honest DOM-change failure, rejected pairing code,
   login wall, and that `--dry-run` mutates nothing.
 
+Live-verification pass against a logged-in ChatGPT (2026-09):
+
+- The create-form and developer-mode selectors are replaced with the real
+  ones (`#custom-connector-name`, `#custom-connector-url`,
+  `#custom-connector-auth`, `#trust-checkbox`,
+  `button[role='switch'][aria-label='Developer mode']`). The old bare
+  `[role='switch']` fallback would have flipped **Lockdown mode** — the first
+  switch on the Security page — instead of Developer mode.
+- The delete step now opens the settings modal's connector list (the
+  `/plugins` directory page never lists a workspace's own connector).
+- Every step waits for a rendered-page marker; ChatGPT is a SPA and the old
+  probes raced the React render and saw an empty page.
+- New `confirmToggle` target handles the risk-confirmation dialog ChatGPT
+  may show when Developer mode is switched on.
+
 Control-plane fixes from issue #1 (code review).
 
 - **P0 — multi-line send**: `locator.type()` pressed a plain Enter per `\n`

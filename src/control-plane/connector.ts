@@ -6,6 +6,7 @@ import {
   type SiteSelectors,
 } from "./selectors.js";
 import {
+  CHATGPT_CONNECTORS_SETTINGS_URL,
   CHATGPT_CREATE_CONNECTOR_URL,
   CHATGPT_DEVELOPER_MODE_URL,
   CHATGPT_PLUGINS_URL,
@@ -34,11 +35,13 @@ import { ControlPlaneBrowser } from "./browser.js";
  * 3. **Verify against real state, not the DOM.** Success is "the bridge has
  *    an authorized token", not "a badge looked green".
  *
- * The authorize page is served by OUR bridge (`src/auth/oauth.ts`), so its
- * selectors are exact. The ChatGPT-side form has no stable test ids across
- * locales — `--dry-run` resolves every target and reports what matched, and
- * `<stateDir>/control-plane/selectors.json` overrides any of them without a
- * rebuild.
+ * ChatGPT is a SPA: after `domcontentloaded` the settings modal and the
+ * create form render a few seconds later. Every navigate therefore carries a
+ * `waitFor` marker (an element that only exists on the rendered page); a
+ * marker that never appears is a DOM change, reported as such. The authorize
+ * page is served by OUR bridge (`src/auth/oauth.ts`), so its selectors are
+ * exact. `<stateDir>/control-plane/selectors.json` overrides any selector
+ * without a rebuild.
  */
 
 export const DEFAULT_CONNECTOR_DESCRIPTION =
@@ -46,12 +49,16 @@ export const DEFAULT_CONNECTOR_DESCRIPTION =
 
 export interface ConnectorPageUrls {
   developerMode: string;
+  /** The settings modal's connector list (this workspace's own connectors). */
+  connectors: string;
+  /** The app directory — used as the login-wall probe surface. */
   plugins: string;
   createConnector: string;
 }
 
 export const CONNECTOR_PAGE_URLS: ConnectorPageUrls = {
   developerMode: CHATGPT_DEVELOPER_MODE_URL,
+  connectors: CHATGPT_CONNECTORS_SETTINGS_URL,
   plugins: CHATGPT_PLUGINS_URL,
   createConnector: CHATGPT_CREATE_CONNECTOR_URL,
 };
@@ -119,7 +126,11 @@ export interface ConnectorSetupContext {
   page: Page;
   site: SiteSelectors;
   urls: ConnectorPageUrls;
-  navigate: (url: string) => Promise<void>;
+  /**
+   * Navigate and optionally wait for a rendered-page marker. ChatGPT is a
+   * SPA — without the marker the probes would race the React render.
+   */
+  navigate: (url: string, waitFor?: string) => Promise<void>;
   dryRun: boolean;
   loginTimeoutMs: number;
   authorizeTimeoutMs: number;
@@ -147,6 +158,12 @@ const STEP_TARGETS: Record<ConnectorStepId, ConnectorTarget[]> = {
   authorize: ["pairingCodeField", "authorizeButton", "pairingError"],
   verify: ["connectedMarker"],
 };
+
+/** Rendered-page markers per step, for the SPA settle wait in `navigate`. */
+const STEP_MARKERS = {
+  settings: "[data-testid='modal-settings']",
+  createModal: "#custom-connector-name",
+} as const;
 
 const REQUIRED_TARGETS: ConnectorTarget[] = [
   "connectorRow",
@@ -287,6 +304,13 @@ export async function ensureDeveloperMode(
   await toggle.click().catch(() => undefined);
   await sleep(500);
   if (await isToggleOn(toggle)) return { status: "done", detail: "已开启开发人员模式" };
+  // ChatGPT may gate the switch behind a risk-confirmation dialog.
+  const confirm = await targetLocator(page, site, "confirmToggle");
+  if (confirm && (await confirm.isVisible().catch(() => false))) {
+    await confirm.click().catch(() => undefined);
+    await sleep(500);
+    if (await isToggleOn(toggle)) return { status: "done", detail: "已在确认弹窗中开启开发人员模式" };
+  }
   return { status: "skipped", detail: "已点击开发人员模式开关，但未能确认状态" };
 }
 
@@ -323,6 +347,30 @@ export async function findConnectorRows(
   return { rows: matches, totalRows, ambiguous: matches.length > 1 };
 }
 
+/** Count rows the current connectorRow selector can see right now. */
+async function rowCount(page: Page, site: SiteSelectors): Promise<number> {
+  const rowSelector = await targetSelector(page, site, "connectorRow");
+  return rowSelector ? page.locator(rowSelector).count().catch(() => 0) : 0;
+}
+
+/**
+ * The settings modal can render a second or two before its list fills in.
+ * Wait briefly for the first row; returning 0 means the list really did not
+ * render (or the row selector broke) — the caller reports that honestly.
+ */
+async function waitForConnectorRows(
+  page: Page,
+  site: SiteSelectors,
+  timeoutMs = 6_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if ((await rowCount(page, site)) > 0) return;
+    if (Date.now() >= deadline) return;
+    await sleep(500);
+  }
+}
+
 /**
  * Delete THIS workspace's connector, if present. Never clicks "Reconnect":
  * when the tunnel address changes the old URL is dead and that page hangs on
@@ -333,6 +381,7 @@ export async function deleteConnectorByName(
   site: SiteSelectors,
   connectorName: string
 ): Promise<{ status: ConnectorStepStatus; detail: string }> {
+  await waitForConnectorRows(page, site);
   const match = await findConnectorRows(page, site, connectorName);
   if (match.totalRows === 0) {
     throw new ConnectorSetupError(
@@ -520,7 +569,7 @@ export async function submitPairingCode(
 function manualSteps(spec: ConnectorSetupSpec, urls: ConnectorPageUrls, description: string): string[] {
   return [
     `打开 ${urls.developerMode} ，确认「开发人员模式」已开启。`,
-    `打开 ${urls.plugins} 。若已有名为「${spec.connectorName}」的连接器，删除它（不要点「重新连接」）。`,
+    `打开 ${urls.connectors} 。若已有名为「${spec.connectorName}」的连接器，删除它（不要点「重新连接」）。`,
     `打开 ${urls.createConnector} ，新建连接器：名称「${spec.connectorName}」、描述「${description}」、服务器 URL「${spec.mcpUrl}」、身份验证选 OAuth。`,
     `点「创建」后，在授权页输入配对码：${spec.pairingCode}`,
   ];
@@ -606,7 +655,7 @@ export async function runConnectorSetupFlow(
 
   // 2. Developer mode ------------------------------------------------------
   try {
-    await ctx.navigate(ctx.urls.developerMode);
+    await ctx.navigate(ctx.urls.developerMode, STEP_MARKERS.settings);
     if (ctx.dryRun) {
       await dryProbe("developer-mode");
       steps.push({ id: "developer-mode", label: STEP_LABELS["developer-mode"], status: "planned" });
@@ -625,8 +674,9 @@ export async function runConnectorSetupFlow(
 
   // 3. Delete a stale connector with the same title ------------------------
   try {
-    await ctx.navigate(ctx.urls.plugins);
+    await ctx.navigate(ctx.urls.connectors, STEP_MARKERS.settings);
     if (ctx.dryRun) {
+      await waitForConnectorRows(ctx.page, ctx.site);
       await dryProbe("delete");
       const match = await findConnectorRows(ctx.page, ctx.site, spec.connectorName);
       steps.push({
@@ -660,7 +710,7 @@ export async function runConnectorSetupFlow(
 
   // 4. Create --------------------------------------------------------------
   try {
-    await ctx.navigate(ctx.urls.createConnector);
+    await ctx.navigate(ctx.urls.createConnector, STEP_MARKERS.createModal);
     if (ctx.dryRun) {
       await dryProbe("create");
       steps.push({ id: "create", label: STEP_LABELS.create, status: "planned", detail: "dry-run 未提交表单" });
@@ -835,8 +885,17 @@ export async function runConnectorSetup(opts: RunConnectorSetupOptions): Promise
         page,
         site,
         urls: CONNECTOR_PAGE_URLS,
-        navigate: async (url) => {
+        navigate: async (url, waitFor) => {
           await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 });
+          if (!waitFor) return;
+          try {
+            await page.waitForSelector(waitFor, { state: "visible", timeout: 20_000 });
+          } catch {
+            throw new ConnectorSetupError(
+              "CONNECTOR_DOM_CHANGED",
+              `页面 ${url} 渲染后没有出现「${waitFor}」，ChatGPT 界面可能已改版。`
+            );
+          }
         },
         dryRun: opts.dryRun,
         loginTimeoutMs: opts.loginTimeoutMs ?? 5 * 60_000,

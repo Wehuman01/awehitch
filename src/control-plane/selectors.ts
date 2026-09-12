@@ -38,6 +38,7 @@ export interface SiteSelectors {
 
 export const CONNECTOR_TARGETS = [
   "developerModeToggle",
+  "confirmToggle",
   "connectorRow",
   "connectorRowName",
   "rowMenu",
@@ -77,20 +78,22 @@ export const DEFAULT_SITE: SiteSelectors = {
       "#login-button, [data-testid='login-button'], button[data-testid='login-button'], a[href*='/auth/login'], [data-testid='signup-button']",
   },
   connector: {
-    // The Security settings page toggle. First candidate wins.
+    // Verified against a logged-in ChatGPT (2026-09): the Security settings
+    // switch carries aria-label="Developer mode". A bare [role='switch'] is
+    // NOT safe here — the first switch on that page is "Lockdown mode".
     developerModeToggle: [
-      "[role='switch'][name*='eveloper']",
-      "input[name='developer-mode']",
-      "[role='switch']",
-      "[data-testid*='developer' i] input[type='checkbox']",
+      "button[role='switch'][aria-label='Developer mode']",
+      "button[role='switch'][aria-label*='eveloper' i]",
     ],
-    // One connector entry in the plugins list.
+    // One entry in the settings modal's connector list. Verified shape: a row
+    // div wrapping a button whose icon is a plugin-icon-wrapper.
     connectorRow: [
+      "div:has(> div > button > div [data-testid='plugin-icon-wrapper'])",
       "[data-testid='connector-row']",
-      "[role='listitem']",
       "li",
     ],
     connectorRowName: [
+      "div.min-w-0 > div.truncate",
       "[data-testid='connector-name']",
       "h3",
       "h4",
@@ -98,9 +101,9 @@ export const DEFAULT_SITE: SiteSelectors = {
     ],
     rowMenu: [
       "button[aria-haspopup='menu']",
-      "button[aria-label*='ore' i]",
-      "button[aria-label*='options' i]",
       "button[data-testid*='menu' i]",
+      "button[aria-label*='options' i]",
+      "button[aria-label*='more' i]",
     ],
     menuDelete: [
       "[role='menuitem']:has-text('Delete')",
@@ -114,44 +117,59 @@ export const DEFAULT_SITE: SiteSelectors = {
       "[role='alertdialog'] button:has-text('删除')",
       "[role='dialog'] button:has-text('Confirm')",
     ],
+    // The create-connector modal. Verified ids (stable, not radix-generated).
     nameField: [
-      "input[name='name']",
-      "input[placeholder*='Name' i]",
-      "input[placeholder*='名称']",
-      "[data-testid*='name' i] input",
+      "#custom-connector-name",
+      "input[name='custom-connector-name']",
+      "input[aria-label='Name']",
     ],
     descriptionField: [
+      "#custom-connector-description",
+      "input[name='custom-connector-description']",
       "textarea[name='description']",
       "input[name='description']",
-      "textarea[placeholder*='escription' i]",
-      "textarea[placeholder*='描述']",
     ],
     serverUrlField: [
+      "#custom-connector-url",
+      "input[name='custom-connector-url']",
+      "input[inputmode='url']",
       "input[name='url']",
-      "input[name='mcpServerUrl']",
-      "input[placeholder*='URL']",
-      "input[placeholder*='地址']",
     ],
     authSelect: [
+      "#custom-connector-auth",
+      "select[name='custom-connector-auth']",
+      "[data-testid='modal-create-custom-connector'] select",
       "select[name='authType']",
       "select[name='authentication']",
-      "button[aria-label*='uthentication' i]",
-      "[data-testid*='auth' i] select",
     ],
     authOAuthOption: [
+      "option[value='OAUTH']",
       "option[value='oauth']",
       "option:has-text('OAuth')",
       "[role='option']:has-text('OAuth')",
     ],
     consentCheckbox: [
+      "#trust-checkbox",
+      "[data-testid='trust-checkbox']",
       "input[type='checkbox']",
       "[role='checkbox']",
     ],
     createButton: [
+      "[data-testid='modal-create-custom-connector'] button[type='submit']",
+      "form button[type='submit']:has-text('Create')",
       "button[type='submit']:has-text('Create')",
-      "button:has-text('Create')",
       "button:has-text('创建')",
       "button:has-text('Add')",
+    ],
+    // ChatGPT may ask for confirmation when developer mode is switched on
+    // ("elevated risk"). Only clicked when the toggle did not flip by itself.
+    confirmToggle: [
+      "[role='alertdialog'] button:has-text('Enable')",
+      "[role='dialog'] button:has-text('Enable')",
+      "[role='alertdialog'] button:has-text('Confirm')",
+      "[role='dialog'] button:has-text('Confirm')",
+      "[role='alertdialog'] button:has-text('开启')",
+      "[role='dialog'] button:has-text('确认')",
     ],
     // The authorize page below is served by OUR bridge (src/auth/oauth.ts),
     // so these two are exact — no guessing. They are first in the list on

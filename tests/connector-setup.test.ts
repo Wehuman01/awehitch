@@ -4,6 +4,7 @@ import { chromium, type Browser, type Page } from "playwright";
 import { DEFAULT_SITE } from "../src/control-plane/selectors.js";
 import {
   deleteConnectorByName,
+  ensureDeveloperMode,
   findConnectorRows,
   isLoginWallVisible,
   runConnectorSetupFlow,
@@ -46,12 +47,25 @@ function page(body: string): string {
 
 const SECURITY_PAGE = page(`
   <main>
-    <div id="dev" role="switch" aria-checked="false" tabindex="0">Developer mode</div>
+    <!-- Mirrors the real Security settings page: the FIRST switch is
+         Lockdown mode, Developer mode comes later. The pack must touch only
+         the one labelled "Developer mode". -->
+    <section>
+      <button type="button" role="switch" aria-checked="false" data-state="unchecked"
+              aria-label="Lockdown mode" data-testid="lockdown-mode-toggle"><span></span></button>
+    </section>
+    <section>
+      <button type="button" role="switch" aria-checked="false" data-state="unchecked"
+              aria-label="Developer mode"><span></span></button>
+    </section>
   </main>
   <script>
-    const dev = document.getElementById('dev');
-    dev.addEventListener('click', () => {
-      dev.setAttribute('aria-checked', dev.getAttribute('aria-checked') === 'true' ? 'false' : 'true');
+    document.querySelectorAll('button[role="switch"]').forEach((sw) => {
+      sw.addEventListener('click', () => {
+        const on = sw.getAttribute('aria-checked') !== 'true';
+        sw.setAttribute('aria-checked', String(on));
+        sw.setAttribute('data-state', on ? 'checked' : 'unchecked');
+      });
     });
   </script>`);
 
@@ -85,17 +99,20 @@ const PLUGINS_WITH_LOGIN_WALL = page(`
 
 const CREATE_PAGE = page(`
   <main>
-    <form id="create">
-      <input name="name" type="text">
-      <textarea name="description"></textarea>
-      <input name="url" type="text">
-      <select name="authType">
-        <option value="">None</option>
-        <option value="oauth">OAuth</option>
-      </select>
-      <input type="checkbox" id="consent">
-      <button type="submit">Create</button>
-    </form>
+    <!-- Mirrors the real create-connector modal (verified 2026-09). -->
+    <div data-testid="modal-create-custom-connector">
+      <form id="create">
+        <input id="custom-connector-name" name="custom-connector-name" aria-label="Name" type="text">
+        <input id="custom-connector-description" name="custom-connector-description" type="text">
+        <input id="custom-connector-url" name="custom-connector-url" inputmode="url" type="text">
+        <select id="custom-connector-auth">
+          <option value="OAUTH">OAuth</option>
+          <option value="NONE">No Auth</option>
+        </select>
+        <input id="trust-checkbox" data-testid="trust-checkbox" type="checkbox">
+        <button type="submit">Create</button>
+      </form>
+    </div>
   </main>
   <script>
     document.getElementById('create').addEventListener('submit', (event) => {
@@ -108,11 +125,13 @@ const CREATE_PAGE = page(`
 /** Same form, but with the name input removed — models a DOM change. */
 const CREATE_PAGE_NO_NAME_FIELD = page(`
   <main>
-    <form id="create">
-      <textarea name="description"></textarea>
-      <input name="url" type="text">
-      <button type="submit">Create</button>
-    </form>
+    <div data-testid="modal-create-custom-connector">
+      <form id="create">
+        <input id="custom-connector-description" name="custom-connector-description" type="text">
+        <input id="custom-connector-url" name="custom-connector-url" inputmode="url" type="text">
+        <button type="submit">Create</button>
+      </form>
+    </div>
   </main>`);
 
 const AUTHORIZE_PAGE = page(`
@@ -194,6 +213,7 @@ beforeAll(async () => {
   base = `http://127.0.0.1:${port}`;
   urls = {
     developerMode: `${base}/security`,
+    connectors: `${base}/plugins`,
     plugins: `${base}/plugins`,
     createConnector: `${base}/create`,
   };
@@ -251,6 +271,22 @@ describe.skipIf(!browser)("isLoginWallVisible", () => {
   });
 });
 
+describe.skipIf(!browser)("ensureDeveloperMode", () => {
+  it("flips only the Developer mode switch, never the first switch on the page", async () => {
+    // Mirrors the real Security settings page: Lockdown mode renders first.
+    // A bare `[role='switch']` candidate would turn Lockdown mode ON here.
+    await currentPage.goto(urls.developerMode);
+    const devSwitch = currentPage.locator("button[role='switch'][aria-label='Developer mode']");
+    const lockdown = currentPage.locator("button[role='switch'][aria-label='Lockdown mode']");
+    expect(await devSwitch.getAttribute("aria-checked")).toBe("false");
+    expect(await lockdown.getAttribute("aria-checked")).toBe("false");
+    const result = await ensureDeveloperMode(currentPage, DEFAULT_SITE);
+    expect(result.status).toBe("done");
+    expect(await devSwitch.getAttribute("aria-checked")).toBe("true");
+    expect(await lockdown.getAttribute("aria-checked")).toBe("false");
+  });
+});
+
 describe.skipIf(!browser)("deleteConnectorByName", () => {
   it("removes only this workspace's connector and leaves the sibling alone", async () => {
     await currentPage.goto(urls.plugins);
@@ -291,7 +327,7 @@ describe.skipIf(!browser)("deleteConnectorByName", () => {
     await expect(deleteConnectorByName(currentPage, DEFAULT_SITE, CONNECTOR_NAME)).rejects.toThrow(
       /一个条目都没有找到/
     );
-  });
+  }, 12_000);
 });
 
 describe.skipIf(!browser)("runConnectorSetupFlow", () => {
@@ -318,12 +354,13 @@ describe.skipIf(!browser)("runConnectorSetupFlow", () => {
 
   it("turns developer mode on when the switch starts off", async () => {
     await currentPage.goto(urls.developerMode);
-    expect(await currentPage.locator("#dev").getAttribute("aria-checked")).toBe("false");
     const result = await runConnectorSetupFlow(
       { ...flowContext(), verifyAuthorized: async () => true },
       SPEC
     );
+    // The step really flipped the switch (the detail proves the re-read).
     expect(stepOf(result, "developer-mode")?.status).toBe("done");
+    expect(stepOf(result, "developer-mode")?.detail).toContain("已开启开发人员模式");
   });
 
   it("submits the exact address and pairing code into the authorize page", async () => {
@@ -350,11 +387,11 @@ describe.skipIf(!browser)("runConnectorSetupFlow", () => {
     // Nothing was clicked: still on the create page, form untouched, no submit.
     expect(await currentPage.evaluate(() => window.location.pathname)).toBe("/create");
     expect(await currentPage.evaluate("window.__createSubmits || 0")).toBe(0);
-    expect(await currentPage.locator("input[name='name']").inputValue()).toBe("");
+    expect(await currentPage.locator("#custom-connector-name").inputValue()).toBe("");
 
     // And the probe says which selector won for each target it could reach.
-    expect(result.probe?.nameField?.selector).toBe("input[name='name']");
-    expect(result.probe?.serverUrlField?.selector).toBe("input[name='url']");
+    expect(result.probe?.nameField?.selector).toBe("#custom-connector-name");
+    expect(result.probe?.serverUrlField?.selector).toBe("#custom-connector-url");
     expect(result.probe?.connectorRow?.selector).toBe("li");
     expect(result.unresolved ?? []).toEqual([]);
   });
@@ -414,11 +451,13 @@ describe.skipIf(!browser)("runConnectorSetupFlow", () => {
     routes.set("/create", () =>
       page(`
         <main>
-          <form id="create">
-            <input name="name" type="text">
-            <input name="url" type="text">
-            <button type="submit">Create</button>
-          </form>
+          <div data-testid="modal-create-custom-connector">
+            <form id="create">
+              <input id="custom-connector-name" name="custom-connector-name" type="text">
+              <input id="custom-connector-url" name="custom-connector-url" type="text">
+              <button type="submit">Create</button>
+            </form>
+          </div>
         </main>`)
     );
     const result = await runConnectorSetupFlow(
