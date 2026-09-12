@@ -58,6 +58,9 @@ Live-verification pass against a logged-in ChatGPT (2026-09):
   probes raced the React render and saw an empty page.
 - New `confirmToggle` target handles the risk-confirmation dialog ChatGPT
   may show when Developer mode is switched on.
+- Quick-tunnel start timeout raised from 45s to 90s: on lossy networks the
+  QUIC handshake to the Cloudflare edge can eat half the old budget before
+  the health check even begins.
 
 Control-plane fixes from issue #1 (code review).
 
