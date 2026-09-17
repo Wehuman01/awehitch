@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { detectHarnesses } from "../src/adapters/detect.js";
 import { AuthStore } from "../src/auth/store.js";
+import { connectorAction, readLastEndpoint, writeLastEndpoint } from "../src/config/endpoint.js";
 import { revokeConnectorAccess } from "../src/cli/index.js";
 import { cleanup, makeTmpDir } from "./helpers.js";
 
@@ -87,6 +88,37 @@ describe("revokeConnectorAccess", () => {
       await revokeConnectorAccess(workspaceId);
 
       expect(new AuthStore(workspaceId).tokenCount()).toBe(0);
+    } finally {
+      if (previousStateDir === undefined) delete process.env.AWEHITCH_STATE_DIR;
+      else process.env.AWEHITCH_STATE_DIR = previousStateDir;
+      cleanup(stateDir);
+    }
+  });
+});
+
+describe("endpoint change detection", () => {
+  // The default command must snapshot the previous endpoint BEFORE
+  // persisting the new address (doctor does the same). Reading after the
+  // persist hides the rotation and the connector is never rebuilt.
+  it("detects a rotated address only from the pre-persist snapshot", () => {
+    const stateDir = makeTmpDir("endpoint-state");
+    const previousStateDir = process.env.AWEHITCH_STATE_DIR;
+    process.env.AWEHITCH_STATE_DIR = stateDir;
+    try {
+      const workspaceId = "endpoint_ws";
+      writeLastEndpoint({
+        workspaceId,
+        port: 4100,
+        publicUrl: "https://old.example.com",
+        mcpUrl: "https://old.example.com/mcp",
+      });
+      const snapshot = readLastEndpoint(workspaceId);
+      const rotated = "https://new.example.com/mcp";
+      writeLastEndpoint({ workspaceId, port: 4100, publicUrl: "https://new.example.com", mcpUrl: rotated });
+
+      expect(connectorAction(snapshot?.mcpUrl, rotated)).toBe("update");
+      // The trap this test pins down: reading after the persist loses the change.
+      expect(connectorAction(readLastEndpoint(workspaceId)?.mcpUrl, rotated)).toBe("none");
     } finally {
       if (previousStateDir === undefined) delete process.env.AWEHITCH_STATE_DIR;
       else process.env.AWEHITCH_STATE_DIR = previousStateDir;

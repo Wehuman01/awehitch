@@ -393,6 +393,10 @@ program
     const onNotice = (message: string): void => {
       if (!json) process.stderr.write(message + "\n");
     };
+    // Snapshot the previous endpoint BEFORE persisting: connectorAction must
+    // compare the OLD address against the new one, or an address change is
+    // never detected (doctor follows the same ordering).
+    const previousEndpoint = readLastEndpoint(info.workspaceId);
     const connectorName = mcpUrl
       ? persistWorkspaceEndpoint({
           workspaceId: info.workspaceId,
@@ -400,19 +404,20 @@ program
           port: runtime.port,
           publicUrl: info.publicUrl,
           mcpUrl,
+          previous: previousEndpoint,
         })
-      : readLastEndpoint(info.workspaceId)?.connectorName ?? connectorNameFor({
+      : previousEndpoint?.connectorName ?? connectorNameFor({
           workspaceName: info.workspaceName,
           workspaceId: info.workspaceId,
-          previousName: readLastEndpoint(info.workspaceId)?.connectorName,
-          hadEndpointBefore: Boolean(readLastEndpoint(info.workspaceId)),
+          previousName: previousEndpoint?.connectorName,
+          hadEndpointBefore: Boolean(previousEndpoint),
         });
 
     // 2. Decide whether the ChatGPT side needs any action. Without a public
     //    address there is nothing to connect (local mode). When the address is
     //    unchanged AND we already hold an authorized token, do not touch
     //    ChatGPT at all (a fresh pairing would invalidate the old code).
-    const action = mcpUrl ? connectorAction(readLastEndpoint(info.workspaceId)?.mcpUrl, mcpUrl) : "none";
+    const action = mcpUrl ? connectorAction(previousEndpoint?.mcpUrl, mcpUrl) : "none";
     const addressChanged = action === "update";
     let connectorUpdated = false;
     // Holder object: assignments happen inside the closure below; a bare `let`
@@ -503,8 +508,8 @@ program
         mcpUrl: mcpUrl ?? `http://127.0.0.1:${runtime.port}/mcp`,
         port: runtime.port,
         tunnel: {
-          mode: isNamedTunnelReady(tunnelState) ? "named" : "quick",
-          hostname: tunnelState.hostname ?? null,
+          mode: !mcpUrl ? "none" : isNamedTunnelReady(tunnelState) ? "named" : "quick",
+          hostname: mcpUrl ? (tunnelState.hostname ?? null) : null,
         },
         harnesses,
         needsLogin: false,
