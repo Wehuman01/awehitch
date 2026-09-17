@@ -21,8 +21,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "prepare": "pnpm run build",
-    "prepack": "pnpm run build",
+    "prepare": "tsc -p tsconfig.json",
+    "prepack": "tsc -p tsconfig.json",
     "dev": "tsx src/cli/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",

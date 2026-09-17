@@ -15,7 +15,7 @@ import { renderSkill } from "./skill-template.js";
 
 const AGENT_BODY = `You can delegate planning and review to ChatGPT with awehitch.
 
-When the user says "用 ChatGPT 帮我规划" / "use ChatGPT to plan", follow the
+When the user says "use ChatGPT to plan" / "用 ChatGPT 帮我规划", follow the
 awehitch skill (installed at ~/.zcode/skills or referenced by the awehitch CLI):
 exchange [C2C] control messages through the awehitch MCP tools, execute plans
 yourself, and let ChatGPT review the real diff via the read-only connector.

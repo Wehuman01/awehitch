@@ -453,7 +453,7 @@ describe.skipIf(!browser)("deleteConnectorByName", () => {
   it("refuses to act on an ambiguous match", async () => {
     connectors.push({ id: "id-dup", name: CONNECTOR_NAME });
     await currentPage.goto(urls.plugins);
-    await expect(deleteConnectorByName(currentPage, CONNECTOR_NAME)).rejects.toThrow(/标题完全相同/);
+    await expect(deleteConnectorByName(currentPage, CONNECTOR_NAME)).rejects.toThrow(/titled exactly/);
     expect(connectors).toHaveLength(3);
   });
 
@@ -468,7 +468,7 @@ describe.skipIf(!browser)("deleteConnectorByName", () => {
   it("fails honestly when the backend list cannot be read", async () => {
     listEndpointBroken = true;
     await currentPage.goto(urls.plugins);
-    await expect(deleteConnectorByName(currentPage, CONNECTOR_NAME)).rejects.toThrow(/查询连接器列表失败/);
+    await expect(deleteConnectorByName(currentPage, CONNECTOR_NAME)).rejects.toThrow(/Failed to query the connector list/);
     expect(connectors).toHaveLength(2);
   });
 
@@ -477,7 +477,7 @@ describe.skipIf(!browser)("deleteConnectorByName", () => {
     await currentPage.goto(urls.plugins);
     const result = await deleteConnectorByName(currentPage, CONNECTOR_NAME);
     expect(result.status).toBe("failed");
-    expect(result.detail).toContain("被拒绝");
+    expect(result.detail).toContain("rejected");
     expect(connectors).toHaveLength(2);
   });
 });
@@ -493,11 +493,11 @@ describe.skipIf(!browser)("runConnectorSetupFlow", () => {
     expect(result.dryRun).toBe(false);
     expect(result.manualFallback).toBeUndefined();
     expect(result.steps.map((step) => step.status)).toEqual(["done", "done", "done", "done", "done", "done"]);
-    expect(stepOf(result, "developer-mode")?.detail).toContain("已开启开发人员模式");
-    expect(stepOf(result, "delete")?.detail).toContain("已删除");
+    expect(stepOf(result, "developer-mode")?.detail).toContain("Developer mode enabled");
+    expect(stepOf(result, "delete")?.detail).toContain("Deleted");
     expect(stepOf(result, "create")?.detail).toContain("OAuth");
-    expect(stepOf(result, "authorize")?.detail).toContain("配对码已通过");
-    expect(stepOf(result, "verify")?.detail).toContain("Bridge 已收到授权令牌");
+    expect(stepOf(result, "authorize")?.detail).toContain("Pairing code accepted");
+    expect(stepOf(result, "verify")?.detail).toContain("Bridge received the authorization token");
 
     // The authorize page really did redirect, which is what the verify hook
     // above keys on — so verification is against real state, not a DOM badge.
@@ -520,7 +520,7 @@ describe.skipIf(!browser)("runConnectorSetupFlow", () => {
     expect(result.ok).toBe(true);
     expect(result.connectorName).toBe(`${CONNECTOR_NAME} 2`);
     expect(connectors.some((c) => c.name === `${CONNECTOR_NAME} 2`)).toBe(true);
-    expect(stepOf(result, "authorize")?.detail).toContain("配对码已通过");
+    expect(stepOf(result, "authorize")?.detail).toContain("Pairing code accepted");
   });
 
   it("gives up with the conflict error after repeated conflicts", async () => {
@@ -546,7 +546,7 @@ describe.skipIf(!browser)("runConnectorSetupFlow", () => {
     );
     // The step really flipped the switch (the detail proves the re-read).
     expect(stepOf(result, "developer-mode")?.status).toBe("done");
-    expect(stepOf(result, "developer-mode")?.detail).toContain("已开启开发人员模式");
+    expect(stepOf(result, "developer-mode")?.detail).toContain("Developer mode enabled");
   });
 
   it("submits the exact address and pairing code into the authorize page", async () => {

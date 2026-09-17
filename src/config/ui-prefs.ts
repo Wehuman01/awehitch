@@ -7,19 +7,19 @@ export const SETUP_MODES: readonly SetupMode[] = ["auto", "manual"];
 
 /** Shown once, before the first ChatGPT connection on this machine. */
 export const SETUP_CHOICE_PROMPT = [
-  "首次连接 ChatGPT 前，请选择一种配置方式（选一次即可，之后默认沿用）：",
+  "Before the first ChatGPT connection on this machine, choose a setup style (once; the choice is remembered):",
   "",
-  "**1. AI 自动化配置（预览版）**",
-  "由我在内置浏览器里完成全部设置，你只需在需要登录、验证码或二次确认时操作一次。",
-  "优点：几乎不用自己点页面。",
-  "缺点：步骤多，整体更慢；若自动设置连续两次无法完成，会改为「手动教学配置」。",
+  "**1. AI automated setup (preview)**",
+  "I complete the whole setup in a built-in browser. You only step in for login, CAPTCHA, or a second-factor prompt.",
+  "Pros: almost nothing to click yourself.",
+  "Cons: more steps and slower overall. If automation fails twice in a row, we fall back to guided manual setup.",
   "",
-  "**2. 手动教学配置**",
-  "我逐步告诉你打开哪个页面、填写哪几项，由你在浏览器里完成点击。",
-  "优点：大约 3 分钟可以完成，过程可控、更稳定。",
-  "缺点：需要你按提示操作，不能完全放手。",
+  "**2. Guided manual setup**",
+  "I tell you which page to open and which fields to fill; you click in your own browser.",
+  "Pros: about 3 minutes, more controlled and stable.",
+  "Cons: you follow the steps yourself.",
   "",
-  "请回复「1」或「2」。未说明时，不要自行开始配置。",
+  "Reply `1` or `2`. Do not start setup on your own without an answer.",
 ].join("\n");
 
 interface StoredUiPrefs {

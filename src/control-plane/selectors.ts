@@ -264,7 +264,7 @@ export function loadSiteSelectors(): LoadedSelectors {
     return {
       site: DEFAULT_SITE,
       source: "default",
-      problems: [`selectors.json 不是合法 JSON：${(error as Error).message}`],
+      problems: [`selectors.json is not valid JSON: ${(error as Error).message}`],
     };
   }
   const raw = (parsed ?? {}) as Record<string, unknown>;
@@ -275,7 +275,7 @@ export function loadSiteSelectors(): LoadedSelectors {
     const value = override[key];
     if (value === undefined) continue; // partial overrides are fine
     if (typeof value !== "string" || value.trim() === "") {
-      problems.push(`selectors.json 的 ${key} 必须是非空字符串，已沿用默认值`);
+      problems.push(`selectors.json key ${key} must be a non-empty string; kept the default`);
       continue;
     }
     selectors[key] = value.trim();
@@ -292,7 +292,7 @@ export function loadSiteSelectors(): LoadedSelectors {
       .map((entry) => entry.trim())
       .filter(Boolean);
     if (cleaned.length === 0) {
-      problems.push(`selectors.json 的 connector.${target} 必须是非空字符串或字符串数组，已沿用默认值`);
+      problems.push(`selectors.json connector.${target} must be a non-empty string or string array; kept the default`);
       continue;
     }
     connector[target] = cleaned;

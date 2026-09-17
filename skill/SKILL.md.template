@@ -3,7 +3,7 @@ name: awehitch
 description: >
   Use ChatGPT (web) as the planning and review brain for coding sessions in
   this harness, while the agent keeps full execution ownership. Use when the
-  user says "用 ChatGPT 帮我规划" / "use ChatGPT to plan" / "awehitch", when they
+  user says "use ChatGPT to plan" / "用 ChatGPT 帮我规划" / "awehitch", when they
   ask to connect ChatGPT to the current workspace, disconnect it, or run a
   task through the ChatGPT planning loop.
 ---
@@ -29,7 +29,7 @@ strategy. Two connections make this work:
 1. NEVER paste file contents, diffs, or logs into ChatGPT. ChatGPT reads them
    through the read-only connector.
 2. NEVER show the user technical internals (MCP, OAuth, PKCE, tunnel, ports,
-   localhost). Speak in terms of "连接 ChatGPT / 安全连接 / 配对".
+   localhost). Speak in terms of "connect ChatGPT / secure connection / pairing".
 3. The CLI fills in the pairing code automatically. The only thing a user
    should ever type into a page is the ChatGPT login itself. Never touch
    OAuth tokens, cookies, or session storage.
@@ -50,7 +50,7 @@ strategy. Two connections make this work:
 - CLI: `awehitch <command>` (all commands support `--json`).
 - Always pass `-w <workspace root>` (the project the user is working on).
 
-## Workflow: first-time setup（"使用 awehitch 完成首次配置"）
+## Workflow: first-time setup ("set up awehitch")
 
 1. Check prerequisites yourself: Node.js >= 20, git. Install missing pieces
    (macOS: Homebrew; Windows: winget). Also ensure `cloudflared` exists.
@@ -61,8 +61,8 @@ strategy. Two connections make this work:
    the user through the ChatGPT settings.** Handle exactly one of:
    - `ok: true` → continue at step 3.
    - `ok: false` with `needsLogin: true` (exit code 0) → the browser is open
-     and waiting. ONE action: "请在打开的窗口里登录 ChatGPT，完成后告诉我
-     『好了』", then re-run the same command.
+     and waiting. ONE action: "Log in to ChatGPT in the opened window, then
+     tell me 'done'", then re-run the same command.
    - `error.code === "CONNECTOR_DOM_CHANGED"` → the ChatGPT layout changed and
      the automation cannot find an element. Use `manualFallback.steps` and
      guide ONE action at a time; the connector must still end up created.
@@ -83,11 +83,11 @@ strategy. Two connections make this work:
 ```
 awehitch
 
-✓ 当前项目已识别
-✓ Workspace Bridge 已启动
-✓ 安全连接已建立
-✓ ChatGPT 已连接
-✓ 文件读取测试通过
+✓ Workspace identified
+✓ Workspace bridge is up
+✓ Secure connection established
+✓ ChatGPT connected
+✓ File-read probe passed
 
 Ready.
 ```
@@ -126,7 +126,7 @@ Rules:
     resume from NEXT_EXPECTED_STEP.
 ```
 
-## Workflow: coding task（"用 ChatGPT 帮我规划/实现 XXX"）
+## Workflow: coding task ("use ChatGPT to plan/implement XXX")
 
 Protocol states exchanged with ChatGPT:
 `INIT → PLAN → EXECUTING → EXECUTED → REVIEW → (PLAN | DONE | BLOCKED)`.
@@ -227,9 +227,9 @@ workflow: follow `manualFallback.steps` to delete and recreate
 `connectorName` with the new address. Never click Reconnect — the old
 address is dead and that page hangs on "This site cannot be reached".
 
-## Workflow: disconnect（"断开 ChatGPT"）
+## Workflow: disconnect ("disconnect ChatGPT")
 
 1. `awehitch off -w <workspace>` (revokes all tokens and stops the service).
 2. Optionally remove the connector at chatgpt.com/plugins (the command output
    includes that URL).
-3. Tell the user: "已断开 ChatGPT 对该项目的访问。"
+3. Tell the user: "Disconnected ChatGPT from this workspace."

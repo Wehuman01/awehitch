@@ -124,8 +124,8 @@ async function launchSharedContext(workspaceId: string): Promise<SharedBrowser> 
   if ("heldBy" in acquired) {
     throw new ControlPlaneError(
       "BROWSER_LAUNCH_FAILED",
-      `ChatGPT 控制面浏览器正被另一个进程使用（pid ${acquired.heldBy.pid}，workspace ${acquired.heldBy.workspaceId}）。` +
-        "闲置的会话几分钟后会自动释放浏览器；也可以停掉那个会话后重试。"
+      `The ChatGPT control-plane browser is in use by another process (pid ${acquired.heldBy.pid}, workspace ${acquired.heldBy.workspaceId}).` +
+        "Idle sessions release the browser after a few minutes; stop that session and retry."
     );
   }
   const profile = browserProfileDir();
@@ -297,7 +297,7 @@ export class ControlPlaneBrowser {
     if (!(await this.isLoggedIn(page))) {
       // Give the user a visible window to log in; the caller decides when to retry.
       this.events.onNotice?.(
-        "ChatGPT 需要登录。已打开浏览器窗口，请完成登录后重试。"
+        "ChatGPT login required. A browser window is open; finish logging in and retry."
       );
       throw new ControlPlaneError(
         "NOT_LOGGED_IN",

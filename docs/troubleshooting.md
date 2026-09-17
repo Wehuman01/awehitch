@@ -11,11 +11,11 @@ can (restarts the bridge, restarts the tunnel) without asking.
 
 ## Common situations
 
-### "Bridge 未运行"
+### "Bridge is not running"
 `awehitch start` (or let doctor do it). Bridge logs:
 `awehitch logs`, or verbose: `awehitch logs --verbose`.
 
-If doctor says the bridge state is **uncertain** (无法确认), do not start a
+If doctor says the bridge state is **uncertain**, do not start a
 second bridge and do not Delete the ChatGPT connector. Wait and run doctor
 again. The local process may still be running.
 
@@ -48,7 +48,7 @@ login, then keeps `c2c-<project>.your-domain.com`. To stay on the temporary
 address, say you do not have a domain. Switching later: tell Codex you want
 the stable hostname; it runs `awehitch tunnel choose --mode named --zone <domain>`.
 
-### "配对码无效/过期"
+### "Pairing code invalid/expired"
 Pairing codes are one-time and expire after ~5 minutes:
 
 ```

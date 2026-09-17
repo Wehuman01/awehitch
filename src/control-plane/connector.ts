@@ -188,12 +188,12 @@ const REQUIRED_TARGETS: ConnectorTarget[] = [
 ];
 
 const STEP_LABELS: Record<ConnectorStepId, string> = {
-  login: "登录 ChatGPT",
-  "developer-mode": "开发人员模式",
-  delete: "删除同名旧连接器",
-  create: "创建连接器",
-  authorize: "输入配对码",
-  verify: "验证授权",
+  login: "Log in to ChatGPT",
+  "developer-mode": "Enable developer mode",
+  delete: "Delete the old connector with the same name",
+  create: "Create the connector",
+  authorize: "Enter the pairing code",
+  verify: "Verify authorization",
 };
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -253,8 +253,8 @@ async function requireTarget(
   if (!locator) {
     throw new ConnectorSetupError(
       "CONNECTOR_DOM_CHANGED",
-      `页面上找不到「${target}」对应的元素（ChatGPT 界面可能已改版）。` +
-        `可在 selectors.json 里覆盖 connector.${target} 后重试。`,
+      `Could not find the element for "${target}" on the page (ChatGPT UI may have changed).` +
+        `Override connector.${target} in selectors.json and retry.`,
       target
     );
   }
@@ -288,7 +288,7 @@ export async function waitForLogin(
   for (;;) {
     if (!(await isLoginWallVisible(page, site))) return true;
     if (!noticed) {
-      onNotice?.("ChatGPT 需要登录：请在弹出的浏览器窗口里完成登录，我会自动继续。");
+      onNotice?.("ChatGPT needs a login: finish signing in in the opened browser window and I will continue automatically.");
       noticed = true;
     }
     if (Date.now() >= deadline) return false;
@@ -321,20 +321,20 @@ export async function ensureDeveloperMode(
 ): Promise<{ status: ConnectorStepStatus; detail: string }> {
   const toggle = await targetLocator(page, site, "developerModeToggle");
   if (!toggle) {
-    return { status: "skipped", detail: "页面上没有开发人员模式开关（可能已开启）" };
+    return { status: "skipped", detail: "No developer-mode toggle on the page (may already be on)" };
   }
-  if (await isToggleOn(toggle)) return { status: "done", detail: "开发人员模式已开启" };
+  if (await isToggleOn(toggle)) return { status: "done", detail: "Developer mode is already on" };
   await toggle.click().catch(() => undefined);
   await sleep(500);
-  if (await isToggleOn(toggle)) return { status: "done", detail: "已开启开发人员模式" };
+  if (await isToggleOn(toggle)) return { status: "done", detail: "Developer mode enabled" };
   // ChatGPT may gate the switch behind a risk-confirmation dialog.
   const confirm = await targetLocator(page, site, "confirmToggle");
   if (confirm && (await confirm.isVisible().catch(() => false))) {
     await confirm.click().catch(() => undefined);
     await sleep(500);
-    if (await isToggleOn(toggle)) return { status: "done", detail: "已在确认弹窗中开启开发人员模式" };
+    if (await isToggleOn(toggle)) return { status: "done", detail: "Enabled developer mode in the confirmation dialog" };
   }
-  return { status: "skipped", detail: "已点击开发人员模式开关，但未能确认状态" };
+  return { status: "skipped", detail: "Clicked the developer-mode toggle but could not confirm state" };
 }
 
 export interface ConnectorRowMatch {
@@ -446,16 +446,16 @@ export async function deleteConnectorByName(
   const ids = await findConnectorBackendIds(page, connectorName).catch((error: unknown) => {
     throw new ConnectorSetupError(
       "CONNECTOR_FAILED",
-      `查询连接器列表失败：${error instanceof Error ? error.message : String(error)}`
+      `Failed to query the connector list: ${error instanceof Error ? error.message : String(error)}`
     );
   });
   if (ids.length === 0) {
-    return { status: "skipped", detail: `没有名为「${connectorName}」的连接器，无需删除` };
+    return { status: "skipped", detail: `No connector named "${connectorName}" to delete` };
   }
   if (ids.length > 1) {
     throw new ConnectorSetupError(
       "CONNECTOR_FAILED",
-      `发现 ${ids.length} 个标题完全相同的「${connectorName}」连接器，为避免误删其它项目的连接已停止操作，请手动清理。`
+      `Found ${ids.length} connectors titled exactly "${connectorName}". Stopped to avoid deleting another project's connector; clean them up manually.`
     );
   }
 
@@ -472,7 +472,7 @@ export async function deleteConnectorByName(
   if (!deleted.ok) {
     return {
       status: "failed",
-      detail: `删除「${connectorName}」的请求被拒绝（HTTP ${deleted.status}），请手动清理后重试`,
+      detail: `Delete request for "${connectorName}" was rejected (HTTP ${deleted.status}); clean up manually and retry`,
     };
   }
 
@@ -481,10 +481,10 @@ export async function deleteConnectorByName(
   for (;;) {
     const remaining = await findConnectorBackendIds(page, connectorName).catch(() => ids);
     if (remaining.length === 0) {
-      return { status: "done", detail: `已删除「${connectorName}」` };
+      return { status: "done", detail: `Deleted "${connectorName}"` };
     }
     if (Date.now() >= deadline) {
-      return { status: "failed", detail: `「${connectorName}」仍然存在，删除可能没有生效` };
+      return { status: "failed", detail: `"${connectorName}" is still present; the delete may not have taken effect` };
     }
     await sleep(1_000);
   }
@@ -499,7 +499,7 @@ async function fillField(locator: Locator, value: string): Promise<void> {
 /** Set Authentication to OAuth, whether it is a native <select> or a custom menu. */
 async function selectOAuth(page: Page, site: SiteSelectors): Promise<string> {
   const control = await targetLocator(page, site, "authSelect");
-  if (!control) return "未找到身份验证选项，按默认值继续";
+  if (!control) return "No authentication control found; continuing with the default";
   const tag = await control.evaluate((el) => el.tagName.toLowerCase()).catch(() => "");
   if (tag === "select") {
     const option = await targetLocator(page, site, "authOAuthOption");
@@ -507,17 +507,17 @@ async function selectOAuth(page: Page, site: SiteSelectors): Promise<string> {
     try {
       if (value) await control.selectOption(value);
       else await control.selectOption({ label: "OAuth" });
-      return "身份验证已设为 OAuth";
+      return "Authentication set to OAuth";
     } catch {
-      return "身份验证下拉里没有 OAuth 选项，按默认值继续";
+      return "Authentication dropdown has no OAuth option; continuing with the default";
     }
   }
   await control.click().catch(() => undefined);
   await sleep(400);
   const option = await targetLocator(page, site, "authOAuthOption");
-  if (!option) return "身份验证控件已打开，但没找到 OAuth 选项";
+  if (!option) return "Authentication control opened but no OAuth option was found";
   await option.click();
-  return "身份验证已设为 OAuth";
+  return "Authentication set to OAuth";
 }
 
 /** Fill and submit the create-connector form, then verify it took effect. */
@@ -596,8 +596,8 @@ export async function fillConnectorForm(
         throw new ConnectorSetupError(
           "CONNECTOR_FAILED",
           alertText
-            ? `提交连接器表单后没有创建成功，页面报错：${alertText}`
-            : "提交连接器表单后创建弹窗没有关闭，连接器没有创建成功。请检查页面上的报错（常见原因：ChatGPT 无法访问服务器 URL）后重试。"
+            ? `Connector form submitted but not created; page error: ${alertText}`
+            : "The create dialog stayed open after submit, so the connector was not created. Check the page error (often: ChatGPT cannot reach the server URL) and retry."
         );
       }
       await sleep(500);
@@ -610,11 +610,11 @@ export async function fillConnectorForm(
   if (conflict) {
     throw new ConnectorSetupError(
       "CONNECTOR_NAME_CONFLICT",
-      `ChatGPT 拒绝了创建（HTTP ${conflict.status}）：${conflict.message || "名字已被占用"}`
+      `ChatGPT rejected the create (HTTP ${conflict.status}): ${conflict.message || "name already taken"}`
     );
   }
 
-  return { status: "done", detail: `已提交「${spec.connectorName}」· ${authDetail}` };
+  return { status: "done", detail: `Submitted "${spec.connectorName}" · ${authDetail}` };
 }
 
 /**
@@ -644,13 +644,13 @@ async function openConnectorAndConnect(
     // submit died silently. Fail here instead of burning the authorize wait.
     throw new ConnectorSetupError(
       "CONNECTOR_FAILED",
-      "连接器创建没有生效：列表里没有出现「" + connectorName + "」。请重试，若反复失败请手动创建。"
+      "Connector create did not take effect: \"" + connectorName + "\" is missing from the list. Retry; if it keeps failing, create it manually."
     );
   }
   if (match.ambiguous) {
     throw new ConnectorSetupError(
       "CONNECTOR_DOM_CHANGED",
-      `发现 ${match.rows.length} 个标题完全相同的「${connectorName}」连接器，请先手动清理再重试。`,
+      `Found ${match.rows.length} connectors titled exactly "${connectorName}". Clean them up manually and retry.`,
       "connectorRowName"
     );
   }
@@ -721,11 +721,11 @@ export async function submitPairingCode(
 
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    if (!isAuthorizeUrl(page.url())) return { status: "done", detail: "配对码已通过，ChatGPT 已获得授权" };
+    if (!isAuthorizeUrl(page.url())) return { status: "done", detail: "Pairing code accepted; ChatGPT is authorized" };
     const error = await readPairingError(page, site);
     if (error) return { status: "failed", detail: error };
     if (Date.now() >= deadline) {
-      return { status: "failed", detail: "提交配对码后授权页没有变化" };
+      return { status: "failed", detail: "The authorize page did not change after submitting the pairing code" };
     }
     await sleep(500);
   }
@@ -740,10 +740,10 @@ function manualSteps(
   description: string
 ): string[] {
   return [
-    `打开 ${urls.developerMode} ，确认「开发人员模式」已开启。`,
-    `打开 ${urls.connectors} 。若已有名为「${connectorName}」的连接器，删除它（不要点「重新连接」）。`,
-    `打开 ${urls.createConnector} ，新建连接器：名称「${connectorName}」、描述「${description}」、服务器 URL「${spec.mcpUrl}」、身份验证选 OAuth。`,
-    `点「创建」后，在授权页输入配对码：${spec.pairingCode}`,
+    `Open ${urls.developerMode} and confirm Developer mode is on.`,
+    `Open ${urls.connectors}. If a connector named "${connectorName}" already exists, delete it (do not click Reconnect).`,
+    `Open ${urls.createConnector} and create a connector: name "${connectorName}", description "${description}", server URL "${spec.mcpUrl}", authentication OAuth.`,
+    `After clicking Create, enter the pairing code on the authorize page: ${spec.pairingCode}`,
   ];
 }
 
@@ -812,14 +812,14 @@ export async function runConnectorSetupFlow(
       if (ctx.dryRun) {
         throw new ConnectorSetupError(
           "CONNECTOR_NEEDS_HUMAN",
-          "控制面浏览器当前未登录 ChatGPT。先运行 awehitch login，再跑 dry-run 才能看到页面结构。"
+          "The control-plane browser is not logged in to ChatGPT. Run `awehitch login` first, then dry-run to inspect the page."
         );
       }
       const loggedIn = await waitForLogin(ctx.page, ctx.site, ctx.loginTimeoutMs, ctx.onNotice);
       if (!loggedIn) {
         throw new ConnectorSetupError(
           "CONNECTOR_NEEDS_HUMAN",
-          "等待 ChatGPT 登录超时。请先运行 awehitch login 完成登录，再重试。"
+          "Timed out waiting for the ChatGPT login. Run `awehitch login` first, then retry."
         );
       }
       await ctx.navigate(ctx.urls.plugins);
@@ -859,7 +859,7 @@ export async function runConnectorSetupFlow(
         id: "delete",
         label: STEP_LABELS.delete,
         status: "planned",
-        detail: `页面上共 ${match.totalRows} 个连接器，其中 ${match.rows.length} 个与本项目同名`,
+        detail: `${match.totalRows} connectors on the page; ${match.rows.length} share this project's name`,
       });
     } else {
       // Backend-driven (no UI): the settings Uninstall only removes the
@@ -892,7 +892,7 @@ export async function runConnectorSetupFlow(
     await ctx.navigate(ctx.urls.createConnector, STEP_MARKERS.createModal);
     if (ctx.dryRun) {
       await dryProbe("create");
-      steps.push({ id: "create", label: STEP_LABELS.create, status: "planned", detail: "dry-run 未提交表单" });
+      steps.push({ id: "create", label: STEP_LABELS.create, status: "planned", detail: "dry-run did not submit the form" });
     } else {
       // ChatGPT reserves dev-connector names forever, so a stale name can
       // 409 even after the old connector is gone from every UI surface.
@@ -917,7 +917,7 @@ export async function runConnectorSetupFlow(
           if (!isConflict || attempt === 3) throw error;
           const next = bumpConnectorName(currentName);
           ctx.onNotice?.(
-            `连接器名「${currentName}」已被 ChatGPT 占用，改用「${next}」重试。`
+            `Connector name "${currentName}" is taken by ChatGPT; retrying as "${next}".`
           );
           currentName = next;
           await ctx.navigate(ctx.urls.createConnector, STEP_MARKERS.createModal);
@@ -944,7 +944,7 @@ export async function runConnectorSetupFlow(
         id: "authorize",
         label: STEP_LABELS.authorize,
         status: "planned",
-        detail: "dry-run 未提交表单，授权页不会出现，该页元素无法在此探测",
+        detail: "dry-run did not submit the form, so the authorize page never appears and cannot be probed here",
       });
     } else {
       // An existing grant can skip the prompt entirely; check real state
@@ -956,7 +956,7 @@ export async function runConnectorSetupFlow(
           id: "authorize",
           label: STEP_LABELS.authorize,
           status: "skipped",
-          detail: "ChatGPT 已授权，无需输入配对码",
+          detail: "ChatGPT is already authorized; no pairing code needed",
         });
       } else {
         await openConnectorAndConnect(ctx, currentName);
@@ -973,12 +973,12 @@ export async function runConnectorSetupFlow(
               id: "authorize",
               label: STEP_LABELS.authorize,
               status: "skipped",
-              detail: "ChatGPT 已授权，无需输入配对码",
+              detail: "ChatGPT is already authorized; no pairing code needed",
             });
           } else {
             throw new ConnectorSetupError(
               "CONNECTOR_DOM_CHANGED",
-              "点击 Connect 后没有出现授权页，连接器可能没有创建成功。请检查页面上的报错，或手动在授权页输入配对码。"
+              "No authorize page after clicking Connect; the connector may not have been created. Check the page error or enter the pairing code manually."
             );
           }
         } else {
@@ -1028,7 +1028,7 @@ export async function runConnectorSetupFlow(
         id: "verify",
         label: STEP_LABELS.verify,
         status: "planned",
-        detail: unresolved.length === 0 ? "必需元素都能定位" : `未定位到：${unresolved.join("、")}`,
+        detail: unresolved.length === 0 ? "All required elements resolved" : `Unresolved: ${unresolved.join(", ")}`,
       });
       return { ok: true, dryRun: true, steps, connectorName: currentName, probe, unresolved };
     }
@@ -1045,28 +1045,28 @@ export async function runConnectorSetupFlow(
           id: "verify",
           label: STEP_LABELS.verify,
           status: "failed",
-          detail: "ChatGPT 还没有拿到授权令牌",
+          detail: "ChatGPT has not received an authorization token yet",
         });
         return {
           ok: false,
           dryRun: false,
           steps,
           manualFallback: fallback(),
-          error: { code: "CONNECTOR_FAILED", message: "授权没有完成，Bridge 里没有新的令牌。" },
+          error: { code: "CONNECTOR_FAILED", message: "Authorization did not finish; the bridge has no new token." },
         };
       }
       steps.push({
         id: "verify",
         label: STEP_LABELS.verify,
         status: "done",
-        detail: "Bridge 已收到授权令牌",
+        detail: "Bridge received the authorization token",
       });
     } else {
       steps.push({
         id: "verify",
         label: STEP_LABELS.verify,
         status: "skipped",
-        detail: "未提供授权状态查询，跳过",
+        detail: "No authorization-status check provided; skipped",
       });
     }
   } catch (error) {
@@ -1112,7 +1112,7 @@ export async function runConnectorSetup(opts: RunConnectorSetupOptions): Promise
           } catch {
             throw new ConnectorSetupError(
               "CONNECTOR_DOM_CHANGED",
-              `页面 ${url} 渲染后没有出现「${waitFor}」，ChatGPT 界面可能已改版。`
+              `"${waitFor}" did not appear on ${url} after render; ChatGPT UI may have changed.`
             );
           }
         },
