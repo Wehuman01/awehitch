@@ -4,6 +4,15 @@
   "description": "Hitch the ChatGPT web brain to any coding agent. The agent executes; ChatGPT thinks.",
   "type": "module",
   "license": "MIT",
+  "files": [
+    "bin",
+    "dist",
+    "skill",
+    "examples",
+    "README.md",
+    "README_cn.md",
+    "LICENSE"
+  ],
   "bin": {
     "awehitch": "./bin/awehitch.js"
   },
@@ -12,6 +21,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepare": "pnpm run build",
+    "prepack": "pnpm run build",
     "dev": "tsx src/cli/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
