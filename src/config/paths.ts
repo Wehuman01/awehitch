@@ -1,6 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
+import { writeFileAtomic } from "../fs/atomic.js";
 
 /**
  * State directory resolution, following OS conventions.
@@ -34,12 +35,7 @@ export function stateSubdir(name: string): string {
 /** Write a JSON file with owner-only permissions. */
 export function writeSecureJson(file: string, data: unknown): void {
   ensureDir(path.dirname(file));
-  fs.writeFileSync(file, JSON.stringify(data, null, 2), { mode: 0o600 });
-  try {
-    fs.chmodSync(file, 0o600);
-  } catch {
-    // best effort on platforms without chmod semantics
-  }
+  writeFileAtomic(file, JSON.stringify(data, null, 2), { mode: 0o600 });
 }
 
 export function readJsonIfExists<T>(file: string): T | null {

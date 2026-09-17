@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { writeFileAtomic } from "../fs/atomic.js";
 import { harnessHome } from "./paths.js";
 import { renderSkill } from "./skill-template.js";
 
@@ -32,7 +33,7 @@ export function setupZcodeAdapter(opts: {
   const skillDir = path.join(home, "skills", "awehitch");
   fs.mkdirSync(skillDir, { recursive: true });
   const skillPath = path.join(skillDir, "SKILL.md");
-  fs.writeFileSync(skillPath, renderSkill({ harness: "ZCode", connectorName: opts.connectorName }), {
+  writeFileAtomic(skillPath, renderSkill({ harness: "ZCode", connectorName: opts.connectorName }), {
     mode: 0o644,
   });
 
@@ -77,10 +78,5 @@ function readJson(file: string): Record<string, any> {
 }
 
 function writeJson(file: string, data: unknown): void {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n", { mode: 0o600 });
-  try {
-    fs.chmodSync(file, 0o600);
-  } catch {
-    // platforms without chmod semantics
-  }
+  writeFileAtomic(file, JSON.stringify(data, null, 2) + "\n", { mode: 0o600 });
 }

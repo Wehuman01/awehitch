@@ -4,6 +4,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { writeFileAtomic } from "../fs/atomic.js";
 import { startBridge } from "../bridge/server.js";
 import { findBridgeObservation, findLiveBridge, type RuntimeState } from "../bridge/runtime.js";
 import { adminFetch, ensureBridge, stopBridge } from "../process/daemon.js";
@@ -101,6 +102,26 @@ function parseNonNegativeInteger(value: string): number {
   const parsed = parseInteger(value);
   if (parsed < 0) throw new InvalidArgumentError("must be a non-negative integer");
   return parsed;
+}
+
+function parsePositiveInteger(value: string): number {
+  const parsed = parseInteger(value);
+  if (parsed <= 0) throw new InvalidArgumentError("must be a positive integer");
+  return parsed;
+}
+
+function parseExitStatus(value: string): string {
+  const normalized = value.trim();
+  if (/^-?\d+$/.test(normalized)) {
+    const num = Number(normalized);
+    if (!Number.isSafeInteger(num) || num < 0 || num > 255) {
+      throw new InvalidArgumentError("must be 0-255 or one of: ok, failed, blocked");
+    }
+    return normalized;
+  }
+  const lowered = normalized.toLowerCase();
+  if (["ok", "failed", "blocked"].includes(lowered)) return lowered;
+  throw new InvalidArgumentError("must be 0-255 or one of: ok, failed, blocked");
 }
 
 function parseChangedFiles(value: string): string[] | number {
@@ -352,7 +373,7 @@ program
   .option("--harness <id>", "harness adapter to install (repeatable, overrides auto-detection)", parseHarnessOption, [] as HarnessId[])
   .option("--no-tunnel", "local-only mode (skip the public connection)")
   .option("--json", "machine-readable output", false)
-  .option("--timeout <minutes>", "how long to wait for the ChatGPT login", parseInteger, 5)
+  .option("--timeout <minutes>", "how long to wait for the ChatGPT login", parsePositiveInteger, 5)
   .action(async (opts: UpOptions) => {
     const root = resolveWorkspace(opts.workspace);
     const json = opts.json;
@@ -482,7 +503,7 @@ program
 
     // 3. Harness adapters (idempotent; a wiring failure must not abort the
     //    connection). Codex gets its sandbox allowlist alongside.
-    const harnesses: { id: string; installed: boolean; skillPath?: string }[] = [];
+    const harnesses: { id: string; installed: boolean; skillPath?: string; error?: string }[] = [];
     for (const harness of requested) {
       try {
         const impl = await loadAdapter(harness);
@@ -491,8 +512,9 @@ program
         harnesses.push({ id: harness, installed: true, skillPath: result.skillPath });
         if (harness === "codex") trySandboxAllow();
       } catch (error) {
-        harnesses.push({ id: harness, installed: false });
-        if (!json) process.stderr.write("Failed to wire " + harnessLabel(harness) + ": " + (error as Error).message + "\n");
+        const message = error instanceof Error ? error.message : String(error);
+        harnesses.push({ id: harness, installed: false, error: message });
+        if (!json) process.stderr.write("Failed to wire " + harnessLabel(harness) + ": " + message + "\n");
       }
     }
 
@@ -799,7 +821,7 @@ program
   .description("Create or repair this workspace's ChatGPT connector automatically")
   .option("-w, --workspace <path>")
   .option("--dry-run", "resolve the page elements and report them, change nothing", false)
-  .option("--timeout <minutes>", "how long to wait for the ChatGPT login", parseInteger, 5)
+  .option("--timeout <minutes>", "how long to wait for the ChatGPT login", parsePositiveInteger, 5)
   .option("--json", "machine-readable output", false)
   .action(async (opts: { workspace?: string; dryRun: boolean; timeout: number; json: boolean }) => {
     const root = resolveWorkspace(opts.workspace);
@@ -1033,15 +1055,21 @@ program
     // MCP local reachability (401 without token means MCP + auth both work)
     if (runtime) {
       try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 5000);
         const response = await fetch(`http://127.0.0.1:${runtime.port}/mcp`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+          signal: controller.signal,
         });
+        clearTimeout(timer);
         report.mcp = { ok: response.status === 401, detail: `unauthorized request returned ${response.status}` };
         report.oauth = { ok: response.status === 401 };
       } catch (error) {
-        report.mcp = { ok: false, detail: (error as Error).message };
+        const message = error instanceof Error ? error.message : String(error);
+        const timedOut = error instanceof Error && error.name === "AbortError";
+        report.mcp = { ok: false, detail: timedOut ? "MCP probe timed out" : message };
       }
     }
 
@@ -1138,14 +1166,21 @@ program
         const nextMcp = mcpUrlFromPublic(currentUrl);
         const action = connectorAction(lastEndpoint?.mcpUrl, nextMcp);
         const boundName = nextMcp
-          ? persistWorkspaceEndpoint({
-              workspaceId: info.workspaceId,
-              workspaceName: info.workspaceName,
-              port: runtime.port,
-              publicUrl: currentUrl,
-              mcpUrl: nextMcp,
-              previous: lastEndpoint,
-            })
+          ? opts.fix
+            ? persistWorkspaceEndpoint({
+                workspaceId: info.workspaceId,
+                workspaceName: info.workspaceName,
+                port: runtime.port,
+                publicUrl: currentUrl,
+                mcpUrl: nextMcp,
+                previous: lastEndpoint,
+              })
+            : connectorNameFor({
+                workspaceName: info.workspaceName,
+                workspaceId: info.workspaceId,
+                previousName: lastEndpoint?.connectorName,
+                hadEndpointBefore: Boolean(lastEndpoint),
+              })
           : connectorName;
         chatgptRepair = {
           ...chatgptRepair,
@@ -1157,7 +1192,7 @@ program
           mcpUrl: nextMcp,
           previousMcpUrl: lastEndpoint?.mcpUrl ?? null,
         };
-        if (action === "update") {
+        if (action === "update" && opts.fix) {
           try {
             const pairing = await adminFetch<PairingResponse>(runtime, "POST", "/admin/pairing");
             chatgptRepair.pairingCode = pairing.code;
@@ -1389,23 +1424,27 @@ program
   .command("logs", { hidden: true })
   .description("Show recent bridge logs")
   .option("-w, --workspace <path>")
-  .option("-n, --lines <n>", "number of lines", "50")
+  .option("-n, --lines <n>", "number of lines", parsePositiveInteger, 50)
   .option("--verbose", "include debug detail", false)
-  .action((opts: { workspace?: string; lines: string; verbose: boolean }) => {
-    const workspace = new Workspace(resolveWorkspace(opts.workspace));
-    const candidates = [
-      path.join(getStateDir(), "logs", "bridge.log"),
-      path.join(getStateDir(), "logs", `bridge-${workspace.id}.out.log`),
-    ];
-    let shown = false;
-    for (const file of candidates) {
-      if (!fs.existsSync(file)) continue;
-      const lines = fs.readFileSync(file, "utf8").trim().split("\n");
-      const filtered = opts.verbose ? lines : lines.filter((line) => !line.includes(" DEBUG "));
-      say(filtered.slice(-parseInt(opts.lines, 10)).join("\n"));
-      shown = true;
+  .action((opts: { workspace?: string; lines: number; verbose: boolean }) => {
+    try {
+      const workspace = new Workspace(resolveWorkspace(opts.workspace));
+      const candidates = [
+        path.join(getStateDir(), "logs", "bridge.log"),
+        path.join(getStateDir(), "logs", `bridge-${workspace.id}.out.log`),
+      ];
+      let shown = false;
+      for (const file of candidates) {
+        if (!fs.existsSync(file)) continue;
+        const lines = fs.readFileSync(file, "utf8").trim().split("\n");
+        const filtered = opts.verbose ? lines : lines.filter((line) => !line.includes(" DEBUG "));
+        say(filtered.slice(-opts.lines).join("\n"));
+        shown = true;
+      }
+      if (!shown) say("No logs yet.");
+    } catch (error) {
+      handleCliError(error, false);
     }
-    if (!shown) say("No logs yet.");
   });
 
 program
@@ -1414,14 +1453,18 @@ program
   .option("-w, --workspace <path>")
   .option("--json", "machine-readable output", false)
   .action((opts: { workspace?: string; json: boolean }) => {
-    const workspace = new Workspace(resolveWorkspace(opts.workspace));
-    const project = workspace.detectProject();
-    const data = { workspaceId: workspace.id, name: workspace.name, root: workspace.root, ...project };
-    if (opts.json) say(JSON.stringify(data));
-    else {
-      say(`Workspace：${data.name}（${data.workspaceId}）`);
-      say(`Type: ${data.projectType}  Languages: ${data.languages.join(", ") || "-"}`);
-      say(`Path: ${data.root}`);
+    try {
+      const workspace = new Workspace(resolveWorkspace(opts.workspace));
+      const project = workspace.detectProject();
+      const data = { workspaceId: workspace.id, name: workspace.name, root: workspace.root, ...project };
+      if (opts.json) say(JSON.stringify(data));
+      else {
+        say(`Workspace：${data.name}（${data.workspaceId}）`);
+        say(`Type: ${data.projectType}  Languages: ${data.languages.join(", ") || "-"}`);
+        say(`Path: ${data.root}`);
+      }
+    } catch (error) {
+      handleCliError(error, opts.json);
     }
   });
 
@@ -1503,7 +1546,7 @@ program
     const remoteCommit = remote.stdout.split(/\s/)[0];
     const updateAvailable = remoteCommit !== local.stdout;
     fs.mkdirSync(getStateDir(), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify({ date: today, updateAvailable, remoteCommit }), { mode: 0o600 });
+    writeFileAtomic(file, JSON.stringify({ date: today, updateAvailable, remoteCommit }), { mode: 0o600 });
     emit({ checked: true, updateAvailable, localCommit: local.stdout, remoteCommit });
   });
 
@@ -1519,24 +1562,28 @@ session
   .option("-w, --workspace <path>")
   .option("--json", "machine-readable output", false)
   .action((opts: { workspace?: string; json: boolean }) => {
-    const workspace = new Workspace(resolveWorkspace(opts.workspace));
-    const saved = readSession(workspace.id);
-    const conversation = resolveConversation(saved);
-    if (opts.json) say(JSON.stringify({ ok: true, session: saved, conversation }));
-    else if (!saved) {
-      say("No ChatGPT conversation recorded yet. New workspaces default to a Project collection.");
-    } else {
-      say(`Mode: ${conversation.mode === "project" ? "Project collection" : "long-running chat"}`);
-      if (conversation.projectUrl) say(`Collection: ${conversation.projectUrl}`);
-      if (saved.title) say(`Session: ${saved.title}`);
-      if (saved.url) say(`Chat: ${saved.url}`);
-      if (saved.connectorName) say(`Connector: ${saved.connectorName}`);
-      if (saved.taskId) say(`Task: ${saved.taskId} (iteration ${saved.iteration ?? 0}, ${saved.lastState ?? "?"})`);
-      if (saved.checkpoint) {
-        say(
-          `Checkpoint: ${saved.checkpoint.protocolState} / waiting for ${saved.checkpoint.waitingFor} (iteration ${saved.checkpoint.iteration})`
-        );
+    try {
+      const workspace = new Workspace(resolveWorkspace(opts.workspace));
+      const saved = readSession(workspace.id);
+      const conversation = resolveConversation(saved);
+      if (opts.json) say(JSON.stringify({ ok: true, session: saved, conversation }));
+      else if (!saved) {
+        say("No ChatGPT conversation recorded yet. New workspaces default to a Project collection.");
+      } else {
+        say(`Mode: ${conversation.mode === "project" ? "Project collection" : "long-running chat"}`);
+        if (conversation.projectUrl) say(`Collection: ${conversation.projectUrl}`);
+        if (saved.title) say(`Session: ${saved.title}`);
+        if (saved.url) say(`Chat: ${saved.url}`);
+        if (saved.connectorName) say(`Connector: ${saved.connectorName}`);
+        if (saved.taskId) say(`Task: ${saved.taskId} (iteration ${saved.iteration ?? 0}, ${saved.lastState ?? "?"})`);
+        if (saved.checkpoint) {
+          say(
+            `Checkpoint: ${saved.checkpoint.protocolState} / waiting for ${saved.checkpoint.waitingFor} (iteration ${saved.checkpoint.iteration})`
+          );
+        }
       }
+    } catch (error) {
+      handleCliError(error, opts.json);
     }
   });
 
@@ -1578,50 +1625,54 @@ session
       nextStep?: string;
       clearCheckpoint: boolean;
     }) => {
-      const workspace = new Workspace(resolveWorkspace(opts.workspace));
-      const modeRaw = opts.mode?.trim().toLowerCase();
-      if (modeRaw && modeRaw !== "long-chat" && modeRaw !== "project") {
-        throw new Error("mode must be long-chat or project");
-      }
-      const protocolRaw = opts.protocolState?.trim().toUpperCase();
-      if (protocolRaw && !PROTOCOL_STATES.includes(protocolRaw as ProtocolState)) {
-        throw new Error(`protocol-state must be one of ${PROTOCOL_STATES.join(", ")}`);
-      }
-      const waitingRaw = opts.waitingFor?.trim();
-      const waitingNorm = waitingRaw
-        ? waitingRaw.toLowerCase() === "none"
-          ? "none"
-          : waitingRaw.toUpperCase()
-        : undefined;
-      if (waitingNorm && !WAITING_FOR.includes(waitingNorm as WaitingFor)) {
-        throw new Error(`waiting-for must be one of ${WAITING_FOR.join(", ")}`);
-      }
-      const saved = mergeSession(readSession(workspace.id), {
-        url: opts.url,
-        title: opts.title,
-        taskId: opts.task,
-        iteration: opts.iteration ? parseInt(opts.iteration, 10) : undefined,
-        lastState: opts.state,
-        conversationMode: modeRaw as ConversationMode | undefined,
-        projectUrl: opts.projectUrl,
-        connectorName: opts.connectorName,
-        clearCheckpoint: opts.clearCheckpoint,
-        checkpoint: protocolRaw
-          ? {
-              protocolState: protocolRaw as ProtocolState,
-              waitingFor: (waitingNorm as WaitingFor | undefined) ?? undefined,
-              originalGoal: opts.goal,
-              completedSubtasks: opts.completedSubtasks,
-              knownIssues: opts.knownIssues,
-              nextExpectedStep: opts.nextStep,
-            }
-          : undefined,
-      });
-      writeSession(workspace.id, saved);
-      if (saved.projectUrl && saved.conversationMode === "project") {
-        check("Recorded the ChatGPT collection; later chats open or reuse from the collection page");
-      } else {
-        check("Recorded the ChatGPT conversation; later tasks will reuse it");
+      try {
+        const workspace = new Workspace(resolveWorkspace(opts.workspace));
+        const modeRaw = opts.mode?.trim().toLowerCase();
+        if (modeRaw && modeRaw !== "long-chat" && modeRaw !== "project") {
+          throw new Error("mode must be long-chat or project");
+        }
+        const protocolRaw = opts.protocolState?.trim().toUpperCase();
+        if (protocolRaw && !PROTOCOL_STATES.includes(protocolRaw as ProtocolState)) {
+          throw new Error(`protocol-state must be one of ${PROTOCOL_STATES.join(", ")}`);
+        }
+        const waitingRaw = opts.waitingFor?.trim();
+        const waitingNorm = waitingRaw
+          ? waitingRaw.toLowerCase() === "none"
+            ? "none"
+            : waitingRaw.toUpperCase()
+          : undefined;
+        if (waitingNorm && !WAITING_FOR.includes(waitingNorm as WaitingFor)) {
+          throw new Error(`waiting-for must be one of ${WAITING_FOR.join(", ")}`);
+        }
+        const saved = mergeSession(readSession(workspace.id), {
+          url: opts.url,
+          title: opts.title,
+          taskId: opts.task,
+          iteration: opts.iteration ? parseNonNegativeInteger(opts.iteration) : undefined,
+          lastState: opts.state,
+          conversationMode: modeRaw as ConversationMode | undefined,
+          projectUrl: opts.projectUrl,
+          connectorName: opts.connectorName,
+          clearCheckpoint: opts.clearCheckpoint,
+          checkpoint: protocolRaw
+            ? {
+                protocolState: protocolRaw as ProtocolState,
+                waitingFor: (waitingNorm as WaitingFor | undefined) ?? undefined,
+                originalGoal: opts.goal,
+                completedSubtasks: opts.completedSubtasks,
+                knownIssues: opts.knownIssues,
+                nextExpectedStep: opts.nextStep,
+              }
+            : undefined,
+        });
+        writeSession(workspace.id, saved);
+        if (saved.projectUrl && saved.conversationMode === "project") {
+          check("Recorded the ChatGPT collection; later chats open or reuse from the collection page");
+        } else {
+          check("Recorded the ChatGPT conversation; later tasks will reuse it");
+        }
+      } catch (error) {
+        handleCliError(error, false);
       }
     }
   );
@@ -1630,12 +1681,17 @@ session
   .command("clear")
   .description("Forget the current ChatGPT chat (Project binding is kept)")
   .option("-w, --workspace <path>")
-  .action((opts: { workspace?: string }) => {
-    const workspace = new Workspace(resolveWorkspace(opts.workspace));
-    const result = clearChatPointer(workspace.id);
-    if (!result.cleared) say("No ChatGPT conversation recorded yet.");
-    else if (result.keptProject) check("Cleared the current chat; the collection binding is kept");
-    else check("Cleared the conversation record; the next task opens a new ChatGPT chat");
+  .option("--json", "machine-readable output", false)
+  .action((opts: { workspace?: string; json: boolean }) => {
+    try {
+      const workspace = new Workspace(resolveWorkspace(opts.workspace));
+      const result = clearChatPointer(workspace.id);
+      if (!result.cleared) say("No ChatGPT conversation recorded yet.");
+      else if (result.keptProject) check("Cleared the current chat; the collection binding is kept");
+      else check("Cleared the conversation record; the next task opens a new ChatGPT chat");
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
   });
 
 // ---------------------------------------------------------------- prefs
@@ -1701,7 +1757,7 @@ program
   .requiredOption("--iteration <n>", "non-negative execution iteration", parseNonNegativeInteger)
   .option("--changed-files <filesOrCount>", "comma-separated files or a count", "0")
   .option("--tests <summary>", "e.g. '27 passed'")
-  .option("--exit-status <status>", "ok | failed | blocked", "ok")
+  .option("--exit-status <status>", "ok | failed | blocked or 0-255", parseExitStatus, "ok")
   .option("--notes <text>")
   .option("--command <text>", "command whose output may be offered to ChatGPT")
   .option("--output <text>", "command output (prefer --output-file for long logs)")
@@ -1721,39 +1777,52 @@ program
       outputFile?: string;
       exitCode?: number;
     }) => {
-      const workspace = new Workspace(resolveWorkspace(opts.workspace));
-      const changed = parseChangedFiles(opts.changedFiles);
-      let outputId: number | undefined;
-      let outputAvailable = false;
-      const rawOutput =
-        opts.outputFile !== undefined
-          ? readCappedUtf8(path.resolve(opts.outputFile), MAX_RECORD_OUTPUT_READ)
-          : opts.output;
-      if (opts.command && rawOutput !== undefined) {
-        const savedOutput = saveExecutionOutput(workspace.id, {
-          command: opts.command,
-          raw: rawOutput,
-          exitCode: opts.exitCode ?? null,
+      try {
+        const workspace = new Workspace(resolveWorkspace(opts.workspace));
+        const changed = parseChangedFiles(opts.changedFiles);
+        let outputId: number | undefined;
+        let outputAvailable = false;
+        let rawOutput: string | undefined;
+        if (opts.outputFile !== undefined) {
+          try {
+            rawOutput = readCappedUtf8(path.resolve(opts.outputFile), MAX_RECORD_OUTPUT_READ);
+          } catch (error) {
+            throw new Error(
+              `Cannot read --output-file: ${(error as Error).message}. ` +
+                `Ensure the file exists and the directory path is correct.`
+            );
+          }
+        } else {
+          rawOutput = opts.output;
+        }
+        if (opts.command && rawOutput !== undefined) {
+          const savedOutput = saveExecutionOutput(workspace.id, {
+            command: opts.command,
+            raw: rawOutput,
+            exitCode: opts.exitCode ?? null,
+            taskId: opts.task,
+            iteration: opts.iteration,
+          });
+          outputId = savedOutput.id;
+          outputAvailable = savedOutput.allowed;
+        }
+        appendExecutionRecord(workspace.id, {
           taskId: opts.task,
           iteration: opts.iteration,
+          changedFiles: changed,
+          tests: opts.tests ?? null,
+          exitStatus: opts.exitStatus,
+          timestamp: new Date().toISOString(),
+          notes: opts.notes?.slice(0, 400),
+          outputId,
+          outputAvailable,
         });
-        outputId = savedOutput.id;
-        outputAvailable = savedOutput.allowed;
+        if (outputId !== undefined && !outputAvailable) check("Recorded the execution summary (output not exposed to ChatGPT)");
+        else if (outputId !== undefined) check("Recorded the execution summary and output");
+        else check("Recorded the execution summary");
+      } catch (error) {
+        handleCliError(error, false);
       }
-      appendExecutionRecord(workspace.id, {
-        taskId: opts.task,
-        iteration: opts.iteration,
-        changedFiles: changed,
-        tests: opts.tests ?? null,
-        exitStatus: opts.exitStatus,
-        timestamp: new Date().toISOString(),
-        notes: opts.notes?.slice(0, 400),
-        outputId,
-        outputAvailable,
-      });
-      if (outputId !== undefined && !outputAvailable) check("Recorded the execution summary (output not exposed to ChatGPT)");
-      else if (outputId !== undefined) check("Recorded the execution summary and output");
-      else check("Recorded the execution summary");
     }
   );
 

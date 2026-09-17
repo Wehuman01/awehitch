@@ -134,9 +134,34 @@ function pairingPage(opts: {
 </html>`;
 }
 
+/**
+ * Stable per-client key for rate limiting. The bridge only ever sees loopback
+ * connections (direct or via cloudflared), so the socket address alone would
+ * collapse every remote user into one bucket, while trusting the whole XFF
+ * chain lets a caller pick their own key by forging entries. Cloudflare (and
+ * conforming proxies) APPEND the connecting IP, so the last hop is the one
+ * entry the client cannot forge.
+ */
+export function pairingIpKey(req: Request): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  const chain = (Array.isArray(forwarded) ? forwarded.join(",") : forwarded ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (chain.length > 0) return chain[chain.length - 1];
+  return req.socket.remoteAddress ?? "unknown";
+}
+
+// Bounds for the unauthenticated OAuth endpoints: without them one client can
+// grow in-memory pending authorize pages or the on-disk client list forever.
+const MAX_PENDING_AUTH_REQUESTS = 50;
+const REGISTER_RATE_LIMIT = 5;
+const REGISTER_RATE_WINDOW_MS = 60 * 60_000;
+
 export function createOAuthRouter(deps: OAuthDeps): Router {
   const router = Router();
   const pendingRequests = new Map<string, PendingAuthRequest>();
+  const registerHits = new Map<string, { count: number; resetAt: number }>();
 
   const prunePending = (): void => {
     const now = Date.now();
@@ -162,6 +187,33 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
   // ---- Dynamic Client Registration (RFC 7591) ------------------------------
 
   router.post("/oauth/register", json(), (req, res) => {
+    // Rate-limit registrations that arrived through the tunnel (XFF present).
+    // Direct loopback calls are the local CLI/tests — an attacker on loopback
+    // can read the admin token anyway, so limiting them buys nothing.
+    if (pairingIpKey(req) !== (req.socket.remoteAddress ?? "")) {
+      const key = pairingIpKey(req);
+      const now = Date.now();
+      const hits = registerHits.get(key);
+      if (hits && now < hits.resetAt && hits.count >= REGISTER_RATE_LIMIT) {
+        res.status(429).json({
+          error: "slow_down",
+          error_description: "Too many client registrations from this address; retry later.",
+        });
+        return;
+      }
+      registerHits.set(
+        key,
+        hits && now < hits.resetAt
+          ? { count: hits.count + 1, resetAt: hits.resetAt }
+          : { count: 1, resetAt: now + REGISTER_RATE_WINDOW_MS }
+      );
+      if (registerHits.size > 10_000) {
+        for (const [key, hits] of registerHits) {
+          if (Date.now() >= hits.resetAt) registerHits.delete(key);
+        }
+        if (registerHits.size > 10_000) registerHits.clear();
+      }
+    }
     const body = req.body as { client_name?: string; redirect_uris?: unknown };
     const redirectUris = Array.isArray(body.redirect_uris) ? body.redirect_uris : [];
     if (
@@ -174,10 +226,19 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
       });
       return;
     }
-    const client = deps.store.registerClient({
-      clientName: typeof body.client_name === "string" ? body.client_name.slice(0, 200) : undefined,
-      redirectUris: redirectUris as string[],
-    });
+    let client;
+    try {
+      client = deps.store.registerClient({
+        clientName: typeof body.client_name === "string" ? body.client_name.slice(0, 200) : undefined,
+        redirectUris: redirectUris as string[],
+      });
+    } catch (error) {
+      res.status(429).json({
+        error: "too_many_clients",
+        error_description: (error as Error).message,
+      });
+      return;
+    }
     deps.logger.info(`Registered OAuth client ${client.clientId} (${client.clientName ?? "unnamed"})`);
     res.status(201).json({
       client_id: client.clientId,
@@ -222,6 +283,17 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
       return;
     }
     const scopes = filterScopes(query.scope);
+    if (query.scope?.trim() && scopes.length === 0) {
+      // An all-unknown scope request grants nothing; reject it outright
+      // instead of silently upgrading it to every scope (the old behavior).
+      fail("invalid_scope", `None of the requested scopes are supported: ${query.scope}`);
+      return;
+    }
+    if (pendingRequests.size >= MAX_PENDING_AUTH_REQUESTS) {
+      setAuthSecurityHeaders(res);
+      res.status(429).send("Too many authorization requests are waiting. Wait a minute and retry.");
+      return;
+    }
     const request: PendingAuthRequest = {
       id: randomBytes(16).toString("hex"),
       clientId: client.clientId,
@@ -249,7 +321,7 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
       res.status(400).send("This authorization request has expired. Please reconnect from ChatGPT.");
       return;
     }
-    const verdict = deps.pairing.verify(body.pairing_code ?? "", req.ip);
+    const verdict = deps.pairing.verify(body.pairing_code ?? "", pairingIpKey(req));
     if (!verdict.ok) {
       const messages: Record<string, string> = {
         invalid: `Incorrect pairing code.${verdict.attemptsLeft !== undefined ? ` ${verdict.attemptsLeft} attempts left.` : ""}`,

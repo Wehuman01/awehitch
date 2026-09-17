@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import path from "node:path";
+import type { Request } from "express";
 import { startBridge, type Bridge } from "../src/bridge/server.js";
+import { pairingIpKey } from "../src/auth/oauth.js";
 import { makeTmpDir, cleanup, write, isolateStateDir, pkceVerifierAndChallenge } from "./helpers.js";
 
 let root: string;
@@ -329,5 +331,114 @@ describe("refresh token rotation", () => {
 
     const replayed = await refresh(initial.body.refresh_token);
     expect(replayed.status).toBe(400);
+  });
+});
+
+describe("pairingIpKey", () => {
+  it("uses the last XFF hop so forged entries cannot rotate the rate-limit key", () => {
+    const req = {
+      headers: { "x-forwarded-for": "1.2.3.4, 5.6.7.8" },
+      socket: { remoteAddress: "127.0.0.1" },
+    } as unknown as Request;
+    expect(pairingIpKey(req)).toBe("5.6.7.8");
+  });
+
+  it("falls back to the socket address when no proxy chain is present", () => {
+    const req = { headers: {}, socket: { remoteAddress: "127.0.0.1" } } as unknown as Request;
+    expect(pairingIpKey(req)).toBe("127.0.0.1");
+  });
+});
+
+describe("scope handling", () => {
+  it("redirects with invalid_scope when only unknown scopes are requested", async () => {
+    const clientId = await registerClient();
+    const { challenge } = pkceVerifierAndChallenge();
+    const authorizeUrl = new URL(`${base}/oauth/authorize`);
+    authorizeUrl.searchParams.set("client_id", clientId);
+    authorizeUrl.searchParams.set("redirect_uri", REDIRECT_URI);
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("code_challenge", challenge);
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
+    authorizeUrl.searchParams.set("scope", "admin:write total:pwn");
+    const response = await fetch(authorizeUrl, { redirect: "manual" });
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toContain("error=invalid_scope");
+  });
+
+  it("shows and grants only the supported subset of a mixed scope request", async () => {
+    const clientId = await registerClient();
+    const { challenge } = pkceVerifierAndChallenge();
+    const authorizeUrl = new URL(`${base}/oauth/authorize`);
+    authorizeUrl.searchParams.set("client_id", clientId);
+    authorizeUrl.searchParams.set("redirect_uri", REDIRECT_URI);
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("code_challenge", challenge);
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
+    authorizeUrl.searchParams.set("scope", "workspace.read bogus_scope");
+    const response = await fetch(authorizeUrl, { redirect: "manual" });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("Read files in this workspace");
+    expect(html).not.toContain("bogus_scope");
+  });
+});
+
+describe("unauthenticated endpoint bounds", () => {
+  async function withBridge(
+    fn: (bridge: Bridge, base: string) => Promise<void>
+  ): Promise<void> {
+    const root = makeTmpDir("oauth-bounds");
+    write(root, "hello.txt", "bounds\n");
+    const boundsBridge = await startBridge({
+      workspaceRoot: root,
+      port: 0,
+      persistRuntime: false,
+      authStoreFile: path.join(makeTmpDir("auth-bounds"), "store.json"),
+    });
+    try {
+      await fn(boundsBridge, boundsBridge.localBaseUrl());
+    } finally {
+      await boundsBridge.close();
+      cleanup(root);
+    }
+  }
+
+  it("rejects authorize requests beyond the pending cap (429)", async () => {
+    await withBridge(async (boundsBridge, boundsBase) => {
+      const clientId = boundsBridge.authStore.registerClient({ redirectUris: [REDIRECT_URI] }).clientId;
+      const { challenge } = pkceVerifierAndChallenge();
+      const authorizeUrl = new URL(`${boundsBase}/oauth/authorize`);
+      authorizeUrl.searchParams.set("client_id", clientId);
+      authorizeUrl.searchParams.set("redirect_uri", REDIRECT_URI);
+      authorizeUrl.searchParams.set("response_type", "code");
+      authorizeUrl.searchParams.set("code_challenge", challenge);
+      authorizeUrl.searchParams.set("code_challenge_method", "S256");
+      for (let i = 0; i < 50; i += 1) {
+        const response = await fetch(authorizeUrl, { redirect: "manual" });
+        expect(response.status).toBe(200);
+      }
+      const overflow = await fetch(authorizeUrl, { redirect: "manual" });
+      expect(overflow.status).toBe(429);
+    });
+  });
+
+  it("rejects client registration beyond the client cap (429)", async () => {
+    await withBridge(async (_boundsBridge, boundsBase) => {
+      for (let i = 0; i < 200; i += 1) {
+        const response = await fetch(`${boundsBase}/oauth/register`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ client_name: `c-${i}`, redirect_uris: [REDIRECT_URI] }),
+        });
+        expect(response.status).toBe(201);
+      }
+      const overflow = await fetch(`${boundsBase}/oauth/register`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ client_name: "one-too-many", redirect_uris: [REDIRECT_URI] }),
+      });
+      expect(overflow.status).toBe(429);
+      expect(((await overflow.json()) as { error: string }).error).toBe("too_many_clients");
+    });
   });
 });

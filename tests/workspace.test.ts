@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { Workspace, WorkspaceError } from "../src/workspace/manager.js";
+import { IgnoreRules } from "../src/workspace/ignore.js";
 import { makeTmpDir, cleanup, write } from "./helpers.js";
 
 let root: string;
@@ -114,6 +115,17 @@ describe("sensitive files", () => {
     expect(ws.resolve(".env.example").rel).toBe(".env.example");
   });
 
+  it("denies .envrc (direnv secrets)", () => {
+    expectDenied(".envrc");
+  });
+
+  it("denies the .git metadata directory (remote credentials live in .git/config)", () => {
+    write(root, ".git/config", "[remote \"origin\"]\nurl = https://token@example.com/repo.git\n");
+    expectDenied(".git/config");
+    write(root, ".git/COMMIT_EDITMSG", "commit message\n");
+    expectDenied(".git/COMMIT_EDITMSG");
+  });
+
   it("denies keys and certificates", () => {
     expectDenied("certs/server.pem");
     expectDenied("keys/id_rsa");
@@ -133,6 +145,21 @@ describe("sensitive files", () => {
     expect(paths).toContain("hello.txt");
     expect(paths).not.toContain(".env");
     expect(paths.some((p) => p.includes("private-notes"))).toBe(false);
+    // .git is both sensitive (read-denied) and noise (hidden from listing).
+    expect(paths.some((p) => p === ".git" || p.startsWith(".git/"))).toBe(false);
+  });
+
+  it("marks .git/ and .envrc sensitive while keeping .env.example readable and .git hidden", () => {
+    const rules = new IgnoreRules(root);
+    expect(rules.isSensitive(".git/config")).toBe(true);
+    expect(rules.isSensitive(".git/COMMIT_EDITMSG")).toBe(true);
+    expect(rules.isSensitive(".envrc")).toBe(true);
+    expect(rules.isSensitive(".env.example")).toBe(false);
+    // .git is noise too: hidden from listing/search, not an error. The ignore
+    // lib matches directory patterns (".git/") against paths INSIDE the
+    // directory, not the bare ".git" name.
+    expect(rules.isNoise(".git/config")).toBe(true);
+    expect(rules.isHidden(".git/config")).toBe(true);
   });
 });
 

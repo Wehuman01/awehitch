@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,7 +7,7 @@ import { detectHarnesses } from "../src/adapters/detect.js";
 import { AuthStore } from "../src/auth/store.js";
 import { connectorAction, readLastEndpoint, writeLastEndpoint } from "../src/config/endpoint.js";
 import { revokeConnectorAccess } from "../src/cli/index.js";
-import { cleanup, makeTmpDir } from "./helpers.js";
+import { cleanup, makeTmpDir, isolateStateDir } from "./helpers.js";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliEntry = path.join(projectRoot, "src/cli/index.ts");
@@ -20,7 +20,7 @@ function runCli(args: string[]): ReturnType<typeof spawnSync> {
   });
 }
 
-const HARNESS_ENV_KEYS = ["CODEX_HOME", "OPENCODE_CONFIG", "ZCODE_HOME"] as const;
+const HARNESS_ENV_KEYS = ["CODEX_HOME", "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "XDG_CONFIG_HOME", "ZCODE_HOME"] as const;
 
 /** Point the harness homes at controlled paths for the duration of `run`. */
 function withHarnessHomes(homes: Partial<Record<(typeof HARNESS_ENV_KEYS)[number], string>>, run: () => void): void {
@@ -44,7 +44,7 @@ describe("detectHarnesses", () => {
       withHarnessHomes(
         {
           CODEX_HOME: path.join(tmp, "no-codex"),
-          OPENCODE_CONFIG: path.join(tmp, "no-opencode"),
+          OPENCODE_CONFIG_DIR: path.join(tmp, "no-opencode"),
           ZCODE_HOME: path.join(tmp, "no-zcode"),
         },
         () => expect(detectHarnesses()).toEqual([])
@@ -62,7 +62,7 @@ describe("detectHarnesses", () => {
       withHarnessHomes(
         {
           CODEX_HOME: path.join(tmp, "codex"),
-          OPENCODE_CONFIG: path.join(tmp, "no-opencode"),
+          OPENCODE_CONFIG_DIR: path.join(tmp, "no-opencode"),
           ZCODE_HOME: path.join(tmp, "zcode"),
         },
         () => expect(detectHarnesses()).toEqual(["codex", "zcode"])
@@ -164,5 +164,52 @@ describe("command surface", () => {
     expect(result.status).toBe(1);
     const payload = JSON.parse(result.stdout);
     expect(payload).toMatchObject({ ok: false, error: { code: "BAD_WORKSPACE" } });
+  });
+
+  it("rejects negative --timeout with a clear commander error", () => {
+    const result = runCli(["up", "--workspace", projectRoot, "--timeout", "-1", "--json"]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("timeout");
+  });
+
+  it("rejects non-integer --iteration for session set", () => {
+    const stateDir = isolateStateDir();
+    try {
+      const result = runCli(["session", "set", "--workspace", projectRoot, "--iteration", "abc"]);
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain("must be an integer");
+    } finally {
+      cleanup(stateDir);
+      delete process.env.AWEHITCH_STATE_DIR;
+    }
+  });
+
+  it("rejects negative -n for logs", () => {
+    const result = runCli(["logs", "--workspace", projectRoot, "-n", "-5"]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("lines");
+  });
+
+  it("rejects invalid --exit-status for record", () => {
+    const result = runCli(["record", "--workspace", projectRoot, "--task", "t1", "--iteration", "0", "--exit-status", "maybe"]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("exit-status");
+  });
+
+  it("doctor --no-fix does not mutate the endpoint file", () => {
+    const stateDir = isolateStateDir();
+    try {
+      const endpointFile = path.join(stateDir, "endpoints", "doc-ws.json");
+      fs.mkdirSync(path.dirname(endpointFile), { recursive: true });
+      fs.writeFileSync(endpointFile, JSON.stringify({ workspaceId: "doc-ws", port: 1, publicUrl: null, mcpUrl: null, savedAt: new Date().toISOString() }));
+      const before = fs.readFileSync(endpointFile, "utf8");
+      const result = runCli(["doctor", "--workspace", projectRoot, "--no-fix", "--json"]);
+      expect(result.status).toBe(0);
+      const after = fs.readFileSync(endpointFile, "utf8");
+      expect(after).toBe(before);
+    } finally {
+      cleanup(stateDir);
+      delete process.env.AWEHITCH_STATE_DIR;
+    }
   });
 });

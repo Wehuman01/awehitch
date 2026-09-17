@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { ensureDir, getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
 import { SERVICE_NAME, VERSION } from "../version.js";
 
@@ -68,7 +69,7 @@ export async function probeBridge(
 
 export type BridgeObservation =
   | { state: "healthy"; runtime: RuntimeState }
-  | { state: "stopped"; runtime: RuntimeState | null; reason: "runtime_missing" | "pid_missing" }
+  | { state: "stopped"; runtime: RuntimeState | null; reason: "runtime_missing" | "pid_missing" | "stale_pid" }
   | { state: "unknown"; runtime: RuntimeState | null; reason: "probe_failed" | "pid_unknown" | "workspace_mismatch" };
 
 function observePid(pid: number): "present" | "missing" | "unknown" {
@@ -79,6 +80,52 @@ function observePid(pid: number): "present" | "missing" | "unknown" {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ESRCH" ? "missing" : "unknown";
   }
+}
+
+/** Read the command line of a running process. Null when unreadable. */
+export function readProcessCmdline(pid: number): string | null {
+  try {
+    if (process.platform === "linux") {
+      const content = fs.readFileSync(path.join("/proc", String(pid), "cmdline"), "utf8");
+      // /proc/<pid>/cmdline uses NUL separators
+      return content.replace(/\0/g, " ").trim();
+    }
+    if (process.platform === "darwin" || process.platform === "freebsd" || process.platform === "openbsd") {
+      const result = spawnSync("ps", ["-p", String(pid), "-o", "command="], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      if (result.status !== 0 || !result.stdout) return null;
+      return result.stdout.trim();
+    }
+    if (process.platform === "win32") {
+      const result = spawnSync("powershell", [
+        "-NoProfile",
+        "-Command",
+        `Get-CimInstance Win32_Process -Filter ProcessId=${pid} | Select-Object -ExpandProperty CommandLine`,
+      ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+      if (result.status !== 0 || !result.stdout) return null;
+      return result.stdout.trim();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when a command line looks like an awehitch bridge serving this
+ * workspace. Heuristic by design: it guards against killing a pid the system
+ * reused, not against a local adversary who can spoof cmdlines.
+ */
+export function isAwehitchBridge(cmdline: string | null, workspaceRoot: string): boolean {
+  if (!cmdline) return false;
+  const normalized = cmdline.toLowerCase();
+  if (!normalized.includes("serve")) return false;
+  if (!normalized.includes(workspaceRoot.toLowerCase())) return false;
+  // The entry appears as ".../awehitch" (installed) or ".../cli/index.js"
+  // (repo dist/src layout).
+  return normalized.includes("awehitch") || normalized.includes(`cli${path.sep}`);
 }
 
 /**
@@ -99,6 +146,18 @@ export async function findBridgeObservation(workspaceId: string): Promise<Bridge
 
   const pid = observePid(runtime.pid);
   if (pid === "missing") return { state: "stopped", runtime, reason: "pid_missing" };
+  if (pid === "present") {
+    const cmdline = readProcessCmdline(runtime.pid);
+    if (cmdline === null) {
+      // Identity unreadable (ps/proc failed): refuse to guess "stopped",
+      // or a healthy-but-unverifiable bridge could be double-spawned.
+      return { state: "unknown", runtime, reason: "pid_unknown" };
+    }
+    if (!isAwehitchBridge(cmdline, runtime.workspaceRoot)) {
+      // The pid lives on as an unrelated process: the runtime file is stale.
+      return { state: "stopped", runtime, reason: "stale_pid" };
+    }
+  }
   return { state: "unknown", runtime, reason: pid === "unknown" ? "pid_unknown" : "probe_failed" };
 }
 

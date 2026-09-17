@@ -73,6 +73,11 @@ export function acquireBrowserLock(workspaceId: string): BrowserLockAcquire {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const holder = readLock(file);
+      if (holder && holder.pid === process.pid) {
+        // Same process re-acquiring: treat as self-owned and steal.
+        fs.rmSync(file, { force: true });
+        continue;
+      }
       if (holder && isAlive(holder.pid)) return { heldBy: holder };
       // Stale or unreadable lock — remove it and race again.
       fs.rmSync(file, { force: true });

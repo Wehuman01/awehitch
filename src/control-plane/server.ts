@@ -299,6 +299,23 @@ export async function runStdioServer(workspaceRoot: string): Promise<void> {
   const server = await createControlPlaneServer({ workspaceRoot, logger });
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
+  // Graceful shutdown: close the MCP server/transport (which releases the
+  // shared browser via the existing idle-close / cleanup paths) and then exit.
+  // SIGTERM exits 143 (128 + 15) per Unix convention; SIGINT is an expected
+  // way for a human to stop the server, so it exits 0 after a clean close.
+  const shutdown = async (signal: "SIGTERM" | "SIGINT"): Promise<void> => {
+    try {
+      await server.close();
+    } catch {
+      // ignore cleanup errors during shutdown
+    }
+    if (signal === "SIGTERM") process.exit(143);
+    process.exit(0);
+  };
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+
   // Keep the process alive until the parent closes stdio.
   await new Promise<void>(() => undefined);
 }

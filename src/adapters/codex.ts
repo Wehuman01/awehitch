@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { writeFileAtomic } from "../fs/atomic.js";
 import { HarnessId, harnessHome } from "./paths.js";
 import { ensureSandboxAllowlist, isStateDirAllowlisted } from "../config/sandbox-allow.js";
 import { getStateDir } from "../config/paths.js";
@@ -25,11 +26,9 @@ export function setupCodexAdapter(opts: {
   const skillDir = path.join(home, "skills", "awehitch");
   fs.mkdirSync(skillDir, { recursive: true });
   const skillPath = path.join(skillDir, "SKILL.md");
-  fs.writeFileSync(
-    skillPath,
-    renderSkill({ harness: "Codex", connectorName: opts.connectorName }),
-    { mode: 0o644 }
-  );
+  writeFileAtomic(skillPath, renderSkill({ harness: "Codex", connectorName: opts.connectorName }), {
+    mode: 0o644,
+  });
 
   // 2. MCP entry (idempotent TOML upsert; the awehitch entry is ours alone)
   const configPath = getCodexConfigPath();
@@ -37,7 +36,7 @@ export function setupCodexAdapter(opts: {
   const previous = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "";
   const next = upsertCodexMcpEntry(previous, opts.cliEntry, opts.workspaceRoot);
   if (next !== previous) {
-    fs.writeFileSync(configPath, next, { encoding: "utf8", mode: 0o600 });
+    writeFileAtomic(configPath, next, { mode: 0o600 });
   }
 
   // 3. Sandbox writable_roots (state dir; code copied from the reference impl)

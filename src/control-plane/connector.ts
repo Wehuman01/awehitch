@@ -546,27 +546,32 @@ export async function fillConnectorForm(
   // The create POST's status is the only reliable verdict: a 409 ("name
   // already exists") can close the modal with no row created, and a silent
   // dead click once looked "done" and cost 60s of confusion (run-2 lesson).
-  const conflictRef: { current: { status: number; message: string } | null } = { current: null };
+  const verdictRef: { current: { kind: "conflict" | "error"; status: number; message: string } | null } = {
+    current: null,
+  };
   let resolveVerdict!: () => void;
   const verdictSeen = new Promise<void>((resolve) => {
     resolveVerdict = resolve;
   });
   const watchCreateResponses = (response: PlaywrightResponse): void => {
     if (!response.url().includes("/backend-api/aip/connectors/mcp")) return;
-    if (response.status() >= 200 && response.status() < 300) {
+    const status = response.status();
+    if (status >= 200 && status < 300) {
       resolveVerdict();
       return;
     }
-    conflictRef.current = { status: response.status(), message: "" };
+    // Only a 409 means the name is taken. Treating every non-2xx as a
+    // conflict made one transient 500 mint an "X 2" renamed connector.
+    verdictRef.current = { kind: status === 409 ? "conflict" : "error", status, message: "" };
     void response
       .text()
       .then((body) => {
-        const conflict = conflictRef.current;
-        if (conflict && !conflict.message) {
+        const verdict = verdictRef.current;
+        if (verdict && !verdict.message) {
           try {
-            conflict.message = (JSON.parse(body)?.detail?.message ?? body).slice(0, 200);
+            verdict.message = (JSON.parse(body)?.detail?.message ?? body).slice(0, 200);
           } catch {
-            conflict.message = body.slice(0, 200);
+            verdict.message = body.slice(0, 200);
           }
         }
       })
@@ -606,11 +611,19 @@ export async function fillConnectorForm(
     page.off("response", watchCreateResponses);
   }
 
-  const conflict = conflictRef.current;
-  if (conflict) {
+  const verdict = verdictRef.current;
+  if (verdict?.kind === "conflict") {
     throw new ConnectorSetupError(
       "CONNECTOR_NAME_CONFLICT",
-      `ChatGPT rejected the create (HTTP ${conflict.status}): ${conflict.message || "name already taken"}`
+      `ChatGPT rejected the create (HTTP ${verdict.status}): ${verdict.message || "name already taken"}`
+    );
+  }
+  if (verdict) {
+    throw new ConnectorSetupError(
+      "CONNECTOR_FAILED",
+      `ChatGPT create request failed (HTTP ${verdict.status})${
+        verdict.message ? `: ${verdict.message}` : ""
+      }. This is a server-side failure, not a name conflict — retry with the same name.`
     );
   }
 
