@@ -36,20 +36,18 @@ Requirements: Node.js >= 20, git. `cloudflared` for the public connection (auto-
 Tell your coding agent (codex / opencode / zcode):
 
 ```text
-请帮我完整安装并配置 awehitch，全程自动。
+Please run awehitch and set it up for me automatically.
 ```
 
 Or run the CLI yourself:
 
 ```bash
-awehitch setup -w /path/to/project --harness codex --json
-awehitch login -w /path/to/project        # log in to ChatGPT once in the opened window
-awehitch connector-setup -w /path/to/project  # create the ChatGPT connector
+awehitch -w /path/to/project
 ```
 
-`setup --harness` wires everything: the bridge, the secure tunnel, a pairing code, and the adapter for that harness (MCP registration + skill installation + sandbox tweaks). `connector-setup` then creates or repairs the ChatGPT connector in the same control-plane browser — you do not have to copy an address or a pairing code by hand. Then use your agent normally: "用 ChatGPT 帮我规划 XXX".
+Pairing and connector creation are fully automatic. The only action that may need you: logging in to ChatGPT in the popped-up window. After setup, everyday use requires zero commands.
 
-Only one step can need you: logging in to ChatGPT.
+Then use your agent normally: "Plan XXX for me using ChatGPT".
 
 ## How it works
 
@@ -83,18 +81,13 @@ Per-workspace `.c2c.json`:
 ## Commands
 
 ```bash
-awehitch setup -w <workspace> [--harness codex|opencode|zcode] [--json]
-awehitch start | stop | restart -w <workspace>
-awehitch status -w <workspace> [--json]
-awehitch doctor -w <workspace> [--json]      # diagnose + auto-repair
-awehitch login -w <workspace> [--json]       # control-plane ChatGPT login
-awehitch connector-setup -w <workspace> [--dry-run] [--json]  # create/repair the ChatGPT connector
-awehitch pair | unpair -w <workspace>        # pairing codes / revoke all tokens
-awehitch session get|set|clear -w <workspace> # conversation + checkpoint state
-awehitch sandbox-allow [--json]              # codex writable_roots (idempotent)
+awehitch [-w <path>]       # idempotent "make sure I'm connected"
+awehitch off               # disconnect (revoke access + stop local service; delete the ChatGPT plugin manually if desired)
 ```
 
-All commands support `--json`. Internal: `serve`, `control-plane` (stdio MCP), `record`, `update-check`.
+`awehitch [-w <path>]` automatically identifies the project, establishes a secure public connection, auto-detects installed coding agents (codex / opencode / zcode) and connects them, and opens a browser to create the ChatGPT connector when needed. The only manual step in the entire flow is logging into ChatGPT once in the popped-up window. `--json` for agent use.
+
+Internal/advanced commands (start / stop / status / doctor / pair / tunnel / session / …) are still available: `awehitch <command> --help`.
 
 ## Development
 

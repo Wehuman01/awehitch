@@ -1,6 +1,7 @@
 import { Command, InvalidArgumentError } from "commander";
 import fs from "node:fs";
 import path from "node:path";
+import readline from "node:readline";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { startBridge } from "../bridge/server.js";
@@ -64,10 +65,17 @@ import {
   type ConnectorStep,
 } from "../control-plane/connector.js";
 import { loadSiteSelectors, probeSelectors, type SelectorProbe } from "../control-plane/selectors.js";
-import { HARNESS_IDS, HarnessId, awehitchCliEntry, harnessLabel } from "../adapters/paths.js";
+import { HARNESS_IDS, harnessLabel, awehitchCliEntry, type HarnessId } from "../adapters/paths.js";
 import { loadAdapter } from "../adapters/index.js";
+import { detectHarnesses } from "../adapters/detect.js";
 
-const program = new Command();
+/**
+ * Test seam: the tests assert on command shape (hidden flags) and extracted
+ * offline helpers without driving a real bridge/browser, so the CLI module
+ * must import without tearing down the process. The parse at the bottom is
+ * gated to the main entry; this re-export is the only test-facing surface.
+ */
+export const program = new Command();
 
 const say = (msg: string): void => {
   process.stdout.write(msg + "\n");
@@ -221,13 +229,346 @@ async function ensureBridgeAndTunnel(
   return { runtime, info, mcpUrl };
 }
 
+/**
+ * Revoke ChatGPT's access for a workspace: via the live bridge when one is
+ * running, otherwise directly on the persisted auth store. Split out so tests
+ * can exercise the offline (no-bridge) path without a running daemon.
+ */
+export async function revokeConnectorAccess(workspaceId: string): Promise<void> {
+  const runtime = await findLiveBridge(workspaceId);
+  if (runtime) {
+    await adminFetch(runtime, "POST", "/admin/revoke-all");
+  } else {
+    // bridge not running: revoke directly in the persisted store
+    new AuthStore(workspaceId).revokeAll();
+  }
+}
+
+/** Wait on stdin for a single Enter (used only for the one allowed human pause). */
+function waitForEnter(): Promise<void> {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, terminal: false });
+    rl.once("line", () => {
+      rl.close();
+      resolve();
+    });
+    rl.once("close", () => resolve());
+  });
+}
+
 program
   .name("awehitch")
   .description(`${PRODUCT_NAME} — ChatGPT thinks. Your agent works.`)
   .version(VERSION, "-v, --version")
-  .configureHelp({ sortSubcommands: true });
+  .configureHelp({ sortSubcommands: true })
+  .addHelpText("after", "\n内部/高级命令（doctor、session、tunnel 等）仍可用：awehitch <命令> --help");
 
-// ---------------------------------------------------------------- serve (internal)
+// ---------------------------------------------------------------- awehitch (default: ensure connected)
+
+interface ConnectorOutcome {
+  result: ConnectorSetupResult;
+  connectorName: string;
+  mcpUrl: string;
+  /** True when this run established/rebuilt a connector (address changed). */
+  rebuilt: boolean;
+}
+
+function connectorError(payload: ConnectorSetupResult): { code: string; message: string } {
+  return {
+    code: payload.error?.code ?? "CONNECTOR_FAILED",
+    message: payload.error?.message ?? "连接器创建未完成。",
+  };
+}
+
+/**
+ * Create/repair the ChatGPT connector, mirroring connector-setup's 409 rename
+ * persistence and tokenCount baseline (see that command for why tokensBefore
+ * must be captured before the run).
+ */
+async function runConnectorFor(
+  workspace: Workspace,
+  runtime: RuntimeState,
+  info: AdminInfo,
+  mcpUrl: string,
+  connectorName: string,
+  timeoutMinutes: number,
+  onNotice: (message: string) => void
+): Promise<ConnectorOutcome> {
+  const resolvedMcpUrl = mcpUrl ?? `http://127.0.0.1:${runtime.port}/mcp`;
+  const pairing = await adminFetch<PairingResponse>(runtime, "POST", "/admin/pairing");
+  const tokensBefore = info.tokenCount;
+  const result = await runConnectorSetup({
+    workspaceId: workspace.id,
+    connectorName,
+    mcpUrl: resolvedMcpUrl,
+    pairingCode: pairing.code,
+    dryRun: false,
+    loginTimeoutMs: timeoutMinutes * 60_000,
+    onNotice,
+    verifyAuthorized: async () => {
+      const current = await adminFetch<AdminInfo>(runtime, "GET", "/admin/info");
+      return current.tokenCount > tokensBefore;
+    },
+  });
+  // A 409 conflict makes the flow retry under a bumped title; the final name
+  // must be persisted or the next run would conflict forever.
+  const finalName = result.connectorName ?? connectorName;
+  if (result.ok && finalName !== connectorName) {
+    writeLastEndpoint({
+      workspaceId: workspace.id,
+      port: runtime.port,
+      publicUrl: info.publicUrl,
+      mcpUrl: resolvedMcpUrl,
+      connectorName: finalName,
+    });
+  }
+  return { result, connectorName: finalName, mcpUrl: resolvedMcpUrl, rebuilt: true };
+}
+
+interface UpOptions {
+  workspace?: string;
+  harness?: HarnessId[];
+  noTunnel: boolean;
+  json: boolean;
+  timeout: number;
+}
+
+function parseHarnessOption(value: string, acc: HarnessId[]): HarnessId[] {
+  const harness = value.trim().toLowerCase() as HarnessId;
+  if (!HARNESS_IDS.includes(harness)) {
+    throw new InvalidArgumentError(`must be one of: ${HARNESS_IDS.join(", ")}`);
+  }
+  return [...acc, harness];
+}
+
+// `awehitch` (alias `awehitch up`): "make sure ChatGPT is connected". Every
+// step is idempotent and non-interactive except the single login pause below.
+// The temporary address is the default — the Cloudflare choice prompt is
+// deliberately not shown here.
+program
+  .command("up", { isDefault: true })
+  .description("Connect this workspace to ChatGPT (idempotent; the only manual step is logging in)")
+  .option("-w, --workspace <path>", "workspace root (defaults to current directory)")
+  .option("--harness <id>", "harness adapter to install (repeatable, overrides auto-detection)", parseHarnessOption, [] as HarnessId[])
+  .option("--no-tunnel", "local-only mode (skip the public connection)")
+  .option("--json", "machine-readable output", false)
+  .option("--timeout <minutes>", "how long to wait for the ChatGPT login", parseInteger, 5)
+  .action(async (opts: UpOptions) => {
+    const root = resolveWorkspace(opts.workspace);
+    const json = opts.json;
+    const requested = opts.harness?.length ? [...new Set(opts.harness)] : detectHarnesses();
+
+    let workspace: Workspace;
+    try {
+      workspace = new Workspace(root);
+    } catch (error) {
+      const message = (error as Error).message;
+      if (json) say(JSON.stringify({ ok: false, error: { code: "BAD_WORKSPACE", message } }));
+      else cross(message);
+      process.exitCode = 1;
+      return;
+    }
+
+    if (!json) {
+      say(PRODUCT_NAME);
+      say("");
+      say("正在连接 ChatGPT…");
+      say("");
+    }
+
+    // 1. Bridge + (temporary) tunnel. Never asks the Cloudflare choice prompt.
+    let runtime: RuntimeState;
+    let info: AdminInfo;
+    let mcpUrl: string | null;
+    try {
+      const out = await ensureBridgeAndTunnel(root, { tunnel: !opts.noTunnel });
+      runtime = out.runtime;
+      info = out.info;
+      mcpUrl = out.mcpUrl;
+    } catch (error) {
+      handleCliError(error, json);
+      return;
+    }
+
+    const onNotice = (message: string): void => {
+      if (!json) process.stderr.write(message + "\n");
+    };
+    const connectorName = mcpUrl
+      ? persistWorkspaceEndpoint({
+          workspaceId: info.workspaceId,
+          workspaceName: info.workspaceName,
+          port: runtime.port,
+          publicUrl: info.publicUrl,
+          mcpUrl,
+        })
+      : readLastEndpoint(info.workspaceId)?.connectorName ?? connectorNameFor({
+          workspaceName: info.workspaceName,
+          workspaceId: info.workspaceId,
+          previousName: readLastEndpoint(info.workspaceId)?.connectorName,
+          hadEndpointBefore: Boolean(readLastEndpoint(info.workspaceId)),
+        });
+
+    // 2. Decide whether the ChatGPT side needs any action. Without a public
+    //    address there is nothing to connect (local mode). When the address is
+    //    unchanged AND we already hold an authorized token, do not touch
+    //    ChatGPT at all (a fresh pairing would invalidate the old code).
+    const action = mcpUrl ? connectorAction(readLastEndpoint(info.workspaceId)?.mcpUrl, mcpUrl) : "none";
+    const addressChanged = action === "update";
+    let connectorUpdated = false;
+    // Holder object: assignments happen inside the closure below; a bare `let`
+    // would be narrowed back to `null` at the use site.
+    const connector: { outcome: ConnectorOutcome | null } = { outcome: null };
+    if (mcpUrl && !(action === "none" && info.tokenCount > 0)) {
+      const attempt = async (): Promise<"ok" | "failed" | "paused"> => {
+        const outcome = await runConnectorFor(workspace, runtime, info, mcpUrl, connectorName, opts.timeout, onNotice);
+        if (outcome.result.ok) {
+          connector.outcome = outcome;
+          connectorUpdated = true;
+          return "ok";
+        }
+        const code = outcome.result.error?.code;
+        if (code === "CONNECTOR_NEEDS_HUMAN" && !json) {
+          // The one allowed human pause: the control-plane browser is already
+          // open on the login wall. JSON mode stops here with exit 0 instead —
+          // an expected pause for the agent to relay, not an error.
+          say("请在打开的窗口里登录 ChatGPT，完成后回来按回车…");
+          await waitForEnter();
+          await interactiveLogin(workspace.id, opts.timeout * 60_000).catch(() => undefined);
+          const retry = await runConnectorFor(workspace, runtime, info, mcpUrl, connectorName, opts.timeout, onNotice);
+          if (retry.result.ok) {
+            connector.outcome = retry;
+            connectorUpdated = true;
+            return "ok";
+          }
+          handleConnectorFailure(retry, json);
+          return "failed";
+        }
+        if (code === "CONNECTOR_NEEDS_HUMAN" && json) {
+          say(JSON.stringify({ ok: false, needsLogin: true, message: "请在打开的窗口里登录 ChatGPT，完成后重新运行 awehitch" }));
+          return "paused";
+        }
+        if (code === "CONNECTOR_PAIRING_REJECTED") {
+          onNotice("配对码已失效，已重新生成并重试。");
+          const retry = await runConnectorFor(workspace, runtime, info, mcpUrl, connectorName, opts.timeout, onNotice);
+          if (retry.result.ok) {
+            connector.outcome = retry;
+            connectorUpdated = true;
+            return "ok";
+          }
+          handleConnectorFailure(retry, json);
+          return "failed";
+        }
+        handleConnectorFailure(outcome, json);
+        return "failed";
+      };
+      try {
+        const verdict = await attempt();
+        if (verdict !== "ok") {
+          // "paused" (needsLogin) is the expected stop, exit 0; everything
+          // else already printed its honest failure.
+          if (verdict === "failed") process.exitCode = 1;
+          return;
+        }
+      } catch (error) {
+        handleCliError(error, json);
+        return;
+      }
+    }
+
+    // 3. Harness adapters (idempotent; a wiring failure must not abort the
+    //    connection). Codex gets its sandbox allowlist alongside.
+    const harnesses: { id: string; installed: boolean; skillPath?: string }[] = [];
+    for (const harness of requested) {
+      try {
+        const impl = await loadAdapter(harness);
+        const base = readLastEndpoint(info.workspaceId)?.connectorName ?? connectorName;
+        const result = impl.setup({ workspaceRoot: root, cliEntry: awehitchCliEntry(), connectorName: base });
+        harnesses.push({ id: harness, installed: true, skillPath: result.skillPath });
+        if (harness === "codex") trySandboxAllow();
+      } catch (error) {
+        harnesses.push({ id: harness, installed: false });
+        if (!json) process.stderr.write("接入 " + harnessLabel(harness) + " 失败：" + (error as Error).message + "\n");
+      }
+    }
+
+    // 4. Output.
+    const finalName = connector.outcome?.connectorName ?? connectorName;
+    const tunnelState = readTunnelState(info.workspaceId);
+    if (json) {
+      say(JSON.stringify({
+        ok: true,
+        workspaceId: info.workspaceId,
+        workspaceName: info.workspaceName,
+        connectorName: finalName,
+        mcpUrl: mcpUrl ?? `http://127.0.0.1:${runtime.port}/mcp`,
+        port: runtime.port,
+        tunnel: {
+          mode: isNamedTunnelReady(tunnelState) ? "named" : "quick",
+          hostname: tunnelState.hostname ?? null,
+        },
+        harnesses,
+        needsLogin: false,
+        connectorUpdated,
+      }));
+      return;
+    }
+
+    say(PRODUCT_NAME);
+    say("");
+    if (mcpUrl) check(`ChatGPT 已连上你的项目 ${info.workspaceName}`);
+    else say("· 本地模式已启动（未建立公网连接，ChatGPT 暂时无法访问）");
+    if (requested.length === 0) say("· 未检测到编码 agent（codex / opencode / zcode），可用 --harness 指定");
+    else say(`· 已接入 ${requested.map((h) => harnessLabel(h)).join("、")}`);
+    say("");
+    say("以后在 agent 里说「用 ChatGPT 帮我规划 XXX」就行。");
+    say("重启电脑后它一般自己修好；实在不行就再跑一次 awehitch。");
+    if (addressChanged) {
+      say("");
+      say("连接地址已更换并自动修复。地址偶尔会变属于正常现象；如果太频繁，可以配置固定域名（awehitch tunnel choose --mode named）。");
+    }
+  });
+
+/** Print a connector-setup failure honestly (human or JSON). */
+function handleConnectorFailure(outcome: ConnectorOutcome, json: boolean): void {
+  const err = connectorError(outcome.result);
+  if (json) {
+    say(JSON.stringify({ ok: false, error: err, manualFallback: outcome.result.manualFallback }));
+    return;
+  }
+  cross(err.message);
+  if (outcome.result.manualFallback?.steps) {
+    say("");
+    say("可以手动完成这几步：");
+    for (const step of outcome.result.manualFallback.steps) say("· " + step);
+  }
+}
+
+// ---------------------------------------------------------------- off (disconnect)
+
+program
+  .command("off")
+  .description("Disconnect ChatGPT from this workspace")
+  .option("-w, --workspace <path>")
+  .option("--json", "machine-readable output", false)
+  .action(async (opts: { workspace?: string; json: boolean }) => {
+    const root = resolveWorkspace(opts.workspace);
+    const workspace = new Workspace(root);
+    try {
+      await revokeConnectorAccess(workspace.id);
+      await stopBridge(root);
+    } catch (error) {
+      handleCliError(error, opts.json);
+      return;
+    }
+    if (opts.json) {
+      const name = readLastEndpoint(workspace.id)?.connectorName;
+      say(JSON.stringify({ ok: true, workspaceName: workspace.name, connectorName: name ?? null, pluginsUrl: "https://chatgpt.com/plugins" }));
+      return;
+    }
+    check(`已断开 ChatGPT 对 ${workspace.name} 的访问`);
+    const name = readLastEndpoint(workspace.id)?.connectorName;
+    if (name) say("· 如需彻底移除，可在 ChatGPT 插件页删除「" + name + "」：https://chatgpt.com/plugins");
+  });
 
 program
   .command("serve", { hidden: true })
@@ -262,7 +603,7 @@ program
 // ---------------------------------------------------------------- start
 
 program
-  .command("start")
+  .command("start", { hidden: true })
   .description("Start (or reuse) the bridge for this workspace")
   .option("-w, --workspace <path>", "workspace root (defaults to current directory)")
   .option("--tunnel", "also establish the secure public connection", false)
@@ -295,7 +636,7 @@ program
 // ---------------------------------------------------------------- setup
 
 program
-  .command("setup")
+  .command("setup", { hidden: true })
   .description("First-time setup: bridge + secure connection + pairing code + harness adapter")
   .option("-w, --workspace <path>")
   .option("--harness <harness>", `harness adapter: ${HARNESS_IDS.join(" | ")} (optional, repeatable)`)
@@ -383,7 +724,7 @@ program
 // ---------------------------------------------------------------- login (control-plane browser)
 
 program
-  .command("login")
+  .command("login", { hidden: true })
   .description("Open the control-plane browser and wait for the ChatGPT login")
   .option("-w, --workspace <path>")
   .option("--json", "machine-readable output", false)
@@ -448,7 +789,7 @@ function renderConnectorResult(result: ConnectorSetupResult, dryRun: boolean): v
 }
 
 program
-  .command("connector-setup")
+  .command("connector-setup", { hidden: true })
   .alias("connector")
   .description("Create or repair this workspace's ChatGPT connector automatically")
   .option("-w, --workspace <path>")
@@ -546,7 +887,7 @@ program
 // ---------------------------------------------------------------- stop / restart
 
 program
-  .command("stop")
+  .command("stop", { hidden: true })
   .description("Stop the bridge for this workspace")
   .option("-w, --workspace <path>")
   .action(async (opts: { workspace?: string }) => {
@@ -556,7 +897,7 @@ program
   });
 
 program
-  .command("restart")
+  .command("restart", { hidden: true })
   .description("Restart the bridge for this workspace")
   .option("-w, --workspace <path>")
   .option("--tunnel", "re-establish the secure public connection", false)
@@ -576,7 +917,7 @@ program
 // ---------------------------------------------------------------- status
 
 program
-  .command("status")
+  .command("status", { hidden: true })
   .description("Show bridge status for this workspace")
   .option("-w, --workspace <path>")
   .option("--json", "machine-readable output", false)
@@ -615,7 +956,7 @@ program
 // ---------------------------------------------------------------- doctor
 
 program
-  .command("doctor")
+  .command("doctor", { hidden: true })
   .description("Diagnose and auto-repair the connection")
   .option("-w, --workspace <path>")
   .option("--no-fix", "diagnose only, do not repair")
@@ -1002,7 +1343,7 @@ program
 // ---------------------------------------------------------------- pair / unpair
 
 program
-  .command("pair")
+  .command("pair", { hidden: true })
   .description("Generate a fresh pairing code")
   .option("-w, --workspace <path>")
   .option("--json", "machine-readable output", false)
@@ -1021,7 +1362,7 @@ program
   });
 
 program
-  .command("unpair")
+  .command("unpair", { hidden: true })
   .description("Revoke ChatGPT's access to this workspace immediately")
   .option("-w, --workspace <path>")
   .action(async (opts: { workspace?: string }) => {
@@ -1040,7 +1381,7 @@ program
 // ---------------------------------------------------------------- logs / workspace / record
 
 program
-  .command("logs")
+  .command("logs", { hidden: true })
   .description("Show recent bridge logs")
   .option("-w, --workspace <path>")
   .option("-n, --lines <n>", "number of lines", "50")
@@ -1063,7 +1404,7 @@ program
   });
 
 program
-  .command("workspace")
+  .command("workspace", { hidden: true })
   .description("Show workspace identity and project info")
   .option("-w, --workspace <path>")
   .option("--json", "machine-readable output", false)
@@ -1082,7 +1423,7 @@ program
 // ---------------------------------------------------------------- sandbox-allow (Codex writable_roots)
 
 program
-  .command("sandbox-allow")
+  .command("sandbox-allow", { hidden: true })
   .description("Add the local settings directory to the Codex sandbox allowlist")
   .option("--json", "machine-readable output", false)
   .action((opts: { json: boolean }) => {
@@ -1117,7 +1458,7 @@ function runGit(args: string[]): { ok: boolean; stdout: string } {
 }
 
 program
-  .command("update-check")
+  .command("update-check", { hidden: true })
   .description("Check the repository for a newer version (real check at most once per local day)")
   .option("--force", "check even if already checked today", false)
   .option("--json", "machine-readable output", false)
@@ -1164,7 +1505,7 @@ program
 // ---------------------------------------------------------------- session (ChatGPT conversation / Project memory)
 
 const session = program
-  .command("session")
+  .command("session", { hidden: true })
   .description("Remember the ChatGPT Project and conversation for this workspace");
 
 session
@@ -1295,7 +1636,7 @@ session
 // ---------------------------------------------------------------- prefs
 
 const prefsCmd = program
-  .command("prefs")
+  .command("prefs", { hidden: true })
   .description("Remember ChatGPT developer mode and setup choice for this machine");
 
 prefsCmd
@@ -1413,7 +1754,7 @@ program
 
 // ---------------------------------------------------------------- tunnel
 
-const tunnelCmd = program.command("tunnel").description("Choose or inspect the public connection for this workspace");
+const tunnelCmd = program.command("tunnel", { hidden: true }).description("Choose or inspect the public connection for this workspace");
 
 tunnelCmd
   .command("status", { isDefault: true })
@@ -1539,7 +1880,13 @@ function handleCliError(error: unknown, json: boolean): void {
   process.exitCode = 1;
 }
 
-program.parseAsync(process.argv).catch((error: Error) => {
-  cross(error.message);
-  process.exit(1);
-});
+// Only parse when actually invoked as the CLI. Importing this module (as the
+// tests do) must not tear down the process or parse vitest's argv.
+const isMainEntry =
+  process.argv[1] !== undefined && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+if (isMainEntry) {
+  program.parseAsync(process.argv).catch((error: Error) => {
+    cross(error.message);
+    process.exit(1);
+  });
+}

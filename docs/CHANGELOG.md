@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+**Two commands.** `awehitch` connects, `awehitch off` disconnects. The visible
+CLI surface shrinks from 17 commands to 2; everything else still exists but is
+hidden from help (already-installed skills keep working unchanged).
+
+- `awehitch [-w <path>]` is an idempotent "make sure ChatGPT is connected":
+  bridge + tunnel, harness adapter, and the ChatGPT connector — one command
+  instead of `setup` → `login` → `connector-setup`. The Cloudflare
+  named-tunnel question is no longer asked here; the temporary address is the
+  default (`awehitch tunnel choose --mode named` still upgrades).
+- Harness adapters are auto-detected from their config homes
+  (`CODEX_HOME` / `OPENCODE_CONFIG` / `ZCODE_HOME`, falling back to `~/.codex`,
+  `~/.config/opencode`, `~/.zcode/cli`); `--harness` overrides.
+- The only human pause left is the ChatGPT login. Human mode waits for one
+  Enter and retries in-process; `--json` stops with `{ok:false, needsLogin:true}`
+  and exit code 0 so an agent relays exactly one action, then re-runs.
+- Address changes self-heal: same address + a valid token ⇒ ChatGPT is not
+  touched at all; changed address ⇒ the connector is rebuilt and the output
+  says so. A rejected pairing code auto-retries once with a fresh one.
+- `awehitch off` revokes tokens (live bridge, or the persisted store when no
+  bridge is running) and stops the bridge, then points at the plugins page for
+  optional manual deletion.
+- New tests: harness auto-detection, the offline revoke path, and the help
+  surface (`tests/cli-surface.test.ts`).
+
 **One ChatGPT login per machine.** The control-plane browser profile is now
 shared by every workspace instead of one profile per project, so
 `awehitch login` is run once, not once per workspace.

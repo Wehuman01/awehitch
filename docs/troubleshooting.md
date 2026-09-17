@@ -77,7 +77,8 @@ The C2C state directory lives outside the project (macOS:
 `%LOCALAPPDATA%\awehitch`). Codex's default sandbox cannot write
 there, so each new chat looks like a health-check failure.
 
-`awehitch setup`, `awehitch doctor` and `awehitch sandbox-allow` add that directory to
+The default `awehitch` command, `awehitch doctor` and `awehitch sandbox-allow`
+add that directory to
 `[sandbox_workspace_write].writable_roots` in `~/.codex/config.toml`
 (`%USERPROFILE%\.codex\config.toml` on Windows). After that, later chats
 do not need elevation.
@@ -110,9 +111,10 @@ trace. Upgrading from a pre-sharing version: old per-workspace profiles under
 
 ### Completely stuck
 ```
-awehitch stop
-awehitch setup
+awehitch stop -w <workspace>
+awehitch -w <workspace>
 ```
 
-re-creates the bridge, tunnel and pairing session from scratch. Existing
-authorizations stay valid unless you also ran `awehitch unpair`.
+re-creates the bridge, tunnel and pairing session from scratch. Use
+`awehitch off` instead of `stop` only for a full disconnect — it also revokes
+ChatGPT's tokens.

@@ -36,20 +36,18 @@ corepack pnpm install && corepack pnpm build
 对任意一个编码 agent（codex / opencode / zcode）说：
 
 ```text
-请帮我完整安装并配置 awehitch，全程自动。
+请帮我运行 awehitch 并自动完成配置。
 ```
 
 或自己跑 CLI：
 
 ```bash
-awehitch setup -w /path/to/project --harness codex --json
-awehitch login -w /path/to/project        # 在打开的窗口里登录一次 ChatGPT
-awehitch connector-setup -w /path/to/project  # 自动创建 ChatGPT 连接器
+awehitch -w /path/to/project
 ```
 
-`setup --harness` 一次搞定：启动 bridge、建立安全连接、生成配对码、并接入所选 harness 的 adapter（MCP 注册 + skill 安装 + 沙箱处理）。`connector-setup` 接着在同一个控制面浏览器里创建或修复 ChatGPT 连接器——你不需要手抄地址，也不需要手抄配对码。之后正常使用："用 ChatGPT 帮我规划 XXX"。
+配对与连接器创建全自动。唯一可能需要你动手的，是在弹出的窗口里登录一次 ChatGPT。装好后日常零命令。
 
-唯一可能需要你动手的，是登录 ChatGPT。
+之后正常使用："用 ChatGPT 帮我规划 XXX"。
 
 ## 工作原理
 
@@ -83,18 +81,13 @@ awehitch Bridge（本地，工作区只读网关 + OAuth + 隧道）
 ## 命令
 
 ```bash
-awehitch setup -w <workspace> [--harness codex|opencode|zcode] [--json]
-awehitch start | stop | restart -w <workspace>
-awehitch status -w <workspace> [--json]
-awehitch doctor -w <workspace> [--json]      # 诊断 + 自动修复
-awehitch login -w <workspace> [--json]       # 控制面 ChatGPT 登录
-awehitch connector-setup -w <workspace> [--dry-run] [--json]  # 创建/修复 ChatGPT 连接器
-awehitch pair | unpair -w <workspace>        # 配对码 / 吊销全部令牌
-awehitch session get|set|clear -w <workspace> # 会话 + 检查点
-awehitch sandbox-allow [--json]              # codex writable_roots（幂等）
+awehitch [-w <路径>]       # 幂等的"确保已连接"
+awehitch off               # 断开（吊销访问 + 停止本地服务；ChatGPT 插件页可选手动删除）
 ```
 
-所有命令支持 `--json`。内部命令：`serve`、`control-plane`（stdio MCP）、`record`、`update-check`。
+`awehitch [-w <路径>]` 会自动识别项目、建立安全公网连接、自动探测已安装的编码 agent（codex / opencode / zcode）并接入、需要时打开浏览器自动创建 ChatGPT 连接器。全流程唯一需要你动手的，是在弹出的窗口里登录一次 ChatGPT。`--json` 供 agent 使用。
+
+内部/高级命令（start / stop / status / doctor / pair / tunnel / session / …）仍可用，`awehitch <命令> --help` 查看。
 
 ## 开发
 
