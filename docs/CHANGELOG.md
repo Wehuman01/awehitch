@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.2.2
 
-Security and robustness pass from a full code review (286 tests, +32).
+Security and robustness pass from a full code review (289 tests, +35).
 
 - **Sensitive files**: the whole `.git/` directory (remote credentials in
   `.git/config`, reflog, COMMIT_EDITMSG) and `.envrc` are now denied at the
@@ -47,6 +47,8 @@ Security and robustness pass from a full code review (286 tests, +32).
   briefly, and a list that stays unreadable skips the (optional) cleanup
   step instead of failing it; create then retries under a fresh title if
   the old name is still reserved.
+- **English CLI**: progress output, errors, and help text are now English,
+  matching the agent skill text.
 - **Portability**: the CLI entry no longer depends on Node 20.11+
   (`import.meta.dirname`; dist preferred with a tsx dev fallback), and an
   unset `HOME` no longer probes the CWD for cloudflared.

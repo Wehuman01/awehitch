@@ -1,6 +1,6 @@
 {
   "name": "awehitch",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Hitch the ChatGPT web brain to any coding agent. The agent executes; ChatGPT thinks.",
   "type": "module",
   "license": "MIT",
