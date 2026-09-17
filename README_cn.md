@@ -95,6 +95,26 @@ awehitch off               # 断开（吊销访问 + 停止本地服务；ChatGP
 
 内部/高级命令（start / stop / status / doctor / pair / tunnel / session / …）仍可用，`awehitch <命令> --help` 查看。
 
+## 安全
+
+- 一个 bridge 只服务一个工作区，所有 token 都绑定它。bridge 只监听 127.0.0.1——唯一的公网面是走隧道的 HTTPS，由 OAuth 2.1 + PKCE + 动态客户端注册保护。
+- ChatGPT 只拿到只读 scope（`workspace.read`、`workspace.search`、`git.read`、`execution.read`、`offline_access`）。访问令牌 1 小时失效，刷新令牌每次使用即轮换，落盘只存 SHA-256 哈希。
+- 敏感文件（`.env*`、`.envrc`、密钥、SSH、云凭证、整个 `.git/` 目录…）在所有关口被拒绝——读、列目录、搜索、diff 一视同仁。`.env.example` 放行；自己的规则写在 `.c2cignore`。
+- 配对码：约 40 位强度、5 次尝试、一次性、5 分钟有效期、按 IP 限流。
+- ChatGPT 永远不能写文件、删文件、跑 shell、提交、装包——服务端根本不存在这些工具。
+
+## 故障排查
+
+第一步永远是 `awehitch doctor`（能修的自动修；加 `--no-fix` 则严格只读）。
+
+- **Bridge 没在跑** — `awehitch start`，或让 doctor 处理；日志看 `awehitch logs --verbose`。doctor 说状态*不确定*时等一等再跑——不要起第二个 bridge。
+- **地址过期 / 连接器坏了** — doctor 会标记 `chatgptRepair.needed`：**删除**本工作区的连接器、用新地址重建。绝不点 Reconnect——旧 URL 已死。
+- **配对码无效** — 一次性、约 5 分钟过期：`awehitch pair` 换新码。
+- **每次工具调用都 401** — 令牌过期且刷新失败：在 ChatGPT 里用新配对码重新授权。
+- **缺 cloudflared** — `brew install cloudflared`（macOS）/ `winget install Cloudflare.cloudflared`（Windows）；自定义路径设 `AWEHITCH_CLOUDFLARED_PATH`。
+- **ACCESS_DENIED_SENSITIVE_FILE** — 符合预期的拒绝（见上节）。
+- **彻底卡死** — `awehitch stop -w <路径>` 再 `awehitch up -w <路径>` 从头重建 bridge、隧道和配对。只有要完全断开时才用 `awehitch off`——它还会吊销 ChatGPT 的令牌。
+
 ## 开发
 
 ```bash
@@ -103,7 +123,7 @@ corepack pnpm build     # -> dist/，暴露 awehitch 命令
 corepack pnpm test      # 路径安全、OAuth、配对、MCP 端到端、adapter、连接器配置
 ```
 
-文档：[架构](docs/architecture.md) · [协议](docs/protocol.md) · [安全](docs/security.md) · [连接器配置](docs/connector-setup.md) · [harness 能力矩阵](docs/harness-matrix.md)
+架构、[C2C] 协议、harness 适配器、连接器自动化与完整安全模型见 [CONTRIBUTING.md](docs/CONTRIBUTING.md)。
 
 ## 状态与声明
 

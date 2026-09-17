@@ -95,6 +95,26 @@ awehitch off               # disconnect (revoke access + stop local service; del
 
 Internal/advanced commands (start / stop / status / doctor / pair / tunnel / session / …) are still available: `awehitch <command> --help`.
 
+## Security
+
+- One bridge serves exactly one workspace; every token is bound to it. The bridge binds 127.0.0.1 only — the public surface is HTTPS via the tunnel, protected by OAuth 2.1 + PKCE with dynamic client registration.
+- ChatGPT gets read-only scopes only (`workspace.read`, `workspace.search`, `git.read`, `execution.read`, `offline_access`). Access tokens live 1 hour, refresh tokens rotate on every use, and only SHA-256 hashes are stored.
+- Sensitive files (`.env*`, `.envrc`, keys, SSH, cloud credentials, the whole `.git/` directory…) are denied at every gate — reads, listings, search and diff. `.env.example` is allowed; add your own rules via `.c2cignore`.
+- Pairing codes: ~40 bits, 5 attempts, one-time, 5-minute TTL, per-IP rate limit.
+- ChatGPT can never write files, delete files, run shell commands, commit, or install packages — those tools do not exist on the server.
+
+## Troubleshooting
+
+First move, always: `awehitch doctor` (it repairs what it can; `--no-fix` is strictly read-only).
+
+- **Bridge not running** — `awehitch start`, or let doctor do it; logs via `awehitch logs --verbose`. If doctor says the state is *uncertain*, wait and re-run — do not start a second bridge.
+- **Address expired / connector broken** — doctor sets `chatgptRepair.needed`: **Delete** this workspace's connector and create it again with the new address. Never click Reconnect — the old URL is dead.
+- **Pairing code invalid** — codes are one-time and expire in ~5 minutes: `awehitch pair` mints a fresh one.
+- **401 on every tool call** — the token expired and refresh failed: authorize again in ChatGPT with a fresh pairing code.
+- **cloudflared missing** — `brew install cloudflared` (macOS) / `winget install Cloudflare.cloudflared` (Windows); custom location via `AWEHITCH_CLOUDFLARED_PATH`.
+- **ACCESS_DENIED_SENSITIVE_FILE** — working as intended (see Security).
+- **Completely stuck** — `awehitch stop -w <path>` then `awehitch up -w <path>` rebuilds bridge, tunnel and pairing. Use `awehitch off` only for a full disconnect — it also revokes ChatGPT's tokens.
+
 ## Development
 
 ```bash
@@ -103,7 +123,7 @@ corepack pnpm build     # -> dist/, exposes the awehitch bin
 corepack pnpm test      # path security, OAuth, pairing, MCP e2e, adapters, connector setup
 ```
 
-Docs: [architecture](docs/architecture.md) · [protocol](docs/protocol.md) · [security](docs/security.md) · [connector setup](docs/connector-setup.md) · [harness capability matrix](docs/harness-matrix.md)
+Architecture, the [C2C] protocol, harness adapters, the connector automation and the full security model live in [CONTRIBUTING.md](docs/CONTRIBUTING.md).
 
 ## Status & disclaimer
 
