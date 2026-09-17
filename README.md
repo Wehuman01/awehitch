@@ -7,7 +7,7 @@
     <a href="./README_cn.md">简体中文</a>
   </p>
   <p>
-    <img src="https://img.shields.io/badge/version-0.2.0-7C3AED?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-0.2.1-7C3AED?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/node-%E2%89%A520-0EA5E9?style=flat-square" alt="Node">
   </p>
   <p>
@@ -24,7 +24,13 @@ awehitch hitches the ChatGPT web app onto any coding agent as its external brain
 ## Install
 
 ```bash
-git clone https://github.com/mugpeng/awehitch.git awehitch
+npm install -g awehitch
+```
+
+Or from source:
+
+```bash
+git clone https://github.com/wehuman01/awehitch.git awehitch
 cd awehitch
 corepack pnpm install && corepack pnpm build
 ```

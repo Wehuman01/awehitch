@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.2.1
+
+npm distribution: `npm install -g awehitch`.
+
+- `files` allowlist (bin / dist / skill / examples / READMEs / LICENSE) and
+  `prepare`/`prepack` build hooks — the tarball ships the compiled CLI, not
+  sources and tests.
+- Fixed the npm-installed `bin/awehitch.js` doing nothing: it imported the
+  CLI module, which bypasses the main-entry guard. It now spawns the
+  compiled CLI as the Node entrypoint (verified by a packed-install smoke
+  test).
+- Repository moved to the `wehuman01` organization.
+
 ## v0.2.0
 
 Two visible commands — `awehitch` connects, `awehitch off` disconnects — plus automatic connector setup and one ChatGPT login per machine.
