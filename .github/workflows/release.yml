@@ -15,10 +15,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Trusted publishing (OIDC): npm >= 11.5.1 on node >= 22.14 — no
+      # registry token; npm detects the GitHub Actions OIDC environment.
+      # Keep registry-url off so no stale NODE_AUTH_TOKEN overrides it.
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          registry-url: "https://registry.npmjs.org"
+          node-version: 22
+
+      - run: npm install -g npm@11
 
       - run: npm install -g pnpm
       - run: pnpm install --frozen-lockfile
