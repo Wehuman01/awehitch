@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.2.0
+
+Two visible commands — `awehitch` connects, `awehitch off` disconnects — plus automatic connector setup and one ChatGPT login per machine.
 
 **Two commands.** `awehitch` connects, `awehitch off` disconnects. The visible
 CLI surface shrinks from 17 commands to 2; everything else still exists but is
