@@ -11,7 +11,7 @@
 | 注册自定义工具 | ❌（只能 MCP / shell） | ✅（plugin `tool:`） | ❌（只能 MCP / shell） |
 | 消费远程 MCP（含 OAuth） | ✅（config.toml `mcp_servers`） | ✅（opencode.json `mcp` remote + `opencode mcp auth`） | ✅（~/.zcode/cli/config.json `mcpServers`） |
 | 驱动浏览器 | ✅ 内置 iab（Codex 原方案） | ❌ 无内置浏览器 | ✅ 内置 Computer Use / 嵌入式浏览器 |
-| 注入系统指令 | ✅ `~/.codex/skills/<name>/SKILL.md` | ✅ `AGENTS.md` + `~/.opencode/skills/<name>/SKILL.md` + plugin | ✅ `~/.zcode/agents/<name>.md` + 插件 skills |
+| 注入系统指令 | ✅ `~/.codex/skills/<name>/SKILL.md` | ✅ `AGENTS.md` + `~/.config/opencode/skills/<name>/SKILL.md` + plugin | ✅ `~/.zcode/agents/<name>.md` + 插件 skills |
 | 会话 / 状态持久化 | `~/.codex/history.jsonl` + 会话文件 | `~/.local/share/opencode/storage/` | `~/.zcode/cli/agents/sess_*` |
 | 本地 MCP（stdio） | ✅ config.toml | ✅ opencode.json `mcp` local | ✅ mcpServers |
 
@@ -30,7 +30,7 @@ codex 原方案的内置浏览器控制面，被独立代理取代——任何 h
 | 环境变量 | `CODEX_HOME` 可重定向配置目录 |
 
 Adapter 做法：
-1. `sandbox-allow`：状态目录写入 `writable_roots`（复用参考实现逻辑）
+1. `sandbox-allow`：状态目录写入 `writable_roots`（追加式 upsert：引号感知定位，用户已有条目逐字保留，写入原子化）
 2. 控制面代理注册：`[mcp_servers.awehitch]` stdio 命令
 3. Skill 安装到 `~/.codex/skills/awehitch/SKILL.md`
 4. ChatGPT 数据面不需要注册给 codex（它不消费数据面；ChatGPT 才消费）
@@ -39,11 +39,12 @@ Adapter 做法：
 
 | 项 | 形式 |
 | --- | --- |
-| 配置 | `~/.config/opencode/opencode.json`（JSONC）+ 项目 `opencode.json` |
+| 配置 | `~/.config/opencode/opencode.json`（JSONC，注释保留）+ 项目 `opencode.json` |
 | MCP 注册 | `"mcp": { "<name>": { "type": "remote", "url": "…" } }`（支持 OAuth + RFC 7591 DCR，实测与 bridge 协议兼容）或 `{ "type": "local", "command": […] }` |
 | OAuth 触发 | `opencode mcp auth <name>` |
 | 插件 | `~/.config/opencode/plugins/*.js`（ESM，`Plugin = async ({…}) => ({…hooks})`，可注册 `tool:`） |
-| 指令注入 | `AGENTS.md`（项目根）+ `~/.opencode/skills/<name>/SKILL.md` |
+| 指令注入 | `AGENTS.md`（项目根）+ `~/.config/opencode/skills/<name>/SKILL.md` |
+| 环境变量 | 目录：`OPENCODE_CONFIG_DIR` → `XDG_CONFIG_HOME/opencode` → `~/.config/opencode`；`OPENCODE_CONFIG` 指向单个配置**文件**（官方语义），不用于定位目录 |
 | 沙箱 | permission 配置（`"permission": { "bash": {"*": "allow"} }` 等）；无强制 writable_roots |
 
 **注意（交接文档 4.1 的"第一步实测"）**：opencode remote MCP 原生支持 OAuth 2.1 + PKCE + DCR，
@@ -52,7 +53,7 @@ bridge 的 `/oauth/register`、`/oauth/authorize`、`/oauth/token` 与之协议�
 
 Adapter 做法：
 1. 项目 `opencode.json` 或全局配置写入 `"mcp": { "awehitch": { "type": "local", "command": […] } }`（控制面 stdio）
-2. Skill 安装到 `~/.opencode/skills/awehitch/SKILL.md`（+ `AGENTS.md` 追加一段触发说明）
+2. Skill 安装到 `~/.config/opencode/skills/awehitch/SKILL.md`（+ `AGENTS.md` 追加一段触发说明）；`opencode.json` 采用 JSONC 感知的外科手术式 upsert——只改 `mcp.awehitch` 一个键，用户注释逐字保留，坏文件直接报错不落盘
 3. 无沙箱改写需求
 
 ## zcode

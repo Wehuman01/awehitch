@@ -7,7 +7,9 @@ awehitch doctor
 ```
 
 It checks Node, workspace, bridge, MCP, OAuth and tunnel — and repairs what it
-can (restarts the bridge, restarts the tunnel) without asking.
+can (restarts the bridge, restarts the tunnel) without asking. Pass
+`--no-fix` for a strictly read-only diagnosis (no files written, no pairing
+codes minted).
 
 ## Common situations
 
@@ -17,7 +19,9 @@ can (restarts the bridge, restarts the tunnel) without asking.
 
 If doctor says the bridge state is **uncertain**, do not start a
 second bridge and do not Delete the ChatGPT connector. Wait and run doctor
-again. The local process may still be running.
+again. The local process may still be running. (A runtime file whose pid was
+reused by an unrelated process used to wedge here forever; such stale files
+are now detected by a process-identity check and cleared automatically.)
 
 ### Everything was quit and ChatGPT can no longer connect
 Quitting Codex / the terminal stops the public address. The next `awehitch doctor`
@@ -69,7 +73,8 @@ Windows: `winget install Cloudflare.cloudflared`
 Linux: see Cloudflare's package instructions.
 The Skill installs this automatically during setup.
 If cloudflared is installed in a custom location that is not on `PATH`, set
-`C2C_CLOUDFLARED_PATH` to the executable's absolute path before running `c2c`.
+`AWEHITCH_CLOUDFLARED_PATH` to the executable's absolute path before running
+`awehitch`.
 
 ### Every new Codex chat “repairs” the connection / cannot write logs
 The C2C state directory lives outside the project (macOS:
@@ -89,7 +94,8 @@ reused; anything else makes the bridge pick a free port. Configuration follows
 automatically.
 
 ### Reading a file returns ACCESS_DENIED_SENSITIVE_FILE
-Working as intended: `.env`, keys, credentials and anything matched by
+Working as intended: `.env*`, `.envrc`, `.git/` (remote credentials live in
+`.git/config`), keys, credentials and anything matched by
 `.c2cignore` are never readable through ChatGPT. `.env.example` is allowed.
 
 ### The task's ChatGPT chat is gone (404) or lags

@@ -82,7 +82,7 @@ Per-workspace `.c2c.json`:
 }
 ```
 
-`.c2cignore` adds workspace-specific deny rules on top of the built-in sensitive-file policy (`.env*`, keys, SSH, cloud credentials are denied by default).
+`.c2cignore` adds workspace-specific deny rules on top of the built-in sensitive-file policy (`.env*`, `.envrc`, keys, SSH, cloud credentials and the whole `.git/` directory are denied by default).
 
 ## Commands
 

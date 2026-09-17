@@ -160,7 +160,9 @@ Three facts about ChatGPT learned the hard way:
   `DELETE /backend-api/aip/connectors/<id>` directly, with the session
   token, and re-lists to confirm. If the name is still taken at create time
   (409), the flow retries under a fresh title (`X` → `X 2` → `X 3`) and the
-  final name is returned as `connectorName` and persisted.
+  final name is returned as `connectorName` and persisted. Only a 409 counts
+  as a name conflict — any other non-2xx (e.g. a transient 500) fails the
+  create step with the HTTP status and never renames.
 - **The authorize page only appears after three clicks**: connector row →
   the Connection row's **Connect** button → the consent dialog's
   **"Sign in with <name>"**. There is no path from the create modal.
