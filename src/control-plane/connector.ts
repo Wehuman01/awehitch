@@ -428,6 +428,40 @@ async function findConnectorBackendIds(page: Page, connectorName: string): Promi
   }, connectorName);
 }
 
+/** HTTP status embedded in a page.evaluate error, or null when there is none. */
+function embeddedHttpStatus(error: unknown): number | null {
+  const match = /HTTP (\d{3})/.exec(error instanceof Error ? error.message : String(error));
+  return match ? Number(match[1]) : null;
+}
+
+type ConnectorIdLookup = { ids: string[] } | { unavailable: string };
+
+/**
+ * findConnectorBackendIds with a short retry. ChatGPT's plugins/list has
+ * been observed answering transient 500s (2026-09), and one flaky response
+ * used to abort the whole setup run. 5xx and network errors are retried;
+ * 4xx is not (retrying a rejected request cannot change the answer).
+ */
+async function lookupConnectorIds(
+  page: Page,
+  connectorName: string,
+  retryDelayMs: number,
+  attempts = 3
+): Promise<ConnectorIdLookup> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return { ids: await findConnectorBackendIds(page, connectorName) };
+    } catch (error) {
+      lastError = error;
+      const status = embeddedHttpStatus(error);
+      if ((status !== null && status < 500) || attempt === attempts) break;
+      await sleep(retryDelayMs);
+    }
+  }
+  return { unavailable: lastError instanceof Error ? lastError.message : String(lastError) };
+}
+
 /**
  * Delete THIS workspace's connector, if present, by exact title.
  * Never clicks "Reconnect": when the tunnel address changes the old URL is
@@ -438,17 +472,28 @@ async function findConnectorBackendIds(page: Page, connectorName: string): Promi
  * exact-name match on the server's own display_name, refuse duplicates, then
  * DELETE and confirm with a fresh list. The page must be on chatgpt.com so
  * the session cookie is sent.
+ *
+ * Cleanup is best-effort: when the connector list stays unreadable the step
+ * reports `skipped` instead of failing — the create step retries under a
+ * fresh title if the old one is still reserved, and the run's verify step
+ * gates success on real bridge state either way.
  */
 export async function deleteConnectorByName(
   page: Page,
-  connectorName: string
+  connectorName: string,
+  options: { retryDelayMs?: number } = {}
 ): Promise<{ status: ConnectorStepStatus; detail: string }> {
-  const ids = await findConnectorBackendIds(page, connectorName).catch((error: unknown) => {
-    throw new ConnectorSetupError(
-      "CONNECTOR_FAILED",
-      `Failed to query the connector list: ${error instanceof Error ? error.message : String(error)}`
-    );
-  });
+  const retryDelayMs = options.retryDelayMs ?? 1_500;
+  const lookup = await lookupConnectorIds(page, connectorName, retryDelayMs);
+  if ("unavailable" in lookup) {
+    return {
+      status: "skipped",
+      detail:
+        `Connector list unavailable (${lookup.unavailable}); skipped deleting "${connectorName}". ` +
+        "If ChatGPT still reserves the name, create retries under a fresh title.",
+    };
+  }
+  const ids = lookup.ids;
   if (ids.length === 0) {
     return { status: "skipped", detail: `No connector named "${connectorName}" to delete` };
   }
@@ -477,10 +522,11 @@ export async function deleteConnectorByName(
   }
 
   // Confirm with a fresh list; deletion can take a moment to propagate.
+  // An unreadable list counts as "still present" — never guess a deletion.
   const deadline = Date.now() + 15_000;
   for (;;) {
-    const remaining = await findConnectorBackendIds(page, connectorName).catch(() => ids);
-    if (remaining.length === 0) {
+    const remaining = await lookupConnectorIds(page, connectorName, retryDelayMs);
+    if (!("unavailable" in remaining) && remaining.ids.length === 0) {
       return { status: "done", detail: `Deleted "${connectorName}"` };
     }
     if (Date.now() >= deadline) {

@@ -154,7 +154,10 @@ Flow: login → developer mode → delete stale connector (exact title match,
 backend `DELETE aip/connectors/<id>` — "Uninstall" is not deletion) → create →
 pairing → verify. Verification is real state (bridge `tokenCount` grew), not a
 page badge. Safety properties: exact-title match never deletes a sibling;
-never clicks Reconnect (reclaimed URLs are dead); every failure returns a
+never clicks Reconnect (reclaimed URLs are dead); the delete step is
+best-effort — `plugins/list` 5xx is retried briefly, and a list that stays
+unreadable skips cleanup (create retries under a fresh title if the old one
+is reserved) instead of dead-ending the run; every failure returns a
 `manualFallback` with address + pairing code + steps; only the pairing code is
 ever typed into a page. Only an HTTP 409 counts as a name conflict — other
 failures surface the status instead of triggering a rename. Headless Chrome is

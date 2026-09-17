@@ -109,6 +109,7 @@ First move, always: `awehitch doctor` (it repairs what it can; `--no-fix` is str
 
 - **Bridge not running** — `awehitch start`, or let doctor do it; logs via `awehitch logs --verbose`. If doctor says the state is *uncertain*, wait and re-run — do not start a second bridge.
 - **Address expired / connector broken** — doctor sets `chatgptRepair.needed`: **Delete** this workspace's connector and create it again with the new address. Never click Reconnect — the old URL is dead.
+- **`plugins/list` answered HTTP 5xx during connector setup** — a transient ChatGPT backend hiccup; the cleanup step retries on its own and skips itself if the list stays down, so setup continues. If a stale same-name connector lingers afterwards, rerun once to clean it up.
 - **Pairing code invalid** — codes are one-time and expire in ~5 minutes: `awehitch pair` mints a fresh one.
 - **401 on every tool call** — the token expired and refresh failed: authorize again in ChatGPT with a fresh pairing code.
 - **cloudflared missing** — `brew install cloudflared` (macOS) / `winget install Cloudflare.cloudflared` (Windows); custom location via `AWEHITCH_CLOUDFLARED_PATH`.

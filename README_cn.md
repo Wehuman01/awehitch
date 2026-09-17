@@ -109,6 +109,7 @@ awehitch off               # 断开（吊销访问 + 停止本地服务；ChatGP
 
 - **Bridge 没在跑** — `awehitch start`，或让 doctor 处理；日志看 `awehitch logs --verbose`。doctor 说状态*不确定*时等一等再跑——不要起第二个 bridge。
 - **地址过期 / 连接器坏了** — doctor 会标记 `chatgptRepair.needed`：**删除**本工作区的连接器、用新地址重建。绝不点 Reconnect——旧 URL 已死。
+- **connector-setup 时 `plugins/list` 返回 5xx** — ChatGPT 后端偶发抖动；清理步骤会自动重试，仍失败就跳过清理继续创建。若之后残留了同名旧连接器，重跑一次即可清掉。
 - **配对码无效** — 一次性、约 5 分钟过期：`awehitch pair` 换新码。
 - **每次工具调用都 401** — 令牌过期且刷新失败：在 ChatGPT 里用新配对码重新授权。
 - **缺 cloudflared** — `brew install cloudflared`（macOS）/ `winget install Cloudflare.cloudflared`（Windows）；自定义路径设 `AWEHITCH_CLOUDFLARED_PATH`。

@@ -42,6 +42,11 @@ Security and robustness pass from a full code review (286 tests, +32).
 - **Connector create**: only an HTTP 409 counts as a name conflict — any
   other failure surfaces the HTTP status instead of producing an "X 2"
   renamed connector; cloudflared login timeouts now include the login URL.
+- **Connector setup resilience**: a transient 500 from ChatGPT's
+  `plugins/list` no longer dead-ends the run — the query is retried
+  briefly, and a list that stays unreadable skips the (optional) cleanup
+  step instead of failing it; create then retries under a fresh title if
+  the old name is still reserved.
 - **Portability**: the CLI entry no longer depends on Node 20.11+
   (`import.meta.dirname`; dist preferred with a tsx dev fallback), and an
   unset `HOME` no longer probes the CWD for cloudflared.
