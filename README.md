@@ -48,7 +48,7 @@ Please run awehitch and set it up for me automatically.
 Or run the CLI yourself:
 
 ```bash
-awehitch -w /path/to/project
+awehitch up -w /path/to/project
 ```
 
 Pairing and connector creation are fully automatic. The only action that may need you: logging in to ChatGPT in the popped-up window. After setup, everyday use requires zero commands.
@@ -87,11 +87,11 @@ Per-workspace `.c2c.json`:
 ## Commands
 
 ```bash
-awehitch [-w <path>]       # idempotent "make sure I'm connected"
+awehitch up [-w <path>]    # idempotent "make sure I'm connected" (bare `awehitch` works too)
 awehitch off               # disconnect (revoke access + stop local service; delete the ChatGPT plugin manually if desired)
 ```
 
-`awehitch [-w <path>]` automatically identifies the project, establishes a secure public connection, auto-detects installed coding agents (codex / opencode / zcode) and connects them, and opens a browser to create the ChatGPT connector when needed. The only manual step in the entire flow is logging into ChatGPT once in the popped-up window. `--json` for agent use.
+`awehitch up [-w <path>]` automatically identifies the project, establishes a secure public connection, auto-detects installed coding agents (codex / opencode / zcode) and connects them, and opens a browser to create the ChatGPT connector when needed. The only manual step in the entire flow is logging into ChatGPT once in the popped-up window. `--json` for agent use.
 
 Internal/advanced commands (start / stop / status / doctor / pair / tunnel / session / …) are still available: `awehitch <command> --help`.
 
@@ -100,7 +100,7 @@ Internal/advanced commands (start / stop / status / doctor / pair / tunnel / ses
 ```bash
 corepack pnpm install
 corepack pnpm build     # -> dist/, exposes the awehitch bin
-corepack pnpm test      # 225 tests: path security, OAuth, pairing, MCP e2e, adapters, connector setup
+corepack pnpm test      # path security, OAuth, pairing, MCP e2e, adapters, connector setup
 ```
 
 Docs: [architecture](docs/architecture.md) · [protocol](docs/protocol.md) · [security](docs/security.md) · [connector setup](docs/connector-setup.md) · [harness capability matrix](docs/harness-matrix.md)

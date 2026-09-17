@@ -48,7 +48,7 @@ corepack pnpm install && corepack pnpm build
 或自己跑 CLI：
 
 ```bash
-awehitch -w /path/to/project
+awehitch up -w /path/to/project
 ```
 
 配对与连接器创建全自动。唯一可能需要你动手的，是在弹出的窗口里登录一次 ChatGPT。装好后日常零命令。
@@ -87,11 +87,11 @@ awehitch Bridge（本地，工作区只读网关 + OAuth + 隧道）
 ## 命令
 
 ```bash
-awehitch [-w <路径>]       # 幂等的"确保已连接"
+awehitch up [-w <路径>]    # 幂等的"确保已连接"（裸 `awehitch` 也可以）
 awehitch off               # 断开（吊销访问 + 停止本地服务；ChatGPT 插件页可选手动删除）
 ```
 
-`awehitch [-w <路径>]` 会自动识别项目、建立安全公网连接、自动探测已安装的编码 agent（codex / opencode / zcode）并接入、需要时打开浏览器自动创建 ChatGPT 连接器。全流程唯一需要你动手的，是在弹出的窗口里登录一次 ChatGPT。`--json` 供 agent 使用。
+`awehitch up [-w <路径>]` 会自动识别项目、建立安全公网连接、自动探测已安装的编码 agent（codex / opencode / zcode）并接入、需要时打开浏览器自动创建 ChatGPT 连接器。全流程唯一需要你动手的，是在弹出的窗口里登录一次 ChatGPT。`--json` 供 agent 使用。
 
 内部/高级命令（start / stop / status / doctor / pair / tunnel / session / …）仍可用，`awehitch <命令> --help` 查看。
 
@@ -100,7 +100,7 @@ awehitch off               # 断开（吊销访问 + 停止本地服务；ChatGP
 ```bash
 corepack pnpm install
 corepack pnpm build     # -> dist/，暴露 awehitch 命令
-corepack pnpm test      # 225 个测试：路径安全、OAuth、配对、MCP 端到端、adapter、连接器配置
+corepack pnpm test      # 路径安全、OAuth、配对、MCP 端到端、adapter、连接器配置
 ```
 
 文档：[架构](docs/architecture.md) · [协议](docs/protocol.md) · [安全](docs/security.md) · [连接器配置](docs/connector-setup.md) · [harness 能力矩阵](docs/harness-matrix.md)

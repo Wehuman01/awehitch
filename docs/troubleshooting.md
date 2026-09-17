@@ -112,7 +112,7 @@ trace. Upgrading from a pre-sharing version: old per-workspace profiles under
 ### Completely stuck
 ```
 awehitch stop -w <workspace>
-awehitch -w <workspace>
+awehitch up -w <workspace>
 ```
 
 re-creates the bridge, tunnel and pairing session from scratch. Use
