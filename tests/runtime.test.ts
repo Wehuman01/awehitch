@@ -61,16 +61,22 @@ describe("findBridgeObservation", () => {
     expect(await findLiveBridge(workspace.id)).toBeNull();
   });
 
-  it("does not treat a live pid plus a failed probe as stopped", async () => {
+  it("does not treat a live awehitch bridge pid plus a failed probe as stopped", async () => {
     dirs.push(isolateStateDir());
     const root = makeTmpDir("obs-unknown");
     dirs.push(root);
     write(root, "a.txt", "a");
     const workspace = new Workspace(root);
-    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
-      stdio: "ignore",
-      detached: true,
-    });
+    // Spawn a process whose command line LOOKS like an awehitch bridge so
+    // findBridgeObservation treats it as a real bridge (not a pid reuse).
+    const child = spawn(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)", "--", "awehitch", "serve", "--workspace", workspace.root],
+      {
+        stdio: "ignore",
+        detached: true,
+      }
+    );
     child.unref();
     try {
       if (!child.pid) throw new Error("failed to spawn helper");

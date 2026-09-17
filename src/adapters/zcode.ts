@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { writeFileAtomic } from "../fs/atomic.js";
 import { harnessHome } from "./paths.js";
 import { renderSkill } from "./skill-template.js";
 
@@ -15,7 +16,7 @@ import { renderSkill } from "./skill-template.js";
 
 const AGENT_BODY = `You can delegate planning and review to ChatGPT with awehitch.
 
-When the user says "用 ChatGPT 帮我规划" / "use ChatGPT to plan", follow the
+When the user says "use ChatGPT to plan" / "用 ChatGPT 帮我规划", follow the
 awehitch skill (installed at ~/.zcode/skills or referenced by the awehitch CLI):
 exchange [C2C] control messages through the awehitch MCP tools, execute plans
 yourself, and let ChatGPT review the real diff via the read-only connector.
@@ -32,7 +33,7 @@ export function setupZcodeAdapter(opts: {
   const skillDir = path.join(home, "skills", "awehitch");
   fs.mkdirSync(skillDir, { recursive: true });
   const skillPath = path.join(skillDir, "SKILL.md");
-  fs.writeFileSync(skillPath, renderSkill({ harness: "ZCode", connectorName: opts.connectorName }), {
+  writeFileAtomic(skillPath, renderSkill({ harness: "ZCode", connectorName: opts.connectorName }), {
     mode: 0o644,
   });
 
@@ -77,10 +78,5 @@ function readJson(file: string): Record<string, any> {
 }
 
 function writeJson(file: string, data: unknown): void {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n", { mode: 0o600 });
-  try {
-    fs.chmodSync(file, 0o600);
-  } catch {
-    // platforms without chmod semantics
-  }
+  writeFileAtomic(file, JSON.stringify(data, null, 2) + "\n", { mode: 0o600 });
 }

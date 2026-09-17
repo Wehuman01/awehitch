@@ -1,9 +1,10 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
+import path from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { PassThrough } from "node:stream";
-import { findBinary } from "../src/tunnel/detect.js";
+import { findBinary, commonDirs } from "../src/tunnel/detect.js";
 import {
   CloudflaredQuickTunnel,
   parseQuickTunnelUrl,
@@ -13,6 +14,7 @@ import { normalizeNamedTunnelHostname } from "../src/tunnel/cloudflared-named.js
 import { hostnameSlug, parseZoneInput, suggestedNamedHostname } from "../src/tunnel/hostname.js";
 import {
   chooseQuickTunnel,
+  extractLoginUrl,
   isBenignRouteError,
   parseCreatedTunnel,
   parseTunnelList,
@@ -300,6 +302,44 @@ describe("named hostname helpers", () => {
   });
 });
 
+describe("binary detection", () => {
+  it("never probes a CWD-relative directory when HOME is unset", () => {
+    const previous = process.env.HOME;
+    delete process.env.HOME;
+    try {
+      const isAbsoluteAnywhere = (dir: string) => path.isAbsolute(dir) || /^[a-zA-Z]:[\\/]/.test(dir);
+      for (const dir of commonDirs()) {
+        expect(isAbsoluteAnywhere(dir)).toBe(true);
+      }
+    } finally {
+      if (previous !== undefined) process.env.HOME = previous;
+    }
+  });
+
+  it("includes ~/.local/bin only when HOME is set", () => {
+    const previous = process.env.HOME;
+    process.env.HOME = "/home/tester";
+    try {
+      expect(commonDirs()).toContain(path.join("/home/tester", ".local", "bin"));
+    } finally {
+      if (previous === undefined) delete process.env.HOME;
+      else process.env.HOME = previous;
+    }
+  });
+});
+
+describe("cloudflared login URL extraction", () => {
+  it("finds the dash URL in cloudflared login output", () => {
+    expect(
+      extractLoginUrl("Please open the following URL and log in:\n\nhttps://dash.cloudflare.com/argotunnel?aud=&callback=abc-def\n")
+    ).toBe("https://dash.cloudflare.com/argotunnel?aud=&callback=abc-def");
+  });
+
+  it("returns null when no URL was printed yet", () => {
+    expect(extractLoginUrl("waiting for browser login...")).toBeNull();
+  });
+});
+
 describe("cloudflared output parsers", () => {
   it("reads a tunnel list table", () => {
     const output = `
@@ -378,7 +418,7 @@ describe("tunnel preference state", () => {
     }).then((result) => {
       expect(result.fallback).toBe(true);
       expect(result.state.preference).toBe("quick");
-      expect(result.userMessage).toMatch(/临时地址/);
+      expect(result.userMessage).toMatch(/temporary address/i);
     });
   });
 });

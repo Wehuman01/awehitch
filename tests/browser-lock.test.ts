@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { acquireBrowserLock, browserProfileLockFile } from "../src/control-plane/browser-lock.js";
 import { cleanup, makeTmpDir } from "./helpers.js";
 
@@ -47,14 +47,41 @@ describe("browser profile lock", () => {
     first.lock.release();
   });
 
-  it("reports a live holder instead of granting a second lock", () => {
+  it("allows the same process to re-acquire the lock (reentrancy)", () => {
     const first = acquireBrowserLock("ws-a");
     if (!("lock" in first)) throw new Error("first acquire must win");
     const second = acquireBrowserLock("ws-b");
+    expect("lock" in second).toBe(true);
+    if ("lock" in second) {
+      expect(second.lock.info.pid).toBe(process.pid);
+      expect(second.lock.info.workspaceId).toBe("ws-b");
+      second.lock.release();
+    }
+    first.lock.release();
+  });
+
+  it("reports a live holder from a different process instead of granting a second lock", () => {
+    const first = acquireBrowserLock("ws-a");
+    if (!("lock" in first)) throw new Error("first acquire must win");
+    // Spawn a detached child so we have a guaranteed-live pid that is not ours.
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", detached: true });
+    child.unref();
+    const otherPid = child.pid;
+    if (!otherPid) throw new Error("failed to spawn helper");
+    fs.writeFileSync(
+      browserProfileLockFile(),
+      JSON.stringify({ pid: otherPid, workspaceId: "ws-other", acquiredAt: new Date().toISOString() })
+    );
+    const second = acquireBrowserLock("ws-b");
     expect("heldBy" in second).toBe(true);
     if ("heldBy" in second) {
-      expect(second.heldBy.pid).toBe(process.pid);
-      expect(second.heldBy.workspaceId).toBe("ws-a");
+      expect(second.heldBy.pid).toBe(otherPid);
+      expect(second.heldBy.workspaceId).toBe("ws-other");
+    }
+    try {
+      process.kill(otherPid, "SIGKILL");
+    } catch {
+      // ignore
     }
     first.lock.release();
   });

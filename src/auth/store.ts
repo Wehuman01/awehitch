@@ -113,6 +113,11 @@ export class AuthStore {
   // ---- Dynamic Client Registration -------------------------------------
 
   registerClient(input: { clientName?: string; redirectUris: string[] }): ClientRegistration {
+    if (this.clients.size >= MAX_REGISTERED_CLIENTS) {
+      throw new Error(
+        `Too many registered clients (limit ${MAX_REGISTERED_CLIENTS}). Run \`awehitch unpair\` to reset, then pair again.`
+      );
+    }
     const client: ClientRegistration = {
       clientId: `c2c_client_${randomBytes(12).toString("base64url")}`,
       clientName: input.clientName,
@@ -252,6 +257,9 @@ export class AuthStore {
     const count = this.tokens.size;
     this.tokens.clear();
     this.authCodes.clear();
+    // Clients go too: they re-register via DCR on the next pairing, and
+    // keeping them would let a filled client cap survive an unpair.
+    this.clients.clear();
     this.save();
     return count;
   }
@@ -270,9 +278,16 @@ export class AuthStore {
   }
 }
 
+/**
+ * Cap on registered DCR clients. Registration is unauthenticated, so without a
+ * bound the on-disk state grows without limit; `awehitch unpair` resets it.
+ */
+export const MAX_REGISTERED_CLIENTS = 200;
+
 export function filterScopes(requested: string | undefined): string[] {
   if (!requested || requested.trim() === "") return [...SUPPORTED_SCOPES];
   const asked = requested.split(/[\s+]+/).filter(Boolean);
-  const granted = asked.filter((scope) => (SUPPORTED_SCOPES as readonly string[]).includes(scope));
-  return granted.length > 0 ? granted : [...SUPPORTED_SCOPES];
+  // Grant the intersection only: an unknown scope must never widen the grant
+  // (the old fallback silently upgraded garbage requests to full access).
+  return asked.filter((scope) => (SUPPORTED_SCOPES as readonly string[]).includes(scope));
 }

@@ -95,7 +95,9 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
   let publicBaseUrl: string | null = null;
 
   const app = express();
-  app.set("trust proxy", true);
+  // No `trust proxy`: the bridge binds loopback and proxy headers are
+  // client-controlled; rate-limit identity is derived in pairingIpKey()
+  // (last X-Forwarded-For hop) instead of req.ip.
   app.disable("x-powered-by");
 
   const getBaseUrl = (req: Request): string => {
@@ -208,6 +210,26 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
     setTimeout(() => {
       void shutdown().then(() => process.exit(0));
     }, 100);
+  });
+
+  // Last-resort error handler. Express's default handler forwards stack traces
+  // and absolute paths to the client; keep the details in the server log and
+  // answer with an opaque JSON body.
+  app.use((error: unknown, _req: Request, res: Response, next: NextFunction): void => {
+    if (res.headersSent) {
+      next(error);
+      return;
+    }
+    const status =
+      (error as { status?: number } | null)?.status ??
+      (error as { statusCode?: number } | null)?.statusCode ??
+      500;
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error(`Request failed (${status}): ${message}`);
+    res.status(status).json({
+      error: status >= 500 ? "internal_error" : "bad_request",
+      message: status >= 500 ? "Unexpected server error" : "Malformed request",
+    });
   });
 
   const { server, port } = await listen(app, host, opts.port ?? DEFAULT_PORT);

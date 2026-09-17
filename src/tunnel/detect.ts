@@ -2,14 +2,21 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-const COMMON_DIRS = [
-  "/opt/homebrew/bin",
-  "/usr/local/bin",
-  "/usr/bin",
-  path.join(process.env.HOME ?? "", ".local", "bin"),
-  "C:\\Program Files\\cloudflared",
-  "C:\\Program Files (x86)\\cloudflared",
-];
+/** Absolute directories probed for tunnel binaries (unit-tested for the HOME-unset case). */
+export function commonDirs(): string[] {
+  const dirs = [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "C:\\Program Files\\cloudflared",
+    "C:\\Program Files (x86)\\cloudflared",
+  ];
+  const home = process.env.HOME?.trim();
+  // With HOME unset, path.join("", ...) yields a relative dir that
+  // path.resolve() pins to the CWD — never probe there.
+  if (home) dirs.push(path.join(home, ".local", "bin"));
+  return dirs;
+}
 
 function accessibleFile(candidate: string): string | null {
   try {
@@ -39,7 +46,7 @@ export function findBinary(name: string): string | null {
   } catch {
     // not on PATH
   }
-  for (const dir of COMMON_DIRS) {
+  for (const dir of commonDirs()) {
     const full = path.join(dir, exe);
     const configured = accessibleFile(full);
     if (configured) return configured;

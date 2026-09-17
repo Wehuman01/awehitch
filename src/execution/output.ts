@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
+import { writeFileAtomic } from "../fs/atomic.js";
 import { redact } from "../logger/index.js";
 import { sanitizeExecutionOutput } from "./sanitize.js";
 
@@ -79,13 +80,7 @@ export function saveExecutionOutput(workspaceId: string, input: SaveOutputInput)
   };
   if (allowed && text) {
     const file = bodyFile(workspaceId, id);
-    ensureDir(path.dirname(file));
-    fs.writeFileSync(file, text, { mode: 0o600 });
-    try {
-      fs.chmodSync(file, 0o600);
-    } catch {
-      /* ignore */
-    }
+    writeFileAtomic(file, text, { mode: 0o600 });
   }
   index.nextId = id + 1;
   index.items.push(meta);

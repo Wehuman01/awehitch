@@ -1,5 +1,58 @@
 # Changelog
 
+## v0.2.2
+
+Security and robustness pass from a full code review (289 tests, +35).
+
+- **Sensitive files**: the whole `.git/` directory (remote credentials in
+  `.git/config`, reflog, COMMIT_EDITMSG) and `.envrc` are now denied at the
+  same gate as `.env*` — previously `.git/` was only hidden from listings.
+- **codex config.toml**: the `writable_roots` upsert is quote-aware (a path
+  containing `]` no longer truncates the array into invalid TOML) and
+  appends without re-resolving existing entries, so a hand-written `~/data`
+  survives byte-for-byte.
+- **opencode home**: resolved via `OPENCODE_CONFIG_DIR` →
+  `XDG_CONFIG_HOME/opencode` → `~/.config/opencode`. `OPENCODE_CONFIG` is a
+  file path per opencode's docs and is no longer treated as a directory.
+  `opencode.json` upserts are comment-preserving (JSONC-aware surgical edit
+  of the `mcp.awehitch` key); a broken config aborts with a clear error
+  instead of being clobbered.
+- **Atomic config writes**: every user-owned config/state write goes through
+  a temp-file + rename helper, so a crash mid-write can no longer truncate
+  the file that carries the user's other MCP entries.
+- **Bridge lifecycle**: `stop` verifies the pid's command line before
+  killing (a reused pid can no longer kill an unrelated process; stale
+  runtime files clear instead of wedging in "unknown"); concurrent `up`
+  calls spawn at most one bridge (exclusive lock + re-check); the stdio
+  control plane handles SIGTERM/SIGINT and releases the shared browser.
+- **OAuth hardening**: unsupported scopes no longer widen into a full grant
+  (intersection only, `invalid_scope` otherwise); pairing rate limiting keys
+  on the unforgeable last X-Forwarded-For hop; pending authorize requests
+  are capped (50) and registered DCR clients (200; `awehitch unpair`
+  resets); unauthenticated registrations are rate-limited through the
+  tunnel.
+- **Error responses**: unhandled server errors return opaque JSON — stack
+  traces and absolute paths stay in the server log.
+- **CLI honesty**: `doctor --no-fix` is strictly read-only (no endpoint
+  writes, no pairing codes minted) and its MCP probe is time-bounded;
+  `--timeout`, `logs -n`, `record --exit-status` validate their input;
+  `session set --iteration` rejects non-integers (NaN used to persist as
+  null); `--json` failures always emit parseable JSON carrying the reason;
+  `up --json` includes harness wiring errors.
+- **Connector create**: only an HTTP 409 counts as a name conflict — any
+  other failure surfaces the HTTP status instead of producing an "X 2"
+  renamed connector; cloudflared login timeouts now include the login URL.
+- **Connector setup resilience**: a transient 500 from ChatGPT's
+  `plugins/list` no longer dead-ends the run — the query is retried
+  briefly, and a list that stays unreadable skips the (optional) cleanup
+  step instead of failing it; create then retries under a fresh title if
+  the old name is still reserved.
+- **English CLI**: progress output, errors, and help text are now English,
+  matching the agent skill text.
+- **Portability**: the CLI entry no longer depends on Node 20.11+
+  (`import.meta.dirname`; dist preferred with a tsx dev fallback), and an
+  unset `HOME` no longer probes the CWD for cloudflared.
+
 ## v0.2.1
 
 npm distribution: `npm install -g awehitch`.

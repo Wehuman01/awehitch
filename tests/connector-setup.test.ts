@@ -80,6 +80,12 @@ const SECURITY_PAGE = page(`
 /** Server-side connector registry shared with the API fixtures. */
 let connectors: { id: string; name: string }[];
 let listEndpointBroken: boolean;
+/** How many leading plugins/list calls answer 500 before it recovers. */
+let listFailures: number;
+/** When set, every plugins/list call answers with this status (e.g. 403). */
+let listRejectStatus: number;
+/** plugins/list request count, to assert whether a response was retried. */
+let listCalls: number;
 let deleteEndpointBroken: boolean;
 /** How many create POSTs get a 409 name-conflict before one succeeds. */
 let createConflicts: number;
@@ -301,6 +307,16 @@ beforeAll(async () => {
       return;
     }
     if (path === "/backend-api/ps/plugins/list") {
+      listCalls += 1;
+      if (listRejectStatus) {
+        json(listRejectStatus, { detail: "no" });
+        return;
+      }
+      if (listFailures > 0) {
+        listFailures -= 1;
+        json(500, { detail: "boom" });
+        return;
+      }
       if (listEndpointBroken) {
         json(500, { detail: "boom" });
         return;
@@ -361,6 +377,9 @@ beforeEach(async () => {
     { id: "id-proj2", name: SIBLING_NAME },
   ];
   listEndpointBroken = false;
+  listFailures = 0;
+  listRejectStatus = 0;
+  listCalls = 0;
   deleteEndpointBroken = false;
   createConflicts = 0;
   if (!browser) return;
@@ -453,7 +472,7 @@ describe.skipIf(!browser)("deleteConnectorByName", () => {
   it("refuses to act on an ambiguous match", async () => {
     connectors.push({ id: "id-dup", name: CONNECTOR_NAME });
     await currentPage.goto(urls.plugins);
-    await expect(deleteConnectorByName(currentPage, CONNECTOR_NAME)).rejects.toThrow(/标题完全相同/);
+    await expect(deleteConnectorByName(currentPage, CONNECTOR_NAME)).rejects.toThrow(/titled exactly/);
     expect(connectors).toHaveLength(3);
   });
 
@@ -465,11 +484,39 @@ describe.skipIf(!browser)("deleteConnectorByName", () => {
     expect(connectors.map((c) => c.name).sort()).toEqual([`${CONNECTOR_NAME} 2`, SIBLING_NAME].sort());
   });
 
-  it("fails honestly when the backend list cannot be read", async () => {
+  it("recovers when plugins/list answers transient 500s", async () => {
+    // Observed on a live account (2026-09): plugins/list flaked with HTTP 500
+    // mid-setup. The retry must absorb it and the delete must still happen.
+    listFailures = 2;
+    await currentPage.goto(urls.plugins);
+    const result = await deleteConnectorByName(currentPage, CONNECTOR_NAME, { retryDelayMs: 10 });
+    expect(result.status).toBe("done");
+    expect(connectors.map((c) => c.name)).toEqual([SIBLING_NAME]);
+    // 2 failed probes + the successful one + the post-delete confirmation.
+    expect(listCalls).toBe(4);
+  });
+
+  it("skips cleanup instead of failing when the list stays unreadable", async () => {
+    // A persistently broken list used to abort the whole setup run with a
+    // manual fallback. Cleanup is optional: create retries under a fresh
+    // title if the name is reserved, and verify gates the run on real state.
     listEndpointBroken = true;
     await currentPage.goto(urls.plugins);
-    await expect(deleteConnectorByName(currentPage, CONNECTOR_NAME)).rejects.toThrow(/查询连接器列表失败/);
+    const result = await deleteConnectorByName(currentPage, CONNECTOR_NAME, { retryDelayMs: 10 });
+    expect(result.status).toBe("skipped");
+    expect(result.detail).toContain("list unavailable");
     expect(connectors).toHaveLength(2);
+  });
+
+  it("does not retry a 4xx list response", async () => {
+    // A rejected request cannot change its answer on retry — only 5xx and
+    // network errors are worth waiting out.
+    listRejectStatus = 403;
+    await currentPage.goto(urls.plugins);
+    const result = await deleteConnectorByName(currentPage, CONNECTOR_NAME, { retryDelayMs: 10 });
+    expect(result.status).toBe("skipped");
+    expect(result.detail).toContain("HTTP 403");
+    expect(listCalls).toBe(1);
   });
 
   it("fails honestly when the backend rejects the delete", async () => {
@@ -477,7 +524,7 @@ describe.skipIf(!browser)("deleteConnectorByName", () => {
     await currentPage.goto(urls.plugins);
     const result = await deleteConnectorByName(currentPage, CONNECTOR_NAME);
     expect(result.status).toBe("failed");
-    expect(result.detail).toContain("被拒绝");
+    expect(result.detail).toContain("rejected");
     expect(connectors).toHaveLength(2);
   });
 });
@@ -493,11 +540,11 @@ describe.skipIf(!browser)("runConnectorSetupFlow", () => {
     expect(result.dryRun).toBe(false);
     expect(result.manualFallback).toBeUndefined();
     expect(result.steps.map((step) => step.status)).toEqual(["done", "done", "done", "done", "done", "done"]);
-    expect(stepOf(result, "developer-mode")?.detail).toContain("已开启开发人员模式");
-    expect(stepOf(result, "delete")?.detail).toContain("已删除");
+    expect(stepOf(result, "developer-mode")?.detail).toContain("Developer mode enabled");
+    expect(stepOf(result, "delete")?.detail).toContain("Deleted");
     expect(stepOf(result, "create")?.detail).toContain("OAuth");
-    expect(stepOf(result, "authorize")?.detail).toContain("配对码已通过");
-    expect(stepOf(result, "verify")?.detail).toContain("Bridge 已收到授权令牌");
+    expect(stepOf(result, "authorize")?.detail).toContain("Pairing code accepted");
+    expect(stepOf(result, "verify")?.detail).toContain("Bridge received the authorization token");
 
     // The authorize page really did redirect, which is what the verify hook
     // above keys on — so verification is against real state, not a DOM badge.
@@ -520,7 +567,35 @@ describe.skipIf(!browser)("runConnectorSetupFlow", () => {
     expect(result.ok).toBe(true);
     expect(result.connectorName).toBe(`${CONNECTOR_NAME} 2`);
     expect(connectors.some((c) => c.name === `${CONNECTOR_NAME} 2`)).toBe(true);
-    expect(stepOf(result, "authorize")?.detail).toContain("配对码已通过");
+    expect(stepOf(result, "authorize")?.detail).toContain("Pairing code accepted");
+  });
+
+  it("still completes the run when the connector list stays down", async () => {
+    // The exact field failure (2026-09-17): plugins/list answered HTTP 500
+    // and the run dead-ended into the manual fallback. Cleanup is optional —
+    // the delete step must skip honestly and let create/verify finish.
+    listEndpointBroken = true;
+    // No stale connector under the same name, so the create result is the
+    // only row carrying it (a leftover duplicate would be "ambiguous").
+    connectors = [{ id: "id-proj2", name: SIBLING_NAME }];
+    const result = await runConnectorSetupFlow(
+      { ...flowContext(), verifyAuthorized: pairedInBrowser },
+      SPEC
+    );
+
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(result.manualFallback).toBeUndefined();
+    expect(stepOf(result, "delete")?.status).toBe("skipped");
+    expect(stepOf(result, "delete")?.detail).toContain("list unavailable");
+    expect(result.steps.map((step) => step.status)).toEqual([
+      "done",
+      "done",
+      "skipped",
+      "done",
+      "done",
+      "done",
+    ]);
+    expect(connectors.some((c) => c.name === CONNECTOR_NAME)).toBe(true);
   });
 
   it("gives up with the conflict error after repeated conflicts", async () => {
@@ -546,7 +621,7 @@ describe.skipIf(!browser)("runConnectorSetupFlow", () => {
     );
     // The step really flipped the switch (the detail proves the re-read).
     expect(stepOf(result, "developer-mode")?.status).toBe("done");
-    expect(stepOf(result, "developer-mode")?.detail).toContain("已开启开发人员模式");
+    expect(stepOf(result, "developer-mode")?.detail).toContain("Developer mode enabled");
   });
 
   it("submits the exact address and pairing code into the authorize page", async () => {

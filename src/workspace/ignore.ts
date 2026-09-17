@@ -10,6 +10,8 @@ export const SENSITIVE_PATTERNS: string[] = [
   ".env",
   ".env.*",
   "!.env.example",
+  ".envrc",
+  ".git/",
   "*.pem",
   "*.key",
   "*.p12",

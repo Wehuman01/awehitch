@@ -79,6 +79,11 @@ export function isBenignRouteError(message: string): boolean {
   return /already exists|duplicate|exists as a cname/i.test(message);
 }
 
+/** Pull the dash login URL out of cloudflared's login output (if printed yet). */
+export function extractLoginUrl(output: string): string | null {
+  return output.match(/https:\/\/[^\s"'<>]+/)?.[0] ?? null;
+}
+
 export class ProcessCloudflaredAccount implements CloudflaredAccount {
   constructor(private readonly binaryOverride?: string) {}
 
@@ -109,7 +114,14 @@ export class ProcessCloudflaredAccount implements CloudflaredAccount {
       child.stderr?.on("data", collect);
       const timer = setTimeout(() => {
         child.kill("SIGTERM");
-        reject(new Error("Cloudflare login timed out"));
+        const url = extractLoginUrl(output);
+        reject(
+          new Error(
+            `Cloudflare login timed out after 5 minutes${
+              url ? `. Open this URL in a browser to finish the login, then retry: ${url}` : ""
+            }`
+          )
+        );
       }, LOGIN_TIMEOUT_MS);
       child.on("error", (error) => {
         clearTimeout(timer);

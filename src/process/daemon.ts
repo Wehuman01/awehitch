@@ -3,7 +3,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureDir, getStateDir } from "../config/paths.js";
-import { findBridgeObservation, findLiveBridge, probeBridge, readRuntimeState, type RuntimeState } from "../bridge/runtime.js";
+import {
+  clearRuntimeState,
+  findBridgeObservation,
+  findLiveBridge,
+  isAwehitchBridge,
+  probeBridge,
+  readProcessCmdline,
+  readRuntimeState,
+  type RuntimeState,
+} from "../bridge/runtime.js";
 import { Workspace } from "../workspace/manager.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -25,6 +34,66 @@ export interface EnsureBridgeResult {
   spawned: boolean;
 }
 
+function ensureBridgeLockFile(workspaceId: string): string {
+  return path.join(ensureDir(path.join(getStateDir(), "runtime")), `ensure-${workspaceId}.lock`);
+}
+
+function readLockInfo(file: string): { pid: number; acquiredAt: string } | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<{ pid: number; acquiredAt: string }> | null;
+    if (parsed && typeof parsed.pid === "number" && typeof parsed.acquiredAt === "string") {
+      return parsed as { pid: number; acquiredAt: string };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+async function waitForBridgeLock(workspaceId: string, deadline: number): Promise<boolean> {
+  const lockFile = ensureBridgeLockFile(workspaceId);
+  while (Date.now() < deadline) {
+    try {
+      fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() }), { flag: "wx" });
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const holder = readLockInfo(lockFile);
+      if (!holder || !isPidAlive(holder.pid)) {
+        // Stale lock — steal it.
+        fs.rmSync(lockFile, { force: true });
+        continue;
+      }
+      // Lock held by a live process: double-check health and yield.
+      const runtime = await findLiveBridge(workspaceId);
+      if (runtime) return false;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  }
+  return false;
+}
+
+function releaseBridgeLock(workspaceId: string): void {
+  const lockFile = ensureBridgeLockFile(workspaceId);
+  try {
+    const holder = readLockInfo(lockFile);
+    if (holder && holder.pid === process.pid) {
+      fs.rmSync(lockFile, { force: true });
+    }
+  } catch {
+    // ignore
+  }
+}
+
 /**
  * Ensure a bridge is running for the workspace. Reuses a live instance,
  * otherwise spawns a detached daemon and waits for it to become healthy.
@@ -39,40 +108,61 @@ export async function ensureBridge(workspaceRoot: string, opts: { port?: number 
     );
   }
 
-  const logDir = ensureDir(path.join(getStateDir(), "logs"));
-  const logFile = path.join(logDir, `bridge-${workspace.id}.out.log`);
-  const out = fs.openSync(logFile, "a", 0o600);
-  try {
-    // Existing files may have been created with a permissive umask. Keep the
-    // daemon's inherited stdout/stderr log owner-readable only.
-    fs.chmodSync(logFile, 0o600);
-  } catch {
-    // Windows / filesystems without chmod semantics
-  }
-  const { cmd, args } = cliEntry();
-  const child = spawn(
-    cmd,
-    [...args, "serve", "--workspace", workspace.root, ...(opts.port ? ["--port", String(opts.port)] : [])],
-    {
-      detached: true,
-      stdio: ["ignore", out, out],
-      env: { ...process.env },
-      windowsHide: true,
-    }
-  );
-  child.unref();
-  fs.closeSync(out);
-
-  const deadline = Date.now() + 20_000;
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 300));
+  const lockDeadline = Date.now() + 20_000;
+  const acquired = await waitForBridgeLock(workspace.id, lockDeadline);
+  if (!acquired) {
+    // Another caller won the race and already started the bridge.
     const runtime = await findLiveBridge(workspace.id);
-    if (runtime) return { runtime, spawned: true };
-    if (child.exitCode !== null && child.exitCode !== 0) {
-      throw new Error(`Bridge process exited with code ${child.exitCode}. See ${logFile}`);
-    }
+    if (runtime) return { runtime, spawned: false };
+    throw new Error(`Bridge did not become healthy within 20s (lock contention).`);
   }
-  throw new Error(`Bridge did not become healthy within 20s. See ${logFile}`);
+  try {
+    // Double-check after acquiring the lock: another caller may have just finished.
+    const recheck = await findBridgeObservation(workspace.id);
+    if (recheck.state === "healthy") return { runtime: recheck.runtime, spawned: false };
+    if (recheck.state === "unknown") {
+      throw new Error(
+        `Bridge state is uncertain (${recheck.reason}); refusing to start another bridge.`
+      );
+    }
+
+    const logDir = ensureDir(path.join(getStateDir(), "logs"));
+    const logFile = path.join(logDir, `bridge-${workspace.id}.out.log`);
+    const out = fs.openSync(logFile, "a", 0o600);
+    try {
+      // Existing files may have been created with a permissive umask. Keep the
+      // daemon's inherited stdout/stderr log owner-readable only.
+      fs.chmodSync(logFile, 0o600);
+    } catch {
+      // Windows / filesystems without chmod semantics
+    }
+    const { cmd, args } = cliEntry();
+    const child = spawn(
+      cmd,
+      [...args, "serve", "--workspace", workspace.root, ...(opts.port ? ["--port", String(opts.port)] : [])],
+      {
+        detached: true,
+        stdio: ["ignore", out, out],
+        env: { ...process.env },
+        windowsHide: true,
+      }
+    );
+    child.unref();
+    fs.closeSync(out);
+
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const runtime = await findLiveBridge(workspace.id);
+      if (runtime) return { runtime, spawned: true };
+      if (child.exitCode !== null && child.exitCode !== 0) {
+        throw new Error(`Bridge process exited with code ${child.exitCode}. See ${logFile}`);
+      }
+    }
+    throw new Error(`Bridge did not become healthy within 20s. See ${logFile}`);
+  } finally {
+    releaseBridgeLock(workspace.id);
+  }
 }
 
 export async function adminFetch<T = unknown>(
@@ -111,6 +201,14 @@ export async function stopBridge(workspaceRoot: string): Promise<boolean> {
     } catch {
       // fall through to kill
     }
+  }
+  const cmdline = readProcessCmdline(runtime.pid);
+  if (!isAwehitchBridge(cmdline, workspace.root)) {
+    // The pid is not an awehitch bridge (either reused by an unrelated
+    // process or unreadable): never kill it. Clear the runtime file only
+    // when the mismatch is verified, not when the cmdline was unreadable.
+    if (cmdline !== null) clearRuntimeState(workspace.id);
+    return false;
   }
   try {
     process.kill(runtime.pid, "SIGTERM");

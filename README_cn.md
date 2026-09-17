@@ -7,7 +7,7 @@
     <strong>简体中文</strong>
   </p>
   <p>
-    <img src="https://img.shields.io/badge/version-0.2.1-7C3AED?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-0.2.2-7C3AED?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/node-%E2%89%A520-0EA5E9?style=flat-square" alt="Node">
   </p>
   <p>
@@ -48,7 +48,7 @@ corepack pnpm install && corepack pnpm build
 或自己跑 CLI：
 
 ```bash
-awehitch -w /path/to/project
+awehitch up -w /path/to/project
 ```
 
 配对与连接器创建全自动。唯一可能需要你动手的，是在弹出的窗口里登录一次 ChatGPT。装好后日常零命令。
@@ -82,28 +82,49 @@ awehitch Bridge（本地，工作区只读网关 + OAuth + 隧道）
 }
 ```
 
-`.c2cignore` 在内置敏感文件策略（`.env*`、密钥、SSH、云凭证默认拒绝）之上追加你自己的规则。
+`.c2cignore` 在内置敏感文件策略（`.env*`、`.envrc`、密钥、SSH、云凭证以及整个 `.git/` 目录默认拒绝）之上追加你自己的规则。
 
 ## 命令
 
 ```bash
-awehitch [-w <路径>]       # 幂等的"确保已连接"
+awehitch up [-w <路径>]    # 幂等的"确保已连接"（裸 `awehitch` 也可以）
 awehitch off               # 断开（吊销访问 + 停止本地服务；ChatGPT 插件页可选手动删除）
 ```
 
-`awehitch [-w <路径>]` 会自动识别项目、建立安全公网连接、自动探测已安装的编码 agent（codex / opencode / zcode）并接入、需要时打开浏览器自动创建 ChatGPT 连接器。全流程唯一需要你动手的，是在弹出的窗口里登录一次 ChatGPT。`--json` 供 agent 使用。
+`awehitch up [-w <路径>]` 会自动识别项目、建立安全公网连接、自动探测已安装的编码 agent（codex / opencode / zcode）并接入、需要时打开浏览器自动创建 ChatGPT 连接器。全流程唯一需要你动手的，是在弹出的窗口里登录一次 ChatGPT。`--json` 供 agent 使用。
 
 内部/高级命令（start / stop / status / doctor / pair / tunnel / session / …）仍可用，`awehitch <命令> --help` 查看。
+
+## 安全
+
+- 一个 bridge 只服务一个工作区，所有 token 都绑定它。bridge 只监听 127.0.0.1——唯一的公网面是走隧道的 HTTPS，由 OAuth 2.1 + PKCE + 动态客户端注册保护。
+- ChatGPT 只拿到只读 scope（`workspace.read`、`workspace.search`、`git.read`、`execution.read`、`offline_access`）。访问令牌 1 小时失效，刷新令牌每次使用即轮换，落盘只存 SHA-256 哈希。
+- 敏感文件（`.env*`、`.envrc`、密钥、SSH、云凭证、整个 `.git/` 目录…）在所有关口被拒绝——读、列目录、搜索、diff 一视同仁。`.env.example` 放行；自己的规则写在 `.c2cignore`。
+- 配对码：约 40 位强度、5 次尝试、一次性、5 分钟有效期、按 IP 限流。
+- ChatGPT 永远不能写文件、删文件、跑 shell、提交、装包——服务端根本不存在这些工具。
+
+## 故障排查
+
+第一步永远是 `awehitch doctor`（能修的自动修；加 `--no-fix` 则严格只读）。
+
+- **Bridge 没在跑** — `awehitch start`，或让 doctor 处理；日志看 `awehitch logs --verbose`。doctor 说状态*不确定*时等一等再跑——不要起第二个 bridge。
+- **地址过期 / 连接器坏了** — doctor 会标记 `chatgptRepair.needed`：**删除**本工作区的连接器、用新地址重建。绝不点 Reconnect——旧 URL 已死。
+- **connector-setup 时 `plugins/list` 返回 5xx** — ChatGPT 后端偶发抖动；清理步骤会自动重试，仍失败就跳过清理继续创建。若之后残留了同名旧连接器，重跑一次即可清掉。
+- **配对码无效** — 一次性、约 5 分钟过期：`awehitch pair` 换新码。
+- **每次工具调用都 401** — 令牌过期且刷新失败：在 ChatGPT 里用新配对码重新授权。
+- **缺 cloudflared** — `brew install cloudflared`（macOS）/ `winget install Cloudflare.cloudflared`（Windows）；自定义路径设 `AWEHITCH_CLOUDFLARED_PATH`。
+- **ACCESS_DENIED_SENSITIVE_FILE** — 符合预期的拒绝（见上节）。
+- **彻底卡死** — `awehitch stop -w <路径>` 再 `awehitch up -w <路径>` 从头重建 bridge、隧道和配对。只有要完全断开时才用 `awehitch off`——它还会吊销 ChatGPT 的令牌。
 
 ## 开发
 
 ```bash
 corepack pnpm install
 corepack pnpm build     # -> dist/，暴露 awehitch 命令
-corepack pnpm test      # 225 个测试：路径安全、OAuth、配对、MCP 端到端、adapter、连接器配置
+corepack pnpm test      # 路径安全、OAuth、配对、MCP 端到端、adapter、连接器配置
 ```
 
-文档：[架构](docs/architecture.md) · [协议](docs/protocol.md) · [安全](docs/security.md) · [连接器配置](docs/connector-setup.md) · [harness 能力矩阵](docs/harness-matrix.md)
+架构、[C2C] 协议、harness 适配器、连接器自动化与完整安全模型见 [CONTRIBUTING.md](docs/CONTRIBUTING.md)。
 
 ## 状态与声明
 

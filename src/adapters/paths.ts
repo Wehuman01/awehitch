@@ -1,5 +1,7 @@
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 /**
  * Shared paths for harness adapters. Each adapter installs:
@@ -15,14 +17,37 @@ export type HarnessId = "codex" | "opencode" | "zcode";
 
 export const HARNESS_IDS: readonly HarnessId[] = ["codex", "opencode", "zcode"];
 
-/** Resolve the awehitch checkout the adapter spawns the control plane from. */
+/** Directory of this module (src/adapters), independent of CWD or Node 20.11+ APIs. */
+const here = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Resolve the awehitch checkout the adapter spawns the control plane from.
+ * Mirrors src/process/daemon.ts cliEntry(): uses the dist entry when present,
+ * otherwise falls back to running the TypeScript sources via tsx.
+ */
 export function awehitchCliEntry(): { cmd: string; args: string[] } {
-  // dist build (preferred)
-  const here = path.resolve(
-    typeof import.meta.dirname === "string" ? import.meta.dirname : process.cwd()
-  );
   const distEntry = path.resolve(here, "..", "..", "dist", "cli", "index.js");
-  return { cmd: process.execPath, args: [distEntry, "control-plane"] };
+  if (fs.existsSync(distEntry)) {
+    return { cmd: process.execPath, args: [distEntry, "control-plane"] };
+  }
+  // dev fallback: run TypeScript sources through the tsx ESM loader
+  const projectRoot = path.resolve(here, "..", "..");
+  const tsEntry = path.join(projectRoot, "src", "cli", "index.ts");
+  return { cmd: process.execPath, args: ["--import", "tsx/esm", tsEntry, "control-plane"] };
+}
+
+/**
+ * Resolve the directory where opencode keeps its config. OPENCODE_CONFIG is a
+ * FILE path (per opencode docs), not a directory; the directory variable is
+ * OPENCODE_CONFIG_DIR. Resolution: OPENCODE_CONFIG_DIR → XDG_CONFIG_HOME/opencode
+ * → ~/.config/opencode (XDG unset/empty uses the default).
+ */
+function opencodeConfigDir(): string {
+  const dirOverride = process.env.OPENCODE_CONFIG_DIR?.trim();
+  if (dirOverride) return path.resolve(dirOverride);
+  const xdg = process.env.XDG_CONFIG_HOME?.trim();
+  if (xdg) return path.join(path.resolve(xdg), "opencode");
+  return path.join(os.homedir(), ".config", "opencode");
 }
 
 export function harnessHome(harness: HarnessId): string {
@@ -30,7 +55,7 @@ export function harnessHome(harness: HarnessId): string {
     case "codex":
       return process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex");
     case "opencode":
-      return process.env.OPENCODE_CONFIG?.trim() || path.join(os.homedir(), ".config", "opencode");
+      return opencodeConfigDir();
     case "zcode":
       return process.env.ZCODE_HOME?.trim() || path.join(os.homedir(), ".zcode", "cli");
   }

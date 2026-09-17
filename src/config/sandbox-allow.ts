@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { getStateDir } from "./paths.js";
+import { writeFileAtomic } from "../fs/atomic.js";
 
 const TABLE = "sandbox_workspace_write";
 const KEY = "writable_roots";
@@ -66,12 +67,7 @@ export function ensureSandboxAllowlist(opts?: {
   }
 
   const next = upsertWritableRoot(previous, stateDir);
-  fs.writeFileSync(configPath, next, { encoding: "utf8", mode: 0o600 });
-  try {
-    fs.chmodSync(configPath, 0o600);
-  } catch {
-    // Windows / filesystems without chmod semantics
-  }
+  writeFileAtomic(configPath, next, { mode: 0o600 });
   return { added: true, alreadyAllowed: false, stateDir, configPath };
 }
 
@@ -93,16 +89,15 @@ export function upsertWritableRoot(content: string, stateDir: string): string {
     return content.slice(0, insertAt) + line + content.slice(insertAt);
   }
 
-  const roots = parseTomlStringArray(assignment.rawArray);
-  const nextRoots = [...roots, tomlPath];
-  const multiline = assignment.rawArray.includes("\n");
-  const rendered = multiline
-    ? `[\n${nextRoots.map((root) => `  "${escapeTomlString(toTomlPath(root))}"`).join(",\n")},\n]`
-    : `[${nextRoots.map((root) => `"${escapeTomlString(toTomlPath(root))}"`).join(", ")}]`;
+  // Existing entries are preserved VERBATIM (byte-for-byte), never re-serialised.
+  // Re-serialising user entries through toTomlPath() would silently rewrite a
+  // hand-written `~/data` into a resolved absolute path; appending keeps the
+  // user's text and the array's single/multi-line style untouched.
+  const renderedArray = appendArrayItem(assignment.rawArray, `"${escapeTomlString(tomlPath)}"`);
 
-  const absStart = table.start + assignment.start;
-  const absEnd = table.start + assignment.end;
-  return content.slice(0, absStart) + `${KEY} = ${rendered}` + content.slice(absEnd);
+  const assignStart = table.start + assignment.start;
+  const assignEnd = table.start + assignment.end;
+  return content.slice(0, assignStart) + `${KEY} = ${renderedArray}` + content.slice(assignEnd);
 }
 
 function normalizeCompare(p: string): string {
@@ -132,15 +127,73 @@ function findTable(content: string, name: string): { start: number; end: number;
 function findArrayAssignment(
   tableBody: string,
   key: string
-): { start: number; end: number; rawArray: string } | null {
-  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = new RegExp(`^[ \\t]*${escaped}[ \\t]*=[ \\t]*(\\[[\\s\\S]*?\\])`, "m").exec(tableBody);
+):
+  | { start: number; end: number; rawArray: string }
+  | null {
+  const keyRe = new RegExp(`^[ \\t]*${key.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}[ \\t]*=[ \\t]*`, "m");
+  const match = keyRe.exec(tableBody);
   if (!match) return null;
+
+  // Quote-aware scan for the closing ']': a path may contain ']', so skipping
+  // `"…"` and `'…'` (with escapes) is required before trusting the first `]`.
+  let i = match.index + match[0].length;
+  while (i < tableBody.length && (tableBody[i] === " " || tableBody[i] === "\t")) i++;
+  if (tableBody[i] !== "[") return null;
+  const arrayStart = i;
+  i++;
+  for (; i < tableBody.length; i++) {
+    const char = tableBody[i];
+    if (char === '"' || char === "'") {
+      const quote = char;
+      i++;
+      while (i < tableBody.length) {
+        if (tableBody[i] === "\\") {
+          i += 2;
+          continue;
+        }
+        if (tableBody[i] === quote) break;
+        i++;
+      }
+      continue;
+    }
+    if (char === "]") break;
+  }
+  const arrayEnd = i + 1; // one past the closing ']'
   return {
     start: match.index,
-    end: match.index + match[0].length,
-    rawArray: match[1],
+    end: arrayEnd,
+    rawArray: tableBody.slice(arrayStart, arrayEnd),
   };
+}
+
+/**
+ * Append one array item, preserving every existing byte (entries and style).
+ * Single-line arrays keep a single line; multi-line arrays get a new indented
+ * entry line before the closing bracket. The user's existing entries are never
+ * re-serialised.
+ */
+function appendArrayItem(rawArray: string, entry: string): string {
+  const closingIdx = rawArray.length - 1; // index of the closing ']'
+  const innerRaw = rawArray.slice(1, closingIdx);
+
+  if (innerRaw.trim() === "") {
+    return `[\n  ${entry},\n]`;
+  }
+
+  if (innerRaw.includes("\n")) {
+    const beforeClose = rawArray.slice(0, closingIdx);
+    const tail = /(\r?\n)([ \t]*)$/.exec(beforeClose);
+    const tailWs = tail ? tail[0] : "\n";
+    const head = beforeClose.slice(0, beforeClose.length - tailWs.length);
+    // Indent the new entry like the existing entries (the closing bracket
+    // usually sits further left than they do).
+    const lastEntryLine = /(\r?\n)([ \t]*)\S/.exec(head);
+    const indent = lastEntryLine ? lastEntryLine[2] : tail ? tail[2] : "  ";
+    const sep = head.endsWith(",") ? "\n" : ",\n";
+    return `${head}${sep}${indent}${entry}${tailWs}]`;
+  }
+
+  return `${rawArray.slice(0, closingIdx)}, ${entry}]`;
 }
 
 function parseTomlStringArray(src: string): string[] {
