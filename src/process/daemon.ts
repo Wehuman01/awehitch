@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,6 +34,11 @@ export interface EnsureBridgeResult {
   spawned: boolean;
   /** Bridges for other workspaces that this call stopped (one bridge per machine). */
   stopped: RuntimeState[];
+  /**
+   * The spawned serve process, when it was started attached to this CLI run
+   * (foreground mode). null in daemon mode and when an instance was reused.
+   */
+  child: ChildProcess | null;
 }
 
 function ensureBridgeLockFile(workspaceId: string): string {
@@ -208,10 +213,15 @@ async function stopForeignBridge(runtime: RuntimeState): Promise<void> {
  * Ensure a bridge is running for the workspace. One bridge per machine:
  * a bridge for another workspace is stopped first, so `up` in a different
  * directory switches the active workspace (and reuses the live instance for
- * the same one). Reuses a live instance, otherwise spawns a detached daemon
- * and waits for it to become healthy.
+ * the same one). Reuses a live instance, otherwise spawns the `serve` child —
+ * attached in foreground mode (logs stream to the caller's terminal) or as a
+ * detached daemon (logs go to the state dir) — and waits for it to become
+ * healthy.
  */
-export async function ensureBridge(workspaceRoot: string, opts: { port?: number } = {}): Promise<EnsureBridgeResult> {
+export async function ensureBridge(
+  workspaceRoot: string,
+  opts: { port?: number; foreground?: boolean } = {}
+): Promise<EnsureBridgeResult> {
   const workspace = new Workspace(workspaceRoot);
   if (!(await acquireSingleInstanceLock(20_000))) {
     throw new Error("Another awehitch command is starting a bridge; try again in a moment.");
@@ -229,8 +239,8 @@ export async function ensureBridge(workspaceRoot: string, opts: { port?: number 
       await stopForeignBridge(runtime);
       stopped.push(runtime);
     }
-    const { runtime, spawned } = await ensureWorkspaceBridge(workspace, opts);
-    return { runtime, spawned, stopped };
+    const { runtime, spawned, child } = await ensureWorkspaceBridge(workspace, opts);
+    return { runtime, spawned, stopped, child };
   } finally {
     releaseSingleInstanceLock();
   }
@@ -238,10 +248,10 @@ export async function ensureBridge(workspaceRoot: string, opts: { port?: number 
 
 async function ensureWorkspaceBridge(
   workspace: Workspace,
-  opts: { port?: number } = {}
-): Promise<{ runtime: RuntimeState; spawned: boolean }> {
+  opts: { port?: number; foreground?: boolean } = {}
+): Promise<{ runtime: RuntimeState; spawned: boolean; child: ChildProcess | null }> {
   const observation = await findBridgeObservation(workspace.id);
-  if (observation.state === "healthy") return { runtime: observation.runtime, spawned: false };
+  if (observation.state === "healthy") return { runtime: observation.runtime, spawned: false, child: null };
   if (observation.state === "unknown") {
     throw new Error(
       `Bridge state is uncertain (${observation.reason}); refusing to start another bridge.`
@@ -253,13 +263,14 @@ async function ensureWorkspaceBridge(
   if (!acquired) {
     // Another caller won the race and already started the bridge.
     const runtime = await findLiveBridge(workspace.id);
-    if (runtime) return { runtime, spawned: false };
+    if (runtime) return { runtime, spawned: false, child: null };
     throw new Error(`Bridge did not become healthy within 20s (lock contention).`);
   }
+  let child: ChildProcess | null = null;
   try {
     // Double-check after acquiring the lock: another caller may have just finished.
     const recheck = await findBridgeObservation(workspace.id);
-    if (recheck.state === "healthy") return { runtime: recheck.runtime, spawned: false };
+    if (recheck.state === "healthy") return { runtime: recheck.runtime, spawned: false, child: null };
     if (recheck.state === "unknown") {
       throw new Error(
         `Bridge state is uncertain (${recheck.reason}); refusing to start another bridge.`
@@ -268,37 +279,47 @@ async function ensureWorkspaceBridge(
 
     const logDir = ensureDir(path.join(getStateDir(), "logs"));
     const logFile = path.join(logDir, `bridge-${workspace.id}.out.log`);
-    const out = fs.openSync(logFile, "a", 0o600);
-    try {
-      // Existing files may have been created with a permissive umask. Keep the
-      // daemon's inherited stdout/stderr log owner-readable only.
-      fs.chmodSync(logFile, 0o600);
-    } catch {
-      // Windows / filesystems without chmod semantics
-    }
     const { cmd, args } = cliEntry();
-    const child = spawn(
-      cmd,
-      [...args, "serve", "--workspace", workspace.root, ...(opts.port ? ["--port", String(opts.port)] : [])],
-      {
+    if (opts.foreground) {
+      // Attached: the caller's terminal IS the service's lifetime. Ctrl+C
+      // reaches the serve child (same process group) and it shuts down
+      // gracefully, tunnel included. The Logger still writes its files.
+      child = spawn(cmd, [...args, "serve", "--workspace", workspace.root, ...(opts.port ? ["--port", String(opts.port)] : [])], {
+        detached: false,
+        stdio: ["ignore", "inherit", "inherit"],
+        env: { ...process.env },
+        windowsHide: true,
+      });
+    } else {
+      const out = fs.openSync(logFile, "a", 0o600);
+      try {
+        // Existing files may have been created with a permissive umask. Keep the
+        // daemon's inherited stdout/stderr log owner-readable only.
+        fs.chmodSync(logFile, 0o600);
+      } catch {
+        // Windows / filesystems without chmod semantics
+      }
+      child = spawn(cmd, [...args, "serve", "--workspace", workspace.root, ...(opts.port ? ["--port", String(opts.port)] : [])], {
         detached: true,
         stdio: ["ignore", out, out],
         env: { ...process.env },
         windowsHide: true,
-      }
-    );
-    child.unref();
-    fs.closeSync(out);
+      });
+      child.unref();
+      fs.closeSync(out);
+    }
 
     const deadline = Date.now() + 20_000;
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 300));
       const runtime = await findLiveBridge(workspace.id);
-      if (runtime) return { runtime, spawned: true };
+      if (runtime) return { runtime, spawned: true, child };
       if (child.exitCode !== null && child.exitCode !== 0) {
         throw new Error(`Bridge process exited with code ${child.exitCode}. See ${logFile}`);
       }
     }
+    // Never healthy: do not leave an attached child holding the caller's loop.
+    child.kill("SIGTERM");
     throw new Error(`Bridge did not become healthy within 20s. See ${logFile}`);
   } finally {
     releaseBridgeLock(workspace.id);
@@ -356,4 +377,74 @@ export async function stopBridge(workspaceRoot: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** The bridge's structured log (Logger name "bridge"), written in both modes. */
+export function bridgeLogPath(): string {
+  return path.join(ensureDir(path.join(getStateDir(), "logs")), "bridge.log");
+}
+
+/**
+ * Follow a log file from its current end, emitting appended text. Poll-based
+ * on purpose: no fs-watch dependencies, and the file may not exist yet (the
+ * bridge creates it lazily). Returns a stop function.
+ */
+export function followLogFile(file: string, onChunk: (text: string) => void): () => void {
+  let pos = 0;
+  try {
+    pos = fs.statSync(file).size;
+  } catch {
+    pos = 0;
+  }
+  let stopped = false;
+  const tick = (): void => {
+    if (stopped) return;
+    let size: number;
+    try {
+      size = fs.statSync(file).size;
+    } catch {
+      return;
+    }
+    if (size < pos) pos = 0; // truncated or rotated: start over
+    if (size === pos) return;
+    let fd: number;
+    try {
+      fd = fs.openSync(file, "r");
+    } catch {
+      return;
+    }
+    try {
+      const buf = Buffer.alloc(size - pos);
+      const read = fs.readSync(fd, buf, 0, buf.length, pos);
+      pos += read;
+      if (read > 0) onChunk(buf.toString("utf8", 0, read));
+    } catch {
+      // file vanished mid-read: keep polling
+    } finally {
+      fs.closeSync(fd);
+    }
+  };
+  const timer = setInterval(tick, 400);
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
+}
+
+/**
+ * Graceful stop (admin shutdown, tunnel included) + wait until the bridge
+ * really stops answering. Returns true only when the stop is confirmed.
+ */
+export async function stopBridgeAndWait(workspaceRoot: string, timeoutMs = 10_000): Promise<boolean> {
+  const workspace = new Workspace(workspaceRoot);
+  const runtime = readRuntimeState(workspace.id);
+  await stopBridge(workspaceRoot);
+  if (!runtime) return false;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const still = await probeBridge(runtime.port);
+    if (!still || still.workspaceId !== workspace.id) return true;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+  return false;
 }

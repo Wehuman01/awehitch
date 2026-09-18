@@ -46,6 +46,8 @@ cd ~
 awehitch up
 ```
 
+`up` runs in the **foreground**: service logs stream right into your terminal and `Ctrl+C` stops awehitch. Prefer a background daemon? `awehitch up -d` — logs then go to `~/Library/Application Support/awehitch/logs/` (`awehitch logs` reads them back).
+
 One connector now covers everything under your home directory. The sensitive-file policy still denies `.env*`, keys, SSH and cloud credentials; add your own denials in `~/.c2cignore`. Projects that are their own git repos get independent diff review automatically — ChatGPT scopes git tools to the project directory. Want a tighter boundary instead? Connect a single directory with `awehitch up -w /path/to/project`.
 
 Or let your coding agent (codex / opencode / zcode) do it:
@@ -91,12 +93,13 @@ Per-workspace `.c2c.json`:
 
 ```bash
 awehitch up [-w <path>]    # idempotent "make sure I'm connected" (bare `awehitch` works too)
+                           # foreground by default (Ctrl+C stops it); -d/--daemon for background
 awehitch off               # disconnect (revoke access + stop local service; delete the ChatGPT plugin manually if desired)
 awehitch doctor            # diagnose and auto-repair (--no-fix for a strictly read-only check)
 awehitch tunnel            # inspect or choose the public connection (temporary / stable hostname)
 ```
 
-`awehitch up [-w <path>]` automatically identifies the project, establishes a secure public connection, auto-detects installed coding agents (codex / opencode / zcode) and connects them, and opens a browser to create the ChatGPT connector when needed. The only manual step in the entire flow is logging into ChatGPT once in the popped-up window. `--json` for agent use.
+`awehitch up [-w <path>]` automatically identifies the project, establishes a secure public connection, auto-detects installed coding agents (codex / opencode / zcode) and connects them, and opens a browser to create the ChatGPT connector when needed. The only manual step in the entire flow is logging into ChatGPT once in the popped-up window. The service runs in the foreground by default (logs in your terminal, Ctrl+C stops it); `-d/--daemon` runs it in the background with logs under the state dir. One bridge per machine: `up` in a different directory replaces the previous workspace's service. `--json` for agent use — it always runs in the background so a machine caller never blocks.
 
 Agent/advanced commands (session / record / login / connector-setup / stop / pair / logs / …) are still available: `awehitch <command> --help`.
 

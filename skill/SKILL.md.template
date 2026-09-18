@@ -54,7 +54,7 @@ strategy. Two connections make this work:
 
 1. Check prerequisites yourself: Node.js >= 20, git. Install missing pieces
    (macOS: Homebrew; Windows: winget). Also ensure `cloudflared` exists.
-2. Run `awehitch up -w <workspace> --json`. One idempotent command: it starts
+2. Run `awehitch up -w <workspace> --json --daemon`. One idempotent command: it starts
    the service, builds the public connection, detects and installs the
    harness adapter, and creates or repairs the ChatGPT connector itself
    (it opens the control-plane browser when needed). **Run it, do not talk
@@ -225,7 +225,7 @@ If status is restricted, ignore it and review from git_diff.
 ## Workflow: reconnect after address reclaim
 
 When doctor reports `chatgptSetup.needed` or `chatgptRepair.needed`: tell the
-user its `userMessage`, then run `awehitch up -w <workspace> --json`
+user its `userMessage`, then run `awehitch up -w <workspace> --json --daemon`
 (or `chatgptSetup.command`). It deletes THIS workspace's connector and
 recreates it with the new address — it never clicks Reconnect, and never
 touches another workspace's connector. Then doctor again.

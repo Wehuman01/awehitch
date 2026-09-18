@@ -2,10 +2,18 @@ import { Command, InvalidArgumentError } from "commander";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
+import type { ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { startBridge } from "../bridge/server.js";
 import { findBridgeObservation, findLiveBridge, type RuntimeState } from "../bridge/runtime.js";
-import { adminFetch, ensureBridge, stopBridge } from "../process/daemon.js";
+import {
+  adminFetch,
+  bridgeLogPath,
+  ensureBridge,
+  followLogFile,
+  stopBridge,
+  stopBridgeAndWait,
+} from "../process/daemon.js";
 import { Workspace } from "../workspace/manager.js";
 import { AuthStore } from "../auth/store.js";
 import { detectTunnelBinaries } from "../tunnel/detect.js";
@@ -228,9 +236,9 @@ interface AdminInfo {
 
 async function ensureBridgeAndTunnel(
   workspaceRoot: string,
-  opts: { tunnel: boolean }
-): Promise<{ runtime: RuntimeState; info: AdminInfo; mcpUrl: string | null; stopped: RuntimeState[] }> {
-  const { runtime, stopped } = await ensureBridge(workspaceRoot);
+  opts: { tunnel: boolean; foreground?: boolean }
+): Promise<{ runtime: RuntimeState; info: AdminInfo; mcpUrl: string | null; stopped: RuntimeState[]; child: ChildProcess | null }> {
+  const { runtime, stopped, child } = await ensureBridge(workspaceRoot, { foreground: opts.foreground });
   let info = await adminFetch<AdminInfo>(runtime, "GET", "/admin/info");
   let mcpUrl: string | null = info.publicUrl ? `${info.publicUrl}/mcp` : null;
   if (opts.tunnel && !info.publicUrl) {
@@ -245,7 +253,7 @@ async function ensureBridgeAndTunnel(
     info = await adminFetch<AdminInfo>(runtime, "GET", "/admin/info");
     mcpUrl = `${result.url}/mcp`;
   }
-  return { runtime, info, mcpUrl, stopped };
+  return { runtime, info, mcpUrl, stopped, child };
 }
 
 /**
@@ -273,6 +281,55 @@ function waitForEnter(): Promise<void> {
     });
     rl.once("close", () => resolve());
   });
+}
+
+/**
+ * Foreground tail: stay attached until the service goes away, then exit.
+ * - child (spawned attached): Ctrl+C reaches it directly (same process group)
+ *   and its own SIGINT handler shuts bridge + tunnel down; we outlive it and
+ *   propagate its exit.
+ * - reused daemon: stream the bridge log; Ctrl+C stops it gracefully first,
+ *   and a bridge that dies on its own ends the attach.
+ */
+async function attachForeground(
+  root: string,
+  child: ChildProcess | null,
+  workspace: Workspace,
+  exitCode: number
+): Promise<void> {
+  if (!child) {
+    const stopStreaming = followLogFile(bridgeLogPath(), (text) => process.stdout.write(text));
+    const watch = setInterval(() => {
+      void findLiveBridge(workspace.id).then((live) => {
+        if (!live) {
+          clearInterval(watch);
+          stopStreaming();
+          process.exit(exitCode);
+        }
+      });
+    }, 2_000);
+    const shutdown = (): void => {
+      clearInterval(watch);
+      stopStreaming();
+      void stopBridgeAndWait(root).then((ok) => process.exit(ok ? exitCode : 1));
+    };
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
+    return new Promise<void>(() => undefined); // parked; exits happen above
+  }
+  if (child.exitCode !== null || child.signalCode !== null) process.exit(exitCode);
+  process.on("SIGINT", () => {
+    // The child shares this process group: it received the same SIGINT and
+    // shuts bridge + tunnel down itself. Just don't die before it does.
+  });
+  process.on("SIGTERM", () => {
+    child.kill("SIGTERM");
+  });
+  const outcome = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+    child.once("exit", (code, signal) => resolve({ code, signal }));
+  });
+  if (outcome.signal === null && outcome.code !== 0) say(`Bridge exited with code ${outcome.code}.`);
+  process.exit(exitCode !== 0 ? exitCode : outcome.code ?? 0);
 }
 
 program
@@ -349,6 +406,7 @@ interface UpOptions {
   harness?: HarnessId[];
   noTunnel: boolean;
   json: boolean;
+  daemon: boolean;
   timeout: number;
 }
 
@@ -363,18 +421,28 @@ function parseHarnessOption(value: string, acc: HarnessId[]): HarnessId[] {
 // `awehitch` (alias `awehitch up`): "make sure ChatGPT is connected". Every
 // step is idempotent and non-interactive except the single login pause below.
 // The temporary address is the default — the Cloudflare choice prompt is
-// deliberately not shown here.
+// deliberately not shown here. Foreground by default: the service lives in
+// this terminal until Ctrl+C; --daemon (implied by --json) detaches instead.
 program
   .command("up", { isDefault: true })
-  .description("Connect this workspace to ChatGPT (idempotent; the only manual step is logging in)")
+  .description(
+    "Connect this workspace to ChatGPT (idempotent). Keeps the service in the foreground: logs stream here, Ctrl+C stops it. Use --daemon for background."
+  )
   .option("-w, --workspace <path>", "workspace root (defaults to current directory)")
   .option("--harness <id>", "harness adapter to install (repeatable, overrides auto-detection)", parseHarnessOption, [] as HarnessId[])
   .option("--no-tunnel", "local-only mode (skip the public connection)")
+  .option("-d, --daemon", "run the service in the background and exit (implied by --json); logs under the state dir's logs/", false)
   .option("--json", "machine-readable output", false)
   .option("--timeout <minutes>", "how long to wait for the ChatGPT login", parsePositiveInteger, 5)
   .action(async (opts: UpOptions) => {
     const root = resolveWorkspace(opts.workspace);
     const json = opts.json;
+    // Foreground = interactive default. --json always detaches: a machine
+    // caller must get its JSON answer and exit, never block on a service.
+    const fg = !json && !opts.daemon;
+    let fgChild: ChildProcess | null = null;
+    let fgExit = 0;
+    let skipHarness = false;
     const requested = opts.harness?.length ? [...new Set(opts.harness)] : detectHarnesses();
 
     let workspace: Workspace;
@@ -401,11 +469,12 @@ program
     let mcpUrl: string | null;
     let stoppedPrevious: RuntimeState[] = [];
     try {
-      const out = await ensureBridgeAndTunnel(root, { tunnel: !opts.noTunnel });
+      const out = await ensureBridgeAndTunnel(root, { tunnel: !opts.noTunnel, foreground: fg });
       runtime = out.runtime;
       info = out.info;
       mcpUrl = out.mcpUrl;
       stoppedPrevious = out.stopped;
+      fgChild = out.child;
     } catch (error) {
       handleCliError(error, json);
       return;
@@ -497,30 +566,47 @@ program
         const verdict = await attempt();
         if (verdict !== "ok") {
           // "paused" (needsLogin) is the expected stop, exit 0; everything
-          // else already printed its honest failure.
-          if (verdict === "failed") process.exitCode = 1;
-          return;
+          // else already printed its honest failure. Foreground keeps the
+          // service alive in this terminal and exits with the verdict only
+          // after the user presses Ctrl+C — the attached bridge owns the
+          // exit path.
+          if (verdict === "failed") {
+            if (fg) {
+              fgExit = 1;
+              skipHarness = true;
+            } else {
+              process.exitCode = 1;
+            }
+          }
+          if (!fg) return;
         }
       } catch (error) {
         handleCliError(error, json);
-        return;
+        if (fg) {
+          fgExit = 1;
+          skipHarness = true;
+        } else {
+          return;
+        }
       }
     }
 
     // 3. Harness adapters (idempotent; a wiring failure must not abort the
     //    connection). Codex gets its sandbox allowlist alongside.
     const harnesses: { id: string; installed: boolean; skillPath?: string; error?: string }[] = [];
-    for (const harness of requested) {
-      try {
-        const impl = await loadAdapter(harness);
-        const base = readLastEndpoint(info.workspaceId)?.connectorName ?? connectorName;
-        const result = impl.setup({ workspaceRoot: root, cliEntry: awehitchCliEntry(), connectorName: base });
-        harnesses.push({ id: harness, installed: true, skillPath: result.skillPath });
-        if (harness === "codex") trySandboxAllow();
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        harnesses.push({ id: harness, installed: false, error: message });
-        if (!json) process.stderr.write("Failed to wire " + harnessLabel(harness) + ": " + message + "\n");
+    if (!skipHarness) {
+      for (const harness of requested) {
+        try {
+          const impl = await loadAdapter(harness);
+          const base = readLastEndpoint(info.workspaceId)?.connectorName ?? connectorName;
+          const result = impl.setup({ workspaceRoot: root, cliEntry: awehitchCliEntry(), connectorName: base });
+          harnesses.push({ id: harness, installed: true, skillPath: result.skillPath });
+          if (harness === "codex") trySandboxAllow();
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          harnesses.push({ id: harness, installed: false, error: message });
+          if (!json) process.stderr.write("Failed to wire " + harnessLabel(harness) + ": " + message + "\n");
+        }
       }
     }
 
@@ -560,6 +646,17 @@ program
       say("");
       say("The public address changed and was repaired automatically. Occasional changes are normal; for a stable hostname run `awehitch tunnel choose --mode named`.");
     }
+
+    if (fg) {
+      say("");
+      say(fgChild
+        ? "Foreground mode: service logs stream below. Press Ctrl+C to stop awehitch."
+        : "Bridge already running: streaming its log below. Press Ctrl+C to stop awehitch.");
+      await attachForeground(root, fgChild, workspace, fgExit);
+      return;
+    }
+    say("");
+    say(`· Background mode — logs: ${bridgeLogPath()}`);
   });
 
 /** Print a connector-setup failure honestly (human or JSON). */

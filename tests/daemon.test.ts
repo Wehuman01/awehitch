@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
-import { ensureBridge, stopBridge } from "../src/process/daemon.js";
+import { describe, expect, it, vi } from "vitest";
+import { ensureBridge, followLogFile, stopBridge, stopBridgeAndWait } from "../src/process/daemon.js";
 import { writeRuntimeState, clearRuntimeState, probeBridge, type RuntimeState } from "../src/bridge/runtime.js";
 import { SERVICE_NAME, VERSION } from "../src/version.js";
 import { Workspace } from "../src/workspace/manager.js";
@@ -136,6 +136,51 @@ describe("one bridge per machine", () => {
       cleanup(rootA);
       cleanup(rootB);
       delete process.env.AWEHITCH_STATE_DIR;
+    }
+  });
+});
+
+describe("foreground mode", () => {
+  it("spawns an attached child; stopBridgeAndWait confirms a graceful shutdown", async () => {
+    const stateDir = isolateStateDir();
+    const root = makeTmpDir("foreground-attach");
+    write(root, "a.txt", "a");
+    try {
+      const result = await ensureBridge(root, { foreground: true });
+      expect(result.spawned).toBe(true);
+      const child = result.child;
+      expect(child).not.toBeNull();
+      const exited = new Promise<number | null>((resolve) => child!.once("exit", (code) => resolve(code)));
+      expect(await stopBridgeAndWait(root)).toBe(true);
+      // The attached serve child shut down cleanly with the bridge.
+      expect(await exited).toBe(0);
+      expect(await probeBridge(result.runtime.port)).toBeNull();
+      const workspace = new Workspace(root);
+      expect(fs.existsSync(path.join(stateDir, "runtime", `${workspace.id}.json`))).toBe(false);
+    } finally {
+      await stopBridge(root);
+      cleanup(root);
+      delete process.env.AWEHITCH_STATE_DIR;
+    }
+  });
+});
+
+describe("followLogFile", () => {
+  it("emits appended content starting from the current end, and stops cleanly", async () => {
+    const dir = makeTmpDir("follow-log");
+    const file = path.join(dir, "bridge.log");
+    fs.writeFileSync(file, "first\n");
+    const chunks: string[] = [];
+    const stop = followLogFile(file, (text) => chunks.push(text));
+    try {
+      fs.appendFileSync(file, "second\n");
+      await vi.waitFor(() => expect(chunks.join("")).toContain("second"));
+      fs.appendFileSync(file, "third\n");
+      await vi.waitFor(() => expect(chunks.join("")).toContain("third"));
+      expect(chunks.join("")).not.toContain("first");
+    } finally {
+      stop();
+      cleanup(dir);
     }
   });
 });
