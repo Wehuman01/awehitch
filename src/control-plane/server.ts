@@ -196,8 +196,8 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
         if (taskId && !checkpoint) {
           return fail(
             "NO_CHECKPOINT",
-            `No checkpoint saved for task ${taskId}. Save one first: ` +
-              `\`awehitch session set --task ${taskId} --checkpoint-state …\`.`
+              `No checkpoint saved for task ${taskId}. Save one first: ` +
+              `\`awehitch session set --task ${taskId} --protocol-state EXECUTED …\`.`
           );
         }
         checkpoint = checkpoint ?? readSession(workspaceId, harness)?.checkpoint;

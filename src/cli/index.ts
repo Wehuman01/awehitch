@@ -1078,8 +1078,6 @@ program
 
 // ---------------------------------------------------------------- doctor
 
-// ---------------------------------------------------------------- doctor
-
 program
   .command("doctor")
   .description("Diagnose and auto-repair the connection (--no-fix for a strictly read-only check)")
