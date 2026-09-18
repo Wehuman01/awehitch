@@ -39,16 +39,19 @@ corepack pnpm install && corepack pnpm build
 
 ## 快速开始
 
-对任意一个编码 agent（codex / opencode / zcode）说：
+推荐做法：在**家目录挂一个** awehitch，它下面的所有项目直接可用，无需按项目配置。
+
+```bash
+cd ~
+awehitch up
+```
+
+一个连接器覆盖家目录下的一切。敏感文件策略照常生效——`.env*`、密钥、SSH、云凭证一律拒绝；更多拒绝规则写在 `~/.c2cignore`。本身是 git 仓库的项目自动获得独立 diff 审查——ChatGPT 会把 git 工具定位到项目目录。想收紧边界？用 `awehitch up -w /path/to/project` 只连一个目录。
+
+或让编码 agent（codex / opencode / zcode）代劳：
 
 ```text
 请帮我运行 awehitch 并自动完成配置。
-```
-
-或自己跑 CLI：
-
-```bash
-awehitch up -w /path/to/project
 ```
 
 配对与连接器创建全自动。唯一可能需要你动手的，是在弹出的窗口里登录一次 ChatGPT。装好后日常零命令。

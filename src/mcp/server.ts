@@ -308,16 +308,24 @@ export function createMcpServer(ctx: McpContext): McpServer {
     "git_status",
     {
       title: "Git status",
-      description: `Structured git status of the workspace: branch, staged/unstaged/untracked files. ${UNTRUSTED_NOTE}`,
-      inputSchema: {},
+      description: `Structured git status: branch, staged/unstaged/untracked files. path scopes to one ` +
+        `workspace-relative file or directory; git runs from that location, so a subdirectory with ` +
+        `its own git repo (e.g. a project under a home-rooted workspace) reports that repo. ${UNTRUSTED_NOTE}`,
+      inputSchema: {
+        path: z
+          .string()
+          .optional()
+          .describe("Limit status to one workspace-relative file or directory"),
+      },
       outputSchema: gitStatusOutputSchema,
       annotations: { readOnlyHint: true },
     },
-    async (_args, extra) => {
+    async (args, extra) => {
       const denied = requireScope(extra.authInfo, "git.read");
       if (denied) return denied;
       try {
-        return okStructured(gitStatus(workspace.root));
+        const rel = args?.path ? workspace.resolve(args.path).rel : "";
+        return okStructured(gitStatus(workspace.root, rel || undefined));
       } catch (error) {
         return mapError(error);
       }
@@ -330,7 +338,10 @@ export function createMcpServer(ctx: McpContext): McpServer {
       title: "Git diff",
       description:
         `Git diff with byte-offset pagination. mode: 'unstaged' (default), 'staged', or 'head' ` +
-        `(working tree vs HEAD). When hasMore is true, call again with offset=nextOffset. ${UNTRUSTED_NOTE}`,
+        `(working tree vs HEAD). path scopes to one workspace-relative file or directory; git runs ` +
+        `from that location, so a subdirectory with its own git repo (e.g. a project under a ` +
+        `home-rooted workspace) is diffed in its own repo. When hasMore is true, call again with ` +
+        `offset=nextOffset. ${UNTRUSTED_NOTE}`,
       inputSchema: {
         mode: z.enum(["unstaged", "staged", "head"]).default("unstaged"),
         path: z.string().optional().describe("Limit the diff to one workspace-relative path"),

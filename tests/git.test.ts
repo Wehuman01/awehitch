@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import path from "node:path";
+import fs from "node:fs";
 import { gitDiff, gitInfo, gitStatus } from "../src/workspace/git.js";
 import { makeTmpDir, cleanup, write, makeGitRepo, git } from "./helpers.js";
 
@@ -273,5 +274,71 @@ describe("gitDiff pagination", () => {
     expect(srcDiff.diff).not.toContain("root_secret_leak.txt");
 
     git(repo, "reset", "--hard", "HEAD");
+  });
+});
+
+describe("scoped repos (home-rooted workspaces)", () => {
+  let home: string;
+  let project: string;
+  let previousCeiling: string | undefined;
+
+  beforeAll(() => {
+    // realpath: git reports resolved paths, the fixture must compare equal.
+    home = fs.realpathSync(makeTmpDir("home-root"));
+    project = path.join(home, "code", "proj");
+    fs.mkdirSync(project, { recursive: true });
+    makeGitRepo(project);
+    // Keep git from walking above the fake home, like the outer fixture does.
+    previousCeiling = process.env.GIT_CEILING_DIRECTORIES;
+    process.env.GIT_CEILING_DIRECTORIES = path.dirname(home);
+  });
+
+  afterAll(() => {
+    if (previousCeiling === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
+    else process.env.GIT_CEILING_DIRECTORIES = previousCeiling;
+    cleanup(home);
+  });
+
+  it("reports no repo at the home root itself", () => {
+    expect(gitStatus(home).isRepo).toBe(false);
+    expect(gitDiff(home, { mode: "unstaged" }).isRepo).toBe(false);
+  });
+
+  it("scopes status to a project subrepo with workspace-relative paths", () => {
+    write(project, "hello.txt", "modified in subrepo\n");
+    const status = gitStatus(home, "code/proj");
+    expect(status.isRepo).toBe(true);
+    expect(status.branch).toBe("main");
+    expect(status.unstaged.map((entry) => entry.path)).toContain("code/proj/hello.txt");
+    git(project, "checkout", "--", "hello.txt");
+  });
+
+  it("diffs the project subrepo through a directory or file scope", () => {
+    write(project, "src/index.ts", "export const answer = 43;\n");
+    const diff = gitDiff(home, { mode: "unstaged" }, "code/proj");
+    expect(diff.isRepo).toBe(true);
+    expect(diff.diff).toContain("answer = 43");
+    const fileDiff = gitDiff(home, { mode: "unstaged" }, "code/proj/src/index.ts");
+    expect(fileDiff.diff).toContain("answer = 43");
+    git(project, "checkout", "--", "src/index.ts");
+  });
+
+  it("excludes sensitive files living inside the subrepo", () => {
+    write(project, ".env", "SECRET=leaked-home\n");
+    git(project, "add", "-f", ".env");
+    const diff = gitDiff(home, { mode: "staged" }, "code/proj");
+    expect(diff.diff).not.toContain("leaked-home");
+    git(project, "rm", "-f", "--cached", ".env");
+  });
+
+  it("does not leak between sibling subrepos", () => {
+    const other = path.join(home, "code", "other");
+    fs.mkdirSync(other, { recursive: true });
+    makeGitRepo(other);
+    write(other, "hello.txt", "changed in other\n");
+    const diff = gitDiff(home, { mode: "unstaged" }, "code/proj");
+    expect(diff.diff).not.toContain("changed in other");
+    git(other, "checkout", "--", "hello.txt");
+    cleanup(other);
   });
 });

@@ -39,16 +39,19 @@ Requirements: Node.js >= 20, git. `cloudflared` for the public connection (auto-
 
 ## Quick Start
 
-Tell your coding agent (codex / opencode / zcode):
+Recommended: hang **one** awehitch on your home directory. Every project under it just works — no per-project setup.
+
+```bash
+cd ~
+awehitch up
+```
+
+One connector now covers everything under your home directory. The sensitive-file policy still denies `.env*`, keys, SSH and cloud credentials; add your own denials in `~/.c2cignore`. Projects that are their own git repos get independent diff review automatically — ChatGPT scopes git tools to the project directory. Want a tighter boundary instead? Connect a single directory with `awehitch up -w /path/to/project`.
+
+Or let your coding agent (codex / opencode / zcode) do it:
 
 ```text
 Please run awehitch and set it up for me automatically.
-```
-
-Or run the CLI yourself:
-
-```bash
-awehitch up -w /path/to/project
 ```
 
 Pairing and connector creation are fully automatic. The only action that may need you: logging in to ChatGPT in the popped-up window. After setup, everyday use requires zero commands.

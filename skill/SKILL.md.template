@@ -113,7 +113,9 @@ Rules:
 6. After the agent reports EXECUTED, independently inspect the diff.
    If execution_output lists a readable item for this iteration, list
    then read it. If status is restricted, ignore the body and review
-   from git.
+   from git. When the EXECUTED message carries a PROJECT_DIR other than
+   `.`, pass it as `path` to git_status/git_diff — the workspace root
+   itself may not be a git repo; the project subdirectory is.
 7. Do not assume an implementation succeeded just because the agent says so.
 8. Continue until the implementation satisfies the success criteria.
 9. Avoid unnecessary rewrites.
@@ -191,6 +193,7 @@ awehitch record … --command "npm test" --output-file <temp> --exit-code 0
 STATE: EXECUTED
 TASK_ID: {{TASK_ID}}
 ITERATION: 1
+PROJECT_DIR: .
 
 RESULT:
 Execution finished.
@@ -205,6 +208,11 @@ Please independently inspect the workspace and current git diff through MCP.
 If execution_output lists a readable item for this iteration, list then read it.
 If status is restricted, ignore it and review from git_diff.
 ```
+
+   `PROJECT_DIR` is the workspace-relative directory of the git repo that
+   owns the changed files — the enclosing project directory when the
+   workspace root itself is not a repo (home-rooted workspaces), `.`
+   otherwise.
 
    Then `awehitch session set --protocol-state EXECUTED_SENT --waiting-for GPT_REVIEW --next-step "wait for PLAN or DONE"`.
 8. `awehitch_wait_reply`. ChatGPT reviews via MCP and replies DONE / PLAN
