@@ -89,11 +89,13 @@ Per-workspace `.c2c.json`:
 ```bash
 awehitch up [-w <path>]    # idempotent "make sure I'm connected" (bare `awehitch` works too)
 awehitch off               # disconnect (revoke access + stop local service; delete the ChatGPT plugin manually if desired)
+awehitch doctor            # diagnose and auto-repair (--no-fix for a strictly read-only check)
+awehitch tunnel            # inspect or choose the public connection (temporary / stable hostname)
 ```
 
 `awehitch up [-w <path>]` automatically identifies the project, establishes a secure public connection, auto-detects installed coding agents (codex / opencode / zcode) and connects them, and opens a browser to create the ChatGPT connector when needed. The only manual step in the entire flow is logging into ChatGPT once in the popped-up window. `--json` for agent use.
 
-Internal/advanced commands (start / stop / status / doctor / pair / tunnel / session / …) are still available: `awehitch <command> --help`.
+Agent/advanced commands (session / record / login / connector-setup / stop / pair / logs / …) are still available: `awehitch <command> --help`.
 
 ## Security
 
@@ -107,7 +109,7 @@ Internal/advanced commands (start / stop / status / doctor / pair / tunnel / ses
 
 First move, always: `awehitch doctor` (it repairs what it can; `--no-fix` is strictly read-only).
 
-- **Bridge not running** — `awehitch start`, or let doctor do it; logs via `awehitch logs --verbose`. If doctor says the state is *uncertain*, wait and re-run — do not start a second bridge.
+- **Bridge not running** — run `awehitch up` (doctor starts it too); logs via `awehitch logs --verbose`. If doctor says the state is *uncertain*, wait and re-run — do not start a second bridge.
 - **Address expired / connector broken** — doctor sets `chatgptRepair.needed`: **Delete** this workspace's connector and create it again with the new address. Never click Reconnect — the old URL is dead.
 - **`plugins/list` answered HTTP 5xx during connector setup** — a transient ChatGPT backend hiccup; the cleanup step retries on its own and skips itself if the list stays down, so setup continues. If a stale same-name connector lingers afterwards, rerun once to clean it up.
 - **Pairing code invalid** — codes are one-time and expire in ~5 minutes: `awehitch pair` mints a fresh one.

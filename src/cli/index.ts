@@ -2,9 +2,7 @@ import { Command, InvalidArgumentError } from "commander";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
-import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { writeFileAtomic } from "../fs/atomic.js";
 import { startBridge } from "../bridge/server.js";
 import { findBridgeObservation, findLiveBridge, type RuntimeState } from "../bridge/runtime.js";
 import { adminFetch, ensureBridge, stopBridge } from "../process/daemon.js";
@@ -282,7 +280,7 @@ program
   .description(`${PRODUCT_NAME} — ChatGPT thinks. Your agent works.`)
   .version(VERSION, "-v, --version")
   .configureHelp({ sortSubcommands: true })
-  .addHelpText("after", "\nInternal/advanced commands (doctor, session, tunnel, etc.) are still available: awehitch <command> --help");
+  .addHelpText("after", "\nAgent/advanced commands (session, record, login, connector-setup, stop, logs, …) are still available: awehitch <command> --help");
 
 // ---------------------------------------------------------------- awehitch (default: ensure connected)
 
@@ -627,39 +625,6 @@ program
     await runStdioServer(resolveWorkspace(opts.workspace));
   });
 
-// ---------------------------------------------------------------- start
-
-program
-  .command("start", { hidden: true })
-  .description("Start (or reuse) the bridge for this workspace")
-  .option("-w, --workspace <path>", "workspace root (defaults to current directory)")
-  .option("--tunnel", "also establish the secure public connection", false)
-  .option("--json", "machine-readable output", false)
-  .action(async (opts: { workspace?: string; tunnel: boolean; json: boolean }) => {
-    const root = resolveWorkspace(opts.workspace);
-    try {
-      const { runtime, info, mcpUrl } = await ensureBridgeAndTunnel(root, { tunnel: opts.tunnel });
-      const connectorName = mcpUrl
-        ? persistWorkspaceEndpoint({
-            workspaceId: info.workspaceId,
-            workspaceName: info.workspaceName,
-            port: runtime.port,
-            publicUrl: info.publicUrl,
-            mcpUrl,
-          })
-        : readLastEndpoint(info.workspaceId)?.connectorName;
-      if (opts.json) {
-        say(JSON.stringify({ ok: true, port: runtime.port, workspaceId: info.workspaceId, mcpUrl, connectorName }));
-        return;
-      }
-      check(`Workspace identified (${info.workspaceName})`);
-      check("Workspace bridge is up");
-      if (mcpUrl) check("Secure connection established");
-    } catch (error) {
-      handleCliError(error, opts.json);
-    }
-  });
-
 // ---------------------------------------------------------------- setup
 
 program
@@ -743,6 +708,7 @@ program
       say("");
       say("Next: run `awehitch connector-setup -w <workspace>` to create the ChatGPT connector automatically.");
       say("(You do not need to copy the URL or pairing code; an agent with the awehitch skill runs this step itself.)");
+      say("Note: `setup` is kept for older installed skills; `awehitch up` does all of this in one idempotent step.");
     } catch (error) {
       handleCliError(error, opts.json);
     }
@@ -941,50 +907,13 @@ program
     }
   });
 
-// ---------------------------------------------------------------- status
-
-program
-  .command("status", { hidden: true })
-  .description("Show bridge status for this workspace")
-  .option("-w, --workspace <path>")
-  .option("--json", "machine-readable output", false)
-  .action(async (opts: { workspace?: string; json: boolean }) => {
-    const root = resolveWorkspace(opts.workspace);
-    const workspace = new Workspace(root);
-    const observation = await findBridgeObservation(workspace.id);
-    if (observation.state === "unknown") {
-      if (opts.json) {
-        say(JSON.stringify({ ok: false, running: null, state: "unknown", reason: observation.reason }));
-      } else {
-        cross(`Bridge state is uncertain (${observation.reason}); not treating it as stopped.`);
-      }
-      return;
-    }
-    if (observation.state === "stopped") {
-      if (opts.json) say(JSON.stringify({ ok: false, running: false }));
-      else say("Bridge is not running. Start it with `awehitch start`.");
-      return;
-    }
-    const runtime = observation.runtime;
-    const info = await adminFetch<AdminInfo>(runtime, "GET", "/admin/info");
-    if (opts.json) {
-      say(JSON.stringify({ ok: true, running: true, ...info }));
-      return;
-    }
-    say(PRODUCT_NAME);
-    say("");
-    check(`Workspace: ${info.workspaceName}`);
-    check(`Bridge: running (port ${info.port})`);
-    if (info.tunnel.running && info.tunnel.url) check(`Secure connection: ${info.tunnel.url}/mcp`);
-    else say("· Secure connection: disabled (local mode)");
-    say(`· Authorized: ${info.tokenCount > 0 ? "yes" : "no"}`);
-  });
+// ---------------------------------------------------------------- status (removed: `doctor --no-fix` is the read-only check, a strict superset)
 
 // ---------------------------------------------------------------- doctor
 
 program
-  .command("doctor", { hidden: true })
-  .description("Diagnose and auto-repair the connection")
+  .command("doctor")
+  .description("Diagnose and auto-repair the connection (--no-fix for a strictly read-only check)")
   .option("-w, --workspace <path>")
   .option("--no-fix", "diagnose only, do not repair")
   .option("--control-plane", "also probe the live ChatGPT DOM (launches the control-plane browser)", false)
@@ -1447,27 +1376,6 @@ program
     }
   });
 
-program
-  .command("workspace", { hidden: true })
-  .description("Show workspace identity and project info")
-  .option("-w, --workspace <path>")
-  .option("--json", "machine-readable output", false)
-  .action((opts: { workspace?: string; json: boolean }) => {
-    try {
-      const workspace = new Workspace(resolveWorkspace(opts.workspace));
-      const project = workspace.detectProject();
-      const data = { workspaceId: workspace.id, name: workspace.name, root: workspace.root, ...project };
-      if (opts.json) say(JSON.stringify(data));
-      else {
-        say(`Workspace：${data.name}（${data.workspaceId}）`);
-        say(`Type: ${data.projectType}  Languages: ${data.languages.join(", ") || "-"}`);
-        say(`Path: ${data.root}`);
-      }
-    } catch (error) {
-      handleCliError(error, opts.json);
-    }
-  });
-
 // ---------------------------------------------------------------- sandbox-allow (Codex writable_roots)
 
 program
@@ -1488,66 +1396,6 @@ program
     }
     if (result.alreadyAllowed) check("Sandbox allowlist ready; later chats need no elevation");
     else check("Added the state dir to the Codex sandbox allowlist (later chats need no elevation)");
-  });
-
-// ---------------------------------------------------------------- update-check (once per local day)
-
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-
-function runGit(args: string[]): { ok: boolean; stdout: string } {
-  const result = spawnSync("git", args, {
-    cwd: repoRoot,
-    encoding: "utf8",
-    timeout: 8000,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-    windowsHide: true,
-  });
-  return { ok: result.status === 0, stdout: (result.stdout ?? "").trim() };
-}
-
-program
-  .command("update-check", { hidden: true })
-  .description("Check the repository for a newer version (real check at most once per local day)")
-  .option("--force", "check even if already checked today", false)
-  .option("--json", "machine-readable output", false)
-  .action((opts: { force: boolean; json: boolean }) => {
-    const file = path.join(getStateDir(), "update-check.json");
-    const today = new Date().toLocaleDateString("en-CA");
-    let last: { date?: string; updateAvailable?: boolean } = {};
-    try {
-      last = JSON.parse(fs.readFileSync(file, "utf8")) as typeof last;
-    } catch {
-      /* first run */
-    }
-
-    const emit = (data: {
-      checked: boolean;
-      updateAvailable: boolean;
-      localCommit?: string;
-      remoteCommit?: string;
-      note?: string;
-    }): void => {
-      if (opts.json) say(JSON.stringify({ ok: true, version: VERSION, ...data }));
-      else if (data.updateAvailable) say(`Update available (local ${data.localCommit?.slice(0, 7)} → remote ${data.remoteCommit?.slice(0, 7)}).`);
-      else say(data.note ?? "Already up to date.");
-    };
-
-    if (!opts.force && last.date === today) {
-      emit({ checked: false, updateAvailable: last.updateAvailable ?? false, note: "Update already checked today." });
-      return;
-    }
-
-    const local = runGit(["rev-parse", "HEAD"]);
-    const remote = runGit(["ls-remote", "origin", "HEAD"]);
-    if (!local.ok || !remote.ok || !remote.stdout) {
-      emit({ checked: false, updateAvailable: false, note: "Could not check for updates (offline or non-git install); skipped." });
-      return;
-    }
-    const remoteCommit = remote.stdout.split(/\s/)[0];
-    const updateAvailable = remoteCommit !== local.stdout;
-    fs.mkdirSync(getStateDir(), { recursive: true });
-    writeFileAtomic(file, JSON.stringify({ date: today, updateAvailable, remoteCommit }), { mode: 0o600 });
-    emit({ checked: true, updateAvailable, localCommit: local.stdout, remoteCommit });
   });
 
 // ---------------------------------------------------------------- session (ChatGPT conversation / Project memory)
@@ -1828,7 +1676,7 @@ program
 
 // ---------------------------------------------------------------- tunnel
 
-const tunnelCmd = program.command("tunnel", { hidden: true }).description("Choose or inspect the public connection for this workspace");
+const tunnelCmd = program.command("tunnel").description("Choose or inspect the public connection for this workspace");
 
 tunnelCmd
   .command("status", { isDefault: true })

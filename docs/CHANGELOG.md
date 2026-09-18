@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.2.3
+
+Command surface: four user-facing verbs (up / off / doctor / tunnel), one diagnostic authority.
+
+- **`doctor` and `tunnel` are now listed in `--help`.** They were already the
+  documented first moves (README troubleshooting, `up`'s stable-hostname
+  hint) — a command the surface tells humans to run must itself be visible.
+- **Removed `start`, `status`, `workspace`, `update-check`.** `up` is
+  idempotent and starts the bridge; `doctor --no-fix` is a strictly
+  read-only superset of `status`; `workspace` reported what doctor already
+  reports; `update-check` had no caller. `setup` still runs for
+  already-installed skills but now points at `awehitch up`.
+- Help footer now lists the remaining agent/advanced commands accurately.
+
 ## v0.2.2
 
 Security and robustness pass from a full code review (289 tests, +35).

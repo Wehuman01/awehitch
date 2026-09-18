@@ -89,11 +89,13 @@ awehitch Bridge（本地，工作区只读网关 + OAuth + 隧道）
 ```bash
 awehitch up [-w <路径>]    # 幂等的"确保已连接"（裸 `awehitch` 也可以）
 awehitch off               # 断开（吊销访问 + 停止本地服务；ChatGPT 插件页可选手动删除）
+awehitch doctor            # 诊断并自动修复（--no-fix 为严格只读体检）
+awehitch tunnel            # 查看或选择公网连接（临时地址 / 固定域名）
 ```
 
 `awehitch up [-w <路径>]` 会自动识别项目、建立安全公网连接、自动探测已安装的编码 agent（codex / opencode / zcode）并接入、需要时打开浏览器自动创建 ChatGPT 连接器。全流程唯一需要你动手的，是在弹出的窗口里登录一次 ChatGPT。`--json` 供 agent 使用。
 
-内部/高级命令（start / stop / status / doctor / pair / tunnel / session / …）仍可用，`awehitch <命令> --help` 查看。
+Agent/高级命令（session / record / login / connector-setup / stop / pair / logs / …）仍可用，`awehitch <命令> --help` 查看。
 
 ## 安全
 
@@ -107,7 +109,7 @@ awehitch off               # 断开（吊销访问 + 停止本地服务；ChatGP
 
 第一步永远是 `awehitch doctor`（能修的自动修；加 `--no-fix` 则严格只读）。
 
-- **Bridge 没在跑** — `awehitch start`，或让 doctor 处理；日志看 `awehitch logs --verbose`。doctor 说状态*不确定*时等一等再跑——不要起第二个 bridge。
+- **Bridge 没在跑** — 跑 `awehitch up` 即可，doctor 也会自动起；日志看 `awehitch logs --verbose`。doctor 说状态*不确定*时等一等再跑——不要起第二个 bridge。
 - **地址过期 / 连接器坏了** — doctor 会标记 `chatgptRepair.needed`：**删除**本工作区的连接器、用新地址重建。绝不点 Reconnect——旧 URL 已死。
 - **connector-setup 时 `plugins/list` 返回 5xx** — ChatGPT 后端偶发抖动；清理步骤会自动重试，仍失败就跳过清理继续创建。若之后残留了同名旧连接器，重跑一次即可清掉。
 - **配对码无效** — 一次性、约 5 分钟过期：`awehitch pair` 换新码。

@@ -128,31 +128,40 @@ describe("endpoint change detection", () => {
 });
 
 describe("command surface", () => {
-  it("lists only up and off as user-facing commands", () => {
+  it("lists exactly up, off, doctor, tunnel as user-facing commands", () => {
     const result = runCli(["--help"]);
     expect(result.status).toBe(0);
     const help = result.stdout;
-    expect(help).toMatch(/^\s{2}up /m);
-    expect(help).toMatch(/^\s{2}off /m);
+    for (const visible of ["up", "off", "doctor", "tunnel"]) {
+      expect(help).toMatch(new RegExp(`^\\s{2}${visible} `, "m"));
+    }
     for (const hidden of [
       "setup",
-      "doctor",
       "connector-setup",
       "login",
       "pair",
       "unpair",
-      "tunnel",
       "session",
-      "start",
+      "record",
+      "prefs",
       "stop",
+      "restart",
+      "logs",
+      "sandbox-allow",
+      "serve",
+      "control-plane",
+      // removed commands must not come back
+      "start",
       "status",
+      "workspace",
+      "update-check",
     ]) {
       expect(help).not.toMatch(new RegExp(`^\\s{2}${hidden} `, "m"));
     }
   });
 
   it("keeps hidden commands callable for already-installed skills", () => {
-    for (const command of ["setup", "connector-setup", "doctor"]) {
+    for (const command of ["setup", "connector-setup", "logs"]) {
       const result = runCli([command, "--help"]);
       expect(result.status).toBe(0);
       expect(result.stdout).toContain("Usage:");
