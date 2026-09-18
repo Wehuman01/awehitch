@@ -253,6 +253,10 @@ export class ControlPlaneBrowser {
   async close(): Promise<void> {
     const page = this.page;
     this.page = null;
+    // The conversation URL is only observable while the tab lives; this is the
+    // last chance to persist it before the browser goes away, so an idle close
+    // cannot orphan the active task's chat.
+    if (page && !page.isClosed()) this.bindConversationUrl(page.url());
     await page?.close().catch(() => undefined);
     this.dropSharedRef();
   }
@@ -338,11 +342,31 @@ export class ControlPlaneBrowser {
   }
 
   /**
+   * After an idle close the next tool call relaunches the browser into a blank
+   * tab. The workspace-level saved chat is persisted state — reopen it instead
+   * of failing with CHATGPT_DOM_CHANGED. A tab already on http(s) was driven
+   * intentionally (open_chat, a chat, the home page) and is left alone.
+   */
+  private async ensureConversationOpen(page: Page): Promise<void> {
+    if (/^https?:\/\//i.test(page.url())) return;
+    const saved = resolveChatTarget(this.workspaceId, {}, this.harness);
+    const target = saved ?? CHATGPT_HOME;
+    // The anchor belongs to whatever was open before the relaunch.
+    this.replyAnchor = null;
+    await page.goto(target, { waitUntil: "domcontentloaded", timeout: 45_000 });
+    // The saved URL may redirect or swap in its canonical id on reload.
+    this.bindConversationUrl(page.url());
+  }
+
+  /**
    * Insert one [C2C] message into the composer and submit it, then confirm
    * the send by reading the message back from the conversation log.
    */
   async sendMessage(text: string): Promise<SendResult> {
     const page = await this.ensurePage();
+    // After an idle close the tab comes back blank; recover the saved
+    // conversation instead of failing to find the composer.
+    await this.ensureConversationOpen(page);
     if (!(await this.isLoggedIn(page))) {
       throw new ControlPlaneError("NOT_LOGGED_IN", "Log in to ChatGPT first (open_conversation).");
     }
@@ -413,9 +437,16 @@ export class ControlPlaneBrowser {
   /** ReplyView plus the number of assistant messages on the page. */
   private async readReplyWithCount(): Promise<ReplyView & { messageCount: number }> {
     const page = await this.ensurePage();
+    // After an idle close the tab comes back blank; recover the saved
+    // conversation so a wait does not report a bogus empty timeout.
+    await this.ensureConversationOpen(page);
     if (!(await this.isLoggedIn(page))) {
       return { status: "error", text: null, isControlMessage: false, state: null, messageCount: 0 };
     }
+    // The conversation URL can lag the send (SPA) or swap in its canonical id
+    // later — every poll is a fresh chance to persist it. Cheap: applyChatBinding
+    // no-ops when the binding is already current.
+    this.bindConversationUrl(page.url());
 
     const generating = await page
       .locator(this.site.selectors.generating)
