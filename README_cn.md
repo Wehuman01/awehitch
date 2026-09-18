@@ -102,7 +102,7 @@ Agent/高级命令（session / record / login / connector-setup / stop / pair / 
 
 ## 安全
 
-- 一个 bridge 只服务一个工作区，所有 token 都绑定它。bridge 只监听 127.0.0.1——唯一的公网面是走隧道的 HTTPS，由 OAuth 2.1 + PKCE + 动态客户端注册保护。
+- 全机同时只有一个 bridge，只服务一个工作区：对另一个目录跑 `up` 会停掉旧的并切换。所有 token 都绑定当前工作区。bridge 只监听 127.0.0.1——唯一的公网面是走隧道的 HTTPS，由 OAuth 2.1 + PKCE + 动态客户端注册保护。
 - ChatGPT 只拿到只读 scope（`workspace.read`、`workspace.search`、`git.read`、`execution.read`、`offline_access`）。访问令牌 1 小时失效，刷新令牌每次使用即轮换，落盘只存 SHA-256 哈希。
 - 敏感文件（`.env*`、`.envrc`、密钥、SSH、云凭证、整个 `.git/` 目录…）在所有关口被拒绝——读、列目录、搜索、diff 一视同仁。`.env.example` 放行；自己的规则写在 `.c2cignore`。
 - 配对码：约 40 位强度、5 次尝试、一次性、5 分钟有效期、按 IP 限流。

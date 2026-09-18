@@ -91,7 +91,7 @@ Module map (`src/`):
 | `adapters/` | Harness integration (see below); thin, never import each other |
 | `tunnel/` | `TunnelProvider` + Cloudflare Quick / Named implementations |
 | `execution/` | JSONL execution records + sanitized optional command output |
-| `process/` | Daemon spawn/reuse (exclusive lock), pid-identity-checked shutdown |
+| `process/` | Daemon spawn/reuse (one bridge per machine: `up` stops the previous workspace's bridge and switches), per-workspace exclusive lock, pid-identity-checked shutdown |
 | `session/` | Resume checkpoints + HANDOFF composition |
 | `cli/` | Commands; `--json` everywhere for the skills |
 | `config/`, `logger/`, `fs/` | State dir, secret-redacting logger, atomic writes |

@@ -32,10 +32,16 @@ function cliEntry(): { cmd: string; args: string[] } {
 export interface EnsureBridgeResult {
   runtime: RuntimeState;
   spawned: boolean;
+  /** Bridges for other workspaces that this call stopped (one bridge per machine). */
+  stopped: RuntimeState[];
 }
 
 function ensureBridgeLockFile(workspaceId: string): string {
   return path.join(ensureDir(path.join(getStateDir(), "runtime")), `ensure-${workspaceId}.lock`);
+}
+
+function singleInstanceLockFile(): string {
+  return path.join(ensureDir(path.join(getStateDir(), "runtime")), "ensure-single.lock");
 }
 
 function readLockInfo(file: string): { pid: number; acquiredAt: string } | null {
@@ -95,11 +101,145 @@ function releaseBridgeLock(workspaceId: string): void {
 }
 
 /**
- * Ensure a bridge is running for the workspace. Reuses a live instance,
- * otherwise spawns a detached daemon and waits for it to become healthy.
+ * Machine-level lock serializing bridge startup across workspaces, so two
+ * concurrent `up`s for different directories cannot both end up healthy.
+ * Unlike the per-workspace lock, a live holder is simply waited out.
+ */
+function acquireSingleInstanceLock(deadlineMs: number): Promise<boolean> {
+  const lockFile = singleInstanceLockFile();
+  const deadline = Date.now() + deadlineMs;
+  const attempt = (): boolean => {
+    try {
+      fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() }), { flag: "wx" });
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const holder = readLockInfo(lockFile);
+      if (!holder || !isPidAlive(holder.pid)) {
+        // Stale lock — steal it.
+        fs.rmSync(lockFile, { force: true });
+        return attempt();
+      }
+      return false;
+    }
+  };
+  return (async () => {
+    while (Date.now() < deadline) {
+      if (attempt()) return true;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    return false;
+  })();
+}
+
+function releaseSingleInstanceLock(): void {
+  const lockFile = singleInstanceLockFile();
+  try {
+    const holder = readLockInfo(lockFile);
+    if (holder && holder.pid === process.pid) {
+      fs.rmSync(lockFile, { force: true });
+    }
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Live bridges for OTHER workspaces. Under the one-bridge-per-machine rule
+ * these are switched off by ensureBridge. A pid that is alive but cannot be
+ * verified as a bridge (probe down, cmdline unreadable) is reported as
+ * `unverified` instead of being guessed at.
+ */
+async function scanForeignBridges(
+  excludeWorkspaceId: string
+): Promise<{ live: RuntimeState[]; unverified: RuntimeState | null }> {
+  const dir = path.join(getStateDir(), "runtime");
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return { live: [], unverified: null };
+  }
+  const live: RuntimeState[] = [];
+  let unverified: RuntimeState | null = null;
+  for (const name of names.sort()) {
+    if (!name.endsWith(".json") || name.startsWith("ensure-")) continue;
+    const id = name.slice(0, -".json".length);
+    if (id === excludeWorkspaceId) continue;
+    const runtime = readRuntimeState(id);
+    if (!runtime) continue;
+    const health = await probeBridge(runtime.port);
+    if (health && health.workspaceId === id) {
+      live.push(runtime);
+      continue;
+    }
+    if (isPidAlive(runtime.pid)) {
+      const cmdline = readProcessCmdline(runtime.pid);
+      if (cmdline === null || isAwehitchBridge(cmdline, runtime.workspaceRoot)) {
+        // Alive but not provably a live bridge for someone else: refuse to
+        // touch it (same honesty rule as the per-workspace unknown state).
+        unverified = runtime;
+      }
+    }
+  }
+  return { live, unverified };
+}
+
+/** Stop a foreign bridge gracefully; its own shutdown clears runtime + tunnel. */
+async function stopForeignBridge(runtime: RuntimeState): Promise<void> {
+  try {
+    await adminFetch(runtime, "POST", "/admin/shutdown", 5000);
+  } catch {
+    try {
+      process.kill(runtime.pid, "SIGTERM");
+    } catch {
+      // already gone
+    }
+  }
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const still = await probeBridge(runtime.port);
+    if (!still || still.workspaceId !== runtime.workspaceId) return;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+}
+
+/**
+ * Ensure a bridge is running for the workspace. One bridge per machine:
+ * a bridge for another workspace is stopped first, so `up` in a different
+ * directory switches the active workspace (and reuses the live instance for
+ * the same one). Reuses a live instance, otherwise spawns a detached daemon
+ * and waits for it to become healthy.
  */
 export async function ensureBridge(workspaceRoot: string, opts: { port?: number } = {}): Promise<EnsureBridgeResult> {
   const workspace = new Workspace(workspaceRoot);
+  if (!(await acquireSingleInstanceLock(20_000))) {
+    throw new Error("Another awehitch command is starting a bridge; try again in a moment.");
+  }
+  try {
+    const foreign = await scanForeignBridges(workspace.id);
+    if (foreign.unverified) {
+      throw new Error(
+        `Another workspace's bridge (${foreign.unverified.workspaceRoot}) is running but its state cannot be verified. ` +
+          `Stop it first: awehitch stop -w ${foreign.unverified.workspaceRoot}`
+      );
+    }
+    const stopped: RuntimeState[] = [];
+    for (const runtime of foreign.live) {
+      await stopForeignBridge(runtime);
+      stopped.push(runtime);
+    }
+    const { runtime, spawned } = await ensureWorkspaceBridge(workspace, opts);
+    return { runtime, spawned, stopped };
+  } finally {
+    releaseSingleInstanceLock();
+  }
+}
+
+async function ensureWorkspaceBridge(
+  workspace: Workspace,
+  opts: { port?: number } = {}
+): Promise<{ runtime: RuntimeState; spawned: boolean }> {
   const observation = await findBridgeObservation(workspace.id);
   if (observation.state === "healthy") return { runtime: observation.runtime, spawned: false };
   if (observation.state === "unknown") {

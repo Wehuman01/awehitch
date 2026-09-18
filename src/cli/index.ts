@@ -229,8 +229,8 @@ interface AdminInfo {
 async function ensureBridgeAndTunnel(
   workspaceRoot: string,
   opts: { tunnel: boolean }
-): Promise<{ runtime: RuntimeState; info: AdminInfo; mcpUrl: string | null }> {
-  const { runtime } = await ensureBridge(workspaceRoot);
+): Promise<{ runtime: RuntimeState; info: AdminInfo; mcpUrl: string | null; stopped: RuntimeState[] }> {
+  const { runtime, stopped } = await ensureBridge(workspaceRoot);
   let info = await adminFetch<AdminInfo>(runtime, "GET", "/admin/info");
   let mcpUrl: string | null = info.publicUrl ? `${info.publicUrl}/mcp` : null;
   if (opts.tunnel && !info.publicUrl) {
@@ -245,7 +245,7 @@ async function ensureBridgeAndTunnel(
     info = await adminFetch<AdminInfo>(runtime, "GET", "/admin/info");
     mcpUrl = `${result.url}/mcp`;
   }
-  return { runtime, info, mcpUrl };
+  return { runtime, info, mcpUrl, stopped };
 }
 
 /**
@@ -399,14 +399,22 @@ program
     let runtime: RuntimeState;
     let info: AdminInfo;
     let mcpUrl: string | null;
+    let stoppedPrevious: RuntimeState[] = [];
     try {
       const out = await ensureBridgeAndTunnel(root, { tunnel: !opts.noTunnel });
       runtime = out.runtime;
       info = out.info;
       mcpUrl = out.mcpUrl;
+      stoppedPrevious = out.stopped;
     } catch (error) {
       handleCliError(error, json);
       return;
+    }
+    if (stoppedPrevious.length > 0 && !json) {
+      for (const previous of stoppedPrevious) {
+        say(`Stopped the previous workspace's bridge (${previous.workspaceRoot}) — one bridge per machine.`);
+      }
+      say("");
     }
 
     const onNotice = (message: string): void => {
@@ -534,6 +542,7 @@ program
         harnesses,
         needsLogin: false,
         connectorUpdated,
+        stoppedWorkspaces: stoppedPrevious.map((s) => s.workspaceRoot),
       }));
       return;
     }
