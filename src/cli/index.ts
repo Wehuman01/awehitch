@@ -717,8 +717,15 @@ program
   .description("Run the control-plane proxy as a stdio MCP server (spawned by harnesses)")
   .requiredOption("--workspace <path>")
   .option("--harness <id>", "harness slice: own browser profile, chat bindings and C2C checkpoint", parseHarnessKey)
-  .action(async (opts: { workspace: string; harness?: string }) => {
-    await runStdioServer(resolveWorkspace(opts.workspace), opts.harness);
+  .option("--browser-idle-minutes <minutes>", "close the browser after this many idle minutes (default 10; also settable via browserIdleMinutes in .c2c.json)", (value: string) => {
+    const minutes = Number.parseFloat(value);
+    if (!Number.isFinite(minutes) || minutes <= 0) {
+      throw new InvalidArgumentError("must be a positive number of minutes");
+    }
+    return minutes;
+  })
+  .action(async (opts: { workspace: string; harness?: string; browserIdleMinutes?: number }) => {
+    await runStdioServer(resolveWorkspace(opts.workspace), opts.harness, opts.browserIdleMinutes);
   });
 
 // ---------------------------------------------------------------- setup

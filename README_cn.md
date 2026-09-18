@@ -73,7 +73,7 @@ awehitch Bridge（本地，工作区只读网关 + OAuth + 隧道）
 ```
 
 - **控制面** — agent 与 ChatGPT 交换极小的结构化 `[C2C]` 消息（`INIT → PLAN → EXECUTED → REVIEW → DONE`）。本地**控制面代理**用 Playwright（独立浏览器配置目录）把 ChatGPT 会话封装成五个语义化工具：`awehitch_open_chat`、`awehitch_send_state`、`awehitch_send_handoff`、`awehitch_wait_reply`、`awehitch_read_reply`。一个任务一条聊天：新 TASK_ID 自动开新聊天，同一任务的恢复与多轮审查始终复用它绑定的聊天；原聊天丢失时 `awehitch_send_handoff` 从本地检查点自动生成交接简报（绝不包含文件、diff 或日志）。轮询是 20–30 秒的廉价 DOM 检查；超时不等于失败；只用一个标签页；绝不因超时重发。原方案里绑死 Codex 内置浏览器的控制面被彻底解耦——任何 agent 只要"能调工具"就能接入。
-- **按 harness 并行** — 每个 harness 拥有独立的 ChatGPT 浏览器 profile（从首个登录的 profile 播种，全程只需登录一次）、独立的聊天绑定和独立的 C2C 检查点。codex / opencode / zcode 可以同时跑规划循环；只有同一 harness 的两个会话才需要排队。
+- **按会话并行** — 每个编码会话拥有自己的 ChatGPT 对话。每个 harness 维护一个小型浏览器 profile 池（从首个登录的 profile 播种，全程只需登录一次）；会话在首次使用时领取空闲槽位 —— 槽位 0 就是该 harness 自己的 profile，同 harness 的额外并发会话（比如同时开两个 opencode 窗口）依次拿到 `<harness>-s1`、`-s2`…… 任务→对话的绑定通过短跨进程锁合并写入，任务总能重开自己的对话，而每个会话"当前所在对话"的指针是私有的。codex / opencode / zcode —— 以及它们的多个实例 —— 都能同时跑规划循环。可用 `AWEHITCH_MAX_PARALLEL_SESSIONS` 调大池子（默认每个 harness 2 个，上限 16；每个额外槽位对应多开一个 Chromium 窗口）。
 - **数据面** — ChatGPT 通过 9 个只读工具自行拉取文件、diff、搜索结果、测试记录，走 OAuth 2.1 + PKCE + 动态客户端注册的隧道。独立审查：EXECUTED 之后 ChatGPT 亲自看真实 git diff，绝不轻信"测试全过"。
 - **Adapter** — codex（`~/.codex/skills` + `config.toml` MCP + 沙箱 writable_roots）、opencode（`~/.config/opencode` skill + `opencode.json` MCP）、zcode（`~/.zcode/cli/config.json` mcpServers + skill）。每个 adapter 都很薄，互不 import。
 
@@ -83,12 +83,15 @@ awehitch Bridge（本地，工作区只读网关 + OAuth + 隧道）
 
 ```jsonc
 {
-  "name": "my-project",      // 工作区显示名（连接器标题）
-  "maxIterations": 12        // 循环上限，达到后询问用户是否继续
+  "name": "my-project",            // 工作区显示名（连接器标题）
+  "maxIterations": 12,             // 循环上限，达到后询问用户是否继续
+  "browserIdleMinutes": 10         // 控制面浏览器空闲多少分钟后自动关闭（默认 10）
 }
 ```
 
 `.c2cignore` 在内置敏感文件策略（`.env*`、`.envrc`、密钥、SSH、云凭证以及整个 `.git/` 目录默认拒绝）之上追加你自己的规则。
+
+浏览器空闲即关是刻意设计：控制面浏览器是机器级独占资源，空闲时释放，下次工具调用会自动重启并恢复绑定的聊天。想临时换时长（不改 `.c2c.json`）：`awehitch control-plane --browser-idle-minutes <N>`。
 
 ## 命令
 

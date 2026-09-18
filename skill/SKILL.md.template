@@ -174,7 +174,9 @@ All control messages start with `[C2C]`, keep them under 1 KB.
 Store progress in the session checkpoint via `awehitch session set` (always
 with `-H {{HARNESS_ID}} --task {{TASK_ID}}`: every task keeps its own
 checkpoint, so several agents — even in the same harness and workspace — can
-run C2C in parallel without overwriting each other).
+run C2C in parallel without overwriting each other; concurrent sessions of
+the same harness each get their own ChatGPT window and conversation
+automatically).
 
 0. `awehitch doctor -w <workspace> --json` (auto-repairs). Doctor gate: if
    local is not green, do not open ChatGPT and do not send INIT. Follow its

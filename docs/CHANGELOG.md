@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+### Features
+- Parallel C2C per session, not just per harness: a second (third, …)
+  instance of the same harness — two opencode windows, say — now runs its
+  own ChatGPT planning loop instead of failing on the shared browser
+  profile. Each harness has a small pool of browser profiles; a
+  control-plane process claims a free session slot at first browser use
+  (slot 0 = the harness's existing profile, extra sessions get
+  `<harness>-s<k>` seeded from a logged-in profile, so still one login
+  total). Leases are held for the process lifetime and stolen from dead
+  holders; the pool size is `AWEHITCH_MAX_PARALLEL_SESSIONS`
+  (default 2 per harness, max 16).
+- Task→chat bindings are now merged under a short cross-process lock
+  (`<key>.merge.lock`, stale-holder steal, 2 s deadline then proceeds) so
+  concurrent same-harness sessions cannot drop each other's bindings.
+- Each session's "current chat" pointer is private from slot 1 on
+  (`control-plane/<key>.slot-<n>.json`): an idle-recovered session reopens
+  its OWN chat and never lands in a sibling session's conversation.
+  Slot 0 keeps mirroring into the shared state file, so single-session
+  setups and the `awehitch session` view are unchanged.
+- `awehitch_chat_info` now reports the session's slot (`session.slot`,
+  `session.profile`) and resolves `chatUrl` through it.
+- Profile seeding widened: a new slot profile seeds from any logged-in,
+  currently-unlocked profile (master first), not only the master — a
+  second opencode session starting while codex drives the master still
+  gets a logged-in seed.
+
 ## v0.2.7 - 2026-09-18
 
 ### Fixes

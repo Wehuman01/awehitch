@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ControlPlaneBrowser } from "../src/control-plane/browser.js";
-import { createControlPlaneServer } from "../src/control-plane/server.js";
+import { createControlPlaneServer, DEFAULT_IDLE_CLOSE_MS, resolveIdleCloseMs } from "../src/control-plane/server.js";
 import { writeSession } from "../src/session/state.js";
 import { cleanup, makeTmpDir, write } from "./helpers.js";
 
@@ -252,6 +252,34 @@ describe("control-plane MCP server (in-process, fake driver)", () => {
     release();
     await pending;
     await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(driver.closeCount).toBe(1);
+    await c.close().catch(() => undefined);
+  });
+
+  it("defaults the idle close to 10 minutes", () => {
+    expect(DEFAULT_IDLE_CLOSE_MS).toBe(10 * 60_000);
+    expect(resolveIdleCloseMs()).toBe(DEFAULT_IDLE_CLOSE_MS);
+  });
+
+  it("honors browserIdleMinutes from .c2c.json and lets the CLI override win", () => {
+    expect(resolveIdleCloseMs({ configMinutes: 2 })).toBe(120_000);
+    expect(resolveIdleCloseMs({ configMinutes: 2, overrideMinutes: 5 })).toBe(300_000);
+  });
+
+  it("falls back to the default on invalid idle values", () => {
+    expect(resolveIdleCloseMs({ configMinutes: 0 })).toBe(DEFAULT_IDLE_CLOSE_MS);
+    expect(resolveIdleCloseMs({ configMinutes: -3 })).toBe(DEFAULT_IDLE_CLOSE_MS);
+    expect(resolveIdleCloseMs({ configMinutes: Number.NaN })).toBe(DEFAULT_IDLE_CLOSE_MS);
+    expect(resolveIdleCloseMs({ configMinutes: Number.POSITIVE_INFINITY })).toBe(DEFAULT_IDLE_CLOSE_MS);
+    expect(resolveIdleCloseMs({ overrideMinutes: 0 })).toBe(DEFAULT_IDLE_CLOSE_MS);
+  });
+
+  it("reads the idle period from the workspace's .c2c.json", async () => {
+    write(workDir, ".c2c.json", JSON.stringify({ browserIdleMinutes: 0.002 })); // 120ms
+    const driver = new RecordingDriver();
+    const c = await connectFake(driver);
+    await c.callTool({ name: "awehitch_chat_info", arguments: {} });
+    await new Promise((resolve) => setTimeout(resolve, 240));
     expect(driver.closeCount).toBe(1);
     await c.close().catch(() => undefined);
   });

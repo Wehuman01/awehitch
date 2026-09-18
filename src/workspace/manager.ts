@@ -58,6 +58,8 @@ export interface ListDirectoryResult {
 export interface ProjectConfig {
   name?: string;
   maxIterations?: number;
+  /** Minutes the control-plane browser may sit idle before it is closed. */
+  browserIdleMinutes?: number;
 }
 
 function parseProjectConfig(value: unknown): ProjectConfig {
@@ -66,6 +68,7 @@ function parseProjectConfig(value: unknown): ProjectConfig {
   const config: ProjectConfig = {};
   if (typeof raw.name === "string") config.name = raw.name;
   if (typeof raw.maxIterations === "number") config.maxIterations = raw.maxIterations;
+  if (typeof raw.browserIdleMinutes === "number") config.browserIdleMinutes = raw.browserIdleMinutes;
   return config;
 }
 

@@ -84,7 +84,7 @@ Module map (`src/`):
 | --- | --- |
 | `bridge/` | Express app, loopback-only listener, port fallback, runtime state, admin API |
 | `mcp/` | Data-plane MCP server (9 read-only tools), stateless Streamable HTTP |
-| `control-plane/` | Playwright driver over the ChatGPT conversation + stdio MCP server (5 semantic tools); shared browser profile behind a cross-process lock, per-task chat bindings |
+| `control-plane/` | Playwright driver over the ChatGPT conversation + stdio MCP server (5 semantic tools); per-session browser profiles from a slot pool (`slot.ts`) behind cross-process locks, per-task chat bindings merged under a short lock |
 | `auth/` | OAuth 2.1 AS: discovery (RFC 8414), DCR (RFC 7591), code + PKCE (S256), refresh rotation, revocation (RFC 7009); tokens stored as SHA-256 hashes |
 | `pairing/` | Pairing-code lifecycle: CSPRNG, TTL, attempt limits, IP rate limit (keyed on the unforgeable last XFF hop), one-time use |
 | `workspace/` | Canonical-path containment, sensitive-file policy, `.c2cignore`, pagination, search, git status/diff |

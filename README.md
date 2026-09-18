@@ -73,7 +73,7 @@ awehitch Bridge（本地，工作区只读网关 + OAuth + 隧道）
 ```
 
 - **Control plane** — the agent and ChatGPT exchange tiny structured `[C2C]` messages (`INIT → PLAN → EXECUTED → REVIEW → DONE`). A local **control-plane proxy** wraps the ChatGPT web conversation (Playwright, dedicated profile) into five semantic tools: `awehitch_open_chat`, `awehitch_send_state`, `awehitch_send_handoff`, `awehitch_wait_reply`, `awehitch_read_reply`. One chat per task: a new TASK_ID automatically opens a fresh chat, and resuming the same task (across review iterations and agent restarts) always reuses its bound chat; when the old chat is lost, `awehitch_send_handoff` composes the resume brief from the local checkpoint (never files, diffs, or logs). Cheap DOM polling (20–30 s), timeouts are not failures, one tab, never resend. This decouples the original Codex-only browser control plane from any specific harness — an agent just needs "can call tools".
-- **Parallel by harness** — every harness gets its own ChatGPT browser profile (seeded from the first logged-in profile, so one login covers all), its own chat bindings and its own C2C checkpoint. codex / opencode / zcode can therefore run planning loops at the same time; contention only remains between two sessions of the *same* harness.
+- **Parallel by session** — every coding session gets its own ChatGPT conversation. Each harness has a small pool of browser profiles (seeded from the first logged-in profile, so one login covers all); a session claims a free slot at first use — slot 0 is the harness's own profile, extra concurrent sessions of the same harness (say, two opencode windows) get `<harness>-s1`, `-s2`… Task→chat bindings are merged under a short cross-process lock so a task always reopens its chat, while each session's current chat stays private. codex / opencode / zcode — and several instances of each — run planning loops at the same time. Raise the pool with `AWEHITCH_MAX_PARALLEL_SESSIONS` (default 2 per harness, max 16; each extra slot is one more Chromium window).
 - **Data plane** — ChatGPT pulls files, diffs, search results, test records itself through 9 read-only tools over an OAuth 2.1 + PKCE + dynamic-client-registration tunnel. Independent review: after EXECUTED, ChatGPT inspects the real git diff — it never trusts "all tests passed".
 - **Adapters** — codex (`~/.codex/skills` + `config.toml` MCP + sandbox writable_roots), opencode (`~/.config/opencode` skill + `opencode.json` MCP), zcode (`~/.zcode/cli/config.json` mcpServers + skill). Each is thin; none import each other.
 
@@ -83,12 +83,15 @@ Per-workspace `.c2c.json`:
 
 ```jsonc
 {
-  "name": "my-project",      // workspace display name (connector title)
-  "maxIterations": 12        // C2C loop limit before asking the user
+  "name": "my-project",            // workspace display name (connector title)
+  "maxIterations": 12,             // C2C loop limit before asking the user
+  "browserIdleMinutes": 10         // close the idle control-plane browser after N minutes (default 10)
 }
 ```
 
 `.c2cignore` adds workspace-specific deny rules on top of the built-in sensitive-file policy (`.env*`, `.envrc`, keys, SSH, cloud credentials and the whole `.git/` directory are denied by default).
+
+The idle browser close is deliberate: the control-plane browser is a machine-global resource, released while idle and relaunched (reopening the bound chat) on the next tool call. For a one-shot override without editing `.c2c.json`: `awehitch control-plane --browser-idle-minutes <N>`.
 
 ## Commands
 

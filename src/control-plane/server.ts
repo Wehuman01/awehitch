@@ -3,7 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import path from "node:path";
 import { ControlPlaneBrowser, ControlPlaneError, type ReplyView } from "./browser.js";
-import { readControlPlaneState } from "./state.js";
+import { readControlPlaneState, readSlotPointer } from "./state.js";
 import { buildHandoffMessage, readSession, readTaskSession } from "../session/state.js";
 import { Logger } from "../logger/index.js";
 import { Workspace } from "../workspace/manager.js";
@@ -57,21 +57,36 @@ function mapError(error: unknown): ToolResult {
 export interface ControlPlaneServerOptions {
   workspaceRoot: string;
   logger?: Logger;
+  /** Harness slice: gives this server its own browser profile, chat bindings
+   * and C2C checkpoint, so different harnesses run C2C in parallel. */
+  harness?: string;
   /** Test seam: inject a driver instead of a real Playwright browser. */
   driver?: ControlPlaneBrowser;
   /** Test seam: workspace id override. */
   workspaceId?: string;
   /**
-   * Harness slice: gives this server its own browser profile, chat bindings
-   * and C2C checkpoint, so different harnesses run C2C in parallel.
+   * Idle-close override in minutes (e.g. the `--browser-idle-minutes` CLI
+   * flag). Wins over the workspace config and the default.
    */
-  harness?: string;
-  /** Test seam: how long the browser may sit idle before it is closed. */
+  idleCloseMinutes?: number;
+  /** Test seam: how long the browser may sit idle before it is closed (ms). */
   idleCloseMs?: number;
 }
 
-/** Idle period after which a session frees the shared browser (and its lock). */
-const DEFAULT_IDLE_CLOSE_MS = 3 * 60_000;
+/**
+ * Idle period after which a session frees the shared browser (and its lock).
+ * Configurable per workspace via `browserIdleMinutes` in `.c2c.json`, or at
+ * startup via `--browser-idle-minutes`; anything invalid falls back to this.
+ */
+export const DEFAULT_IDLE_CLOSE_MS = 10 * 60_000;
+
+export function resolveIdleCloseMs(opts: { configMinutes?: number; overrideMinutes?: number } = {}): number {
+  const minutes = opts.overrideMinutes ?? opts.configMinutes;
+  if (typeof minutes === "number" && Number.isFinite(minutes) && minutes > 0) {
+    return minutes * 60_000;
+  }
+  return DEFAULT_IDLE_CLOSE_MS;
+}
 
 export async function createControlPlaneServer(opts: ControlPlaneServerOptions): Promise<McpServer> {
   const logger = opts.logger ?? new Logger({ name: "control-plane", console: false });
@@ -84,7 +99,12 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
   // ChatGPT login). A session must not hold it while the harness is quietly
   // coding, so the browser is closed after a few idle minutes — it relaunches
   // on the next tool call and reopens the bound conversation.
-  const idleCloseMs = opts.idleCloseMs ?? DEFAULT_IDLE_CLOSE_MS;
+  const idleCloseMs =
+    opts.idleCloseMs ??
+    resolveIdleCloseMs({
+      configMinutes: workspace.projectConfig.browserIdleMinutes,
+      overrideMinutes: opts.idleCloseMinutes,
+    });
   let inFlight = 0;
   let idleTimer: NodeJS.Timeout | null = null;
   const armIdleClose = (): void => {
@@ -282,8 +302,8 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
     {
       title: "Chat binding info",
       description:
-        `Show which ChatGPT conversation URL is bound to this workspace, and optionally the ` +
-        `chat bound to a specific task. ${UNTRUSTED_NOTE}`,
+        `Show which ChatGPT conversation URL is bound to this session (and this workspace), ` +
+        `and optionally the chat bound to a specific task. ${UNTRUSTED_NOTE}`,
       inputSchema: {
         task_id: z.string().optional().describe("Task id whose bound chat to look up"),
       },
@@ -293,8 +313,14 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
       run(async () => {
         const saved = readControlPlaneState(workspaceId, harness);
         const taskId = args.task_id?.trim();
+        // Session slots >= 1 keep their own chat pointer; slot 0 (and
+        // harness-less callers) mirror into the shared state file.
+        const slot = driver.slotInfo();
+        const chatUrl =
+          slot && slot.index >= 1 ? readSlotPointer(workspaceId, harness, slot.index) : saved?.chatUrl ?? null;
         return ok({
-          chatUrl: saved?.chatUrl ?? null,
+          chatUrl,
+          session: slot ? { slot: slot.index, profile: slot.key } : null,
           taskChatUrl: taskId ? saved?.taskChats?.[taskId] ?? null : null,
           projectUrl: saved?.projectUrl ?? null,
         });
@@ -305,7 +331,11 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
 }
 
 /** Entry point for `awehitch control-plane --workspace <root> [--harness <id>]` (stdio MCP). */
-export async function runStdioServer(workspaceRoot: string, harness?: string): Promise<void> {
+export async function runStdioServer(
+  workspaceRoot: string,
+  harness?: string,
+  idleCloseMinutes?: number
+): Promise<void> {
   const logger = new Logger({ name: "control-plane", console: false });
   const workspace = new Workspace(workspaceRoot);
   logger.info(
@@ -315,7 +345,7 @@ export async function runStdioServer(workspaceRoot: string, harness?: string): P
       `control-plane-${workspace.id}${harness ? `__${harness}` : ""}.log`
     )})`
   );
-  const server = await createControlPlaneServer({ workspaceRoot, logger, harness });
+  const server = await createControlPlaneServer({ workspaceRoot, logger, harness, idleCloseMinutes });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
