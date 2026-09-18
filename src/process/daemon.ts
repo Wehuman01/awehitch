@@ -9,11 +9,13 @@ import {
   findLiveBridge,
   isAwehitchBridge,
   probeBridge,
+  readLegacyRuntimeStates,
   readProcessCmdline,
   readRuntimeState,
   type RuntimeState,
 } from "../bridge/runtime.js";
 import { Workspace } from "../workspace/manager.js";
+import { addWorkspaceRoot } from "../workspace/registry.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -32,8 +34,6 @@ function cliEntry(): { cmd: string; args: string[] } {
 export interface EnsureBridgeResult {
   runtime: RuntimeState;
   spawned: boolean;
-  /** Bridges for other workspaces that this call stopped (one bridge per machine). */
-  stopped: RuntimeState[];
   /**
    * The spawned serve process, when it was started attached to this CLI run
    * (foreground mode). null in daemon mode and when an instance was reused.
@@ -41,8 +41,8 @@ export interface EnsureBridgeResult {
   child: ChildProcess | null;
 }
 
-function ensureBridgeLockFile(workspaceId: string): string {
-  return path.join(ensureDir(path.join(getStateDir(), "runtime")), `ensure-${workspaceId}.lock`);
+function bridgeLockFile(): string {
+  return path.join(ensureDir(path.join(getStateDir(), "runtime")), "ensure-bridge.lock");
 }
 
 function singleInstanceLockFile(): string {
@@ -70,8 +70,8 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
-async function waitForBridgeLock(workspaceId: string, deadline: number): Promise<boolean> {
-  const lockFile = ensureBridgeLockFile(workspaceId);
+async function waitForBridgeLock(deadline: number): Promise<boolean> {
+  const lockFile = bridgeLockFile();
   while (Date.now() < deadline) {
     try {
       fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() }), { flag: "wx" });
@@ -85,7 +85,7 @@ async function waitForBridgeLock(workspaceId: string, deadline: number): Promise
         continue;
       }
       // Lock held by a live process: double-check health and yield.
-      const runtime = await findLiveBridge(workspaceId);
+      const runtime = await findLiveBridge();
       if (runtime) return false;
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
@@ -93,8 +93,8 @@ async function waitForBridgeLock(workspaceId: string, deadline: number): Promise
   return false;
 }
 
-function releaseBridgeLock(workspaceId: string): void {
-  const lockFile = ensureBridgeLockFile(workspaceId);
+function releaseBridgeLock(): void {
+  const lockFile = bridgeLockFile();
   try {
     const holder = readLockInfo(lockFile);
     if (holder && holder.pid === process.pid) {
@@ -106,9 +106,9 @@ function releaseBridgeLock(workspaceId: string): void {
 }
 
 /**
- * Machine-level lock serializing bridge startup across workspaces, so two
- * concurrent `up`s for different directories cannot both end up healthy.
- * Unlike the per-workspace lock, a live holder is simply waited out.
+ * Machine-level lock serializing bridge startup, so two concurrent `up`s (in
+ * different directories or different terminals) cannot both spawn a serve
+ * process. A live holder is simply waited out.
  */
 function acquireSingleInstanceLock(deadlineMs: number): Promise<boolean> {
   const lockFile = singleInstanceLockFile();
@@ -150,107 +150,100 @@ function releaseSingleInstanceLock(): void {
 }
 
 /**
- * Live bridges for OTHER workspaces. Under the one-bridge-per-machine rule
- * these are switched off by ensureBridge. A pid that is alive but cannot be
- * verified as a bridge (probe down, cmdline unreadable) is reported as
- * `unverified` instead of being guessed at.
+ * Stop one runtime record's process. Prefers the admin API (graceful, tunnel
+ * included), falls back to SIGTERM only after verifying the pid really is an
+ * awehitch bridge. A pid that is alive but cannot be verified is never
+ * touched. `clearStaleFile` clears the machine runtime file when the record is
+ * proven stale (pid reused by an unrelated process).
  */
-async function scanForeignBridges(
-  excludeWorkspaceId: string
-): Promise<{ live: RuntimeState[]; unverified: RuntimeState | null }> {
-  const dir = path.join(getStateDir(), "runtime");
-  let names: string[];
-  try {
-    names = fs.readdirSync(dir);
-  } catch {
-    return { live: [], unverified: null };
-  }
-  const live: RuntimeState[] = [];
-  let unverified: RuntimeState | null = null;
-  for (const name of names.sort()) {
-    if (!name.endsWith(".json") || name.startsWith("ensure-")) continue;
-    const id = name.slice(0, -".json".length);
-    if (id === excludeWorkspaceId) continue;
-    const runtime = readRuntimeState(id);
-    if (!runtime) continue;
-    const health = await probeBridge(runtime.port);
-    if (health && health.workspaceId === id) {
-      live.push(runtime);
-      continue;
-    }
-    if (isPidAlive(runtime.pid)) {
-      const cmdline = readProcessCmdline(runtime.pid);
-      if (cmdline === null || isAwehitchBridge(cmdline, runtime.workspaceRoot)) {
-        // Alive but not provably a live bridge for someone else: refuse to
-        // touch it (same honesty rule as the per-workspace unknown state).
-        unverified = runtime;
-      }
-    }
-  }
-  return { live, unverified };
-}
-
-/** Stop a foreign bridge gracefully; its own shutdown clears runtime + tunnel. */
-async function stopForeignBridge(runtime: RuntimeState): Promise<void> {
-  try {
-    await adminFetch(runtime, "POST", "/admin/shutdown", 5000);
-  } catch {
+async function stopRuntimeProcess(runtime: RuntimeState, clearStaleFile: boolean): Promise<boolean> {
+  if (await probeBridge(runtime.port)) {
     try {
-      process.kill(runtime.pid, "SIGTERM");
+      await adminFetch(runtime, "POST", "/admin/shutdown", 5000);
+      return true;
     } catch {
-      // already gone
+      // fall through to the verified kill
     }
   }
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    const still = await probeBridge(runtime.port);
-    if (!still || still.workspaceId !== runtime.workspaceId) return;
-    await new Promise((resolve) => setTimeout(resolve, 300));
+  const cmdline = readProcessCmdline(runtime.pid);
+  if (!isAwehitchBridge(cmdline)) {
+    // The pid is not an awehitch bridge (reused by an unrelated process or
+    // unreadable): never kill it. Clear the stale machine record only when
+    // the mismatch is verified, not when the cmdline was unreadable.
+    if (clearStaleFile && cmdline !== null) clearRuntimeState();
+    return false;
+  }
+  try {
+    process.kill(runtime.pid, "SIGTERM");
+    return true;
+  } catch {
+    // already gone
+    return false;
   }
 }
 
 /**
- * Ensure a bridge is running for the workspace. One bridge per machine:
- * a bridge for another workspace is stopped first, so `up` in a different
- * directory switches the active workspace (and reuses the live instance for
- * the same one). Reuses a live instance, otherwise spawns the `serve` child —
- * attached in foreground mode (logs stream to the caller's terminal) or as a
- * detached daemon (logs go to the state dir) — and waits for it to become
- * healthy.
+ * Shut down pre-0.2.6 bridges still running after an upgrade: they answer on
+ * their per-workspace runtime records. A record whose port answers with the
+ * current machine bridge is skipped (stale file, not a stale process).
+ */
+async function stopLegacyBridges(): Promise<void> {
+  for (const legacy of readLegacyRuntimeStates()) {
+    const health = await probeBridge(legacy.port);
+    if (!health || health.scope === "machine") continue;
+    await stopRuntimeProcess(legacy, false);
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      const still = await probeBridge(legacy.port);
+      if (!still || still.scope === "machine") break;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+  }
+}
+
+/**
+ * Ensure THE machine bridge is running and that `workspaceRoot` is one of its
+ * served workspaces. v0.2.6: one bridge serves every registered directory, so
+ * `up` in a new directory registers the root with the live instance (or starts
+ * the one bridge). Reuses a healthy instance, otherwise spawns the `serve`
+ * child — attached in foreground mode (logs stream to the caller's terminal)
+ * or as a detached daemon (logs go to the state dir) — and waits for health.
  */
 export async function ensureBridge(
   workspaceRoot: string,
   opts: { port?: number; foreground?: boolean } = {}
 ): Promise<EnsureBridgeResult> {
-  const workspace = new Workspace(workspaceRoot);
+  const workspace = new Workspace(workspaceRoot); // throws when the root is invalid
   if (!(await acquireSingleInstanceLock(20_000))) {
     throw new Error("Another awehitch command is starting a bridge; try again in a moment.");
   }
   try {
-    const foreign = await scanForeignBridges(workspace.id);
-    if (foreign.unverified) {
-      throw new Error(
-        `Another workspace's bridge (${foreign.unverified.workspaceRoot}) is running but its state cannot be verified. ` +
-          `Stop it first: awehitch stop -w ${foreign.unverified.workspaceRoot}`
-      );
+    await stopLegacyBridges();
+    // Register before spawning so the serve process reads a complete registry.
+    addWorkspaceRoot(workspace.root);
+    const ensured = await ensureMachineBridge(opts);
+    if (!ensured.spawned) {
+      // The bridge predates this call: register the root with the live
+      // process so its MCP tools see it immediately (also refreshes the
+      // runtime snapshot).
+      try {
+        await adminFetch(ensured.runtime, "POST", "/admin/workspaces", 10_000, { root: workspace.root });
+      } catch (error) {
+        throw new Error(
+          `The running bridge did not accept the workspace registration: ${(error as Error).message}`
+        );
+      }
     }
-    const stopped: RuntimeState[] = [];
-    for (const runtime of foreign.live) {
-      await stopForeignBridge(runtime);
-      stopped.push(runtime);
-    }
-    const { runtime, spawned, child } = await ensureWorkspaceBridge(workspace, opts);
-    return { runtime, spawned, stopped, child };
+    return ensured;
   } finally {
     releaseSingleInstanceLock();
   }
 }
 
-async function ensureWorkspaceBridge(
-  workspace: Workspace,
+async function ensureMachineBridge(
   opts: { port?: number; foreground?: boolean } = {}
 ): Promise<{ runtime: RuntimeState; spawned: boolean; child: ChildProcess | null }> {
-  const observation = await findBridgeObservation(workspace.id);
+  const observation = await findBridgeObservation();
   if (observation.state === "healthy") return { runtime: observation.runtime, spawned: false, child: null };
   if (observation.state === "unknown") {
     throw new Error(
@@ -259,17 +252,17 @@ async function ensureWorkspaceBridge(
   }
 
   const lockDeadline = Date.now() + 20_000;
-  const acquired = await waitForBridgeLock(workspace.id, lockDeadline);
+  const acquired = await waitForBridgeLock(lockDeadline);
   if (!acquired) {
     // Another caller won the race and already started the bridge.
-    const runtime = await findLiveBridge(workspace.id);
+    const runtime = await findLiveBridge();
     if (runtime) return { runtime, spawned: false, child: null };
     throw new Error(`Bridge did not become healthy within 20s (lock contention).`);
   }
   let child: ChildProcess | null = null;
   try {
     // Double-check after acquiring the lock: another caller may have just finished.
-    const recheck = await findBridgeObservation(workspace.id);
+    const recheck = await findBridgeObservation();
     if (recheck.state === "healthy") return { runtime: recheck.runtime, spawned: false, child: null };
     if (recheck.state === "unknown") {
       throw new Error(
@@ -278,13 +271,14 @@ async function ensureWorkspaceBridge(
     }
 
     const logDir = ensureDir(path.join(getStateDir(), "logs"));
-    const logFile = path.join(logDir, `bridge-${workspace.id}.out.log`);
+    const logFile = path.join(logDir, "bridge.out.log");
     const { cmd, args } = cliEntry();
+    const serveArgs = [...args, "serve", ...(opts.port ? ["--port", String(opts.port)] : [])];
     if (opts.foreground) {
       // Attached: the caller's terminal IS the service's lifetime. Ctrl+C
       // reaches the serve child (same process group) and it shuts down
       // gracefully, tunnel included. The Logger still writes its files.
-      child = spawn(cmd, [...args, "serve", "--workspace", workspace.root, ...(opts.port ? ["--port", String(opts.port)] : [])], {
+      child = spawn(cmd, serveArgs, {
         detached: false,
         stdio: ["ignore", "inherit", "inherit"],
         env: { ...process.env },
@@ -299,7 +293,7 @@ async function ensureWorkspaceBridge(
       } catch {
         // Windows / filesystems without chmod semantics
       }
-      child = spawn(cmd, [...args, "serve", "--workspace", workspace.root, ...(opts.port ? ["--port", String(opts.port)] : [])], {
+      child = spawn(cmd, serveArgs, {
         detached: true,
         stdio: ["ignore", out, out],
         env: { ...process.env },
@@ -312,7 +306,7 @@ async function ensureWorkspaceBridge(
     const deadline = Date.now() + 20_000;
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 300));
-      const runtime = await findLiveBridge(workspace.id);
+      const runtime = await findLiveBridge();
       if (runtime) return { runtime, spawned: true, child };
       if (child.exitCode !== null && child.exitCode !== 0) {
         throw new Error(`Bridge process exited with code ${child.exitCode}. See ${logFile}`);
@@ -322,7 +316,7 @@ async function ensureWorkspaceBridge(
     child.kill("SIGTERM");
     throw new Error(`Bridge did not become healthy within 20s. See ${logFile}`);
   } finally {
-    releaseBridgeLock(workspace.id);
+    releaseBridgeLock();
   }
 }
 
@@ -330,53 +324,47 @@ export async function adminFetch<T = unknown>(
   runtime: RuntimeState,
   method: "GET" | "POST",
   route: string,
-  timeoutMs = 60_000
+  timeoutMs = 60_000,
+  body?: unknown
 ): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(`http://127.0.0.1:${runtime.port}${route}`, {
       method,
-      headers: { Authorization: `Bearer ${runtime.adminToken}` },
+      headers: {
+        Authorization: `Bearer ${runtime.adminToken}`,
+        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     });
-    const body = (await response.json().catch(() => ({}))) as T & { message?: string };
+    const parsed = (await response.json().catch(() => ({}))) as T & { message?: string };
     if (!response.ok) {
-      throw new Error((body as { message?: string }).message ?? `Admin request failed (${response.status})`);
+      throw new Error((parsed as { message?: string }).message ?? `Admin request failed (${response.status})`);
     }
-    return body;
+    return parsed;
   } finally {
     clearTimeout(timer);
   }
 }
 
-export async function stopBridge(workspaceRoot: string): Promise<boolean> {
-  const workspace = new Workspace(workspaceRoot);
-  const runtime = readRuntimeState(workspace.id);
-  if (!runtime) return false;
-  const healthy = await probeBridge(runtime.port);
-  if (healthy && healthy.workspaceId === workspace.id) {
-    try {
-      await adminFetch(runtime, "POST", "/admin/shutdown", 5000);
-      return true;
-    } catch {
-      // fall through to kill
-    }
+/**
+ * Stop every bridge this machine knows about: the v0.2.6 machine bridge via
+ * `runtime/bridge.json`, plus any pre-0.2.6 per-workspace bridge still running
+ * after an upgrade. Returns true when at least one process was stopped.
+ */
+export async function stopBridge(): Promise<boolean> {
+  let stopped = false;
+  const runtime = readRuntimeState();
+  if (runtime) {
+    stopped = await stopRuntimeProcess(runtime, true);
   }
-  const cmdline = readProcessCmdline(runtime.pid);
-  if (!isAwehitchBridge(cmdline, workspace.root)) {
-    // The pid is not an awehitch bridge (either reused by an unrelated
-    // process or unreadable): never kill it. Clear the runtime file only
-    // when the mismatch is verified, not when the cmdline was unreadable.
-    if (cmdline !== null) clearRuntimeState(workspace.id);
-    return false;
+  for (const legacy of readLegacyRuntimeStates()) {
+    const wasStopped = await stopRuntimeProcess(legacy, false);
+    stopped = stopped || wasStopped;
   }
-  try {
-    process.kill(runtime.pid, "SIGTERM");
-    return true;
-  } catch {
-    return false;
-  }
+  return stopped;
 }
 
 /** The bridge's structured log (Logger name "bridge"), written in both modes. */
@@ -435,15 +423,14 @@ export function followLogFile(file: string, onChunk: (text: string) => void): ()
  * Graceful stop (admin shutdown, tunnel included) + wait until the bridge
  * really stops answering. Returns true only when the stop is confirmed.
  */
-export async function stopBridgeAndWait(workspaceRoot: string, timeoutMs = 10_000): Promise<boolean> {
-  const workspace = new Workspace(workspaceRoot);
-  const runtime = readRuntimeState(workspace.id);
-  await stopBridge(workspaceRoot);
-  if (!runtime) return false;
+export async function stopBridgeAndWait(timeoutMs = 10_000): Promise<boolean> {
+  const runtime = readRuntimeState();
+  const stopped = await stopBridge();
+  if (!runtime) return stopped;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const still = await probeBridge(runtime.port);
-    if (!still || still.workspaceId !== workspace.id) return true;
+    if (!still) return true;
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
   return false;

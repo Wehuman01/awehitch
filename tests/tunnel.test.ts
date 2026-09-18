@@ -368,11 +368,11 @@ ID                                   NAME          CREATED
 describe("tunnel preference state", () => {
   it("asks once, then remembers a quick choice", () => {
     stateDirs.push(isolateStateDir());
-    const unset = readTunnelState("ws1");
+    const unset = readTunnelState();
     expect(needsTunnelChoice(unset)).toBe(true);
-    const saved = chooseQuickTunnel("ws1");
+    const saved = chooseQuickTunnel();
     expect(saved.preference).toBe("quick");
-    expect(needsTunnelChoice(readTunnelState("ws1"))).toBe(false);
+    expect(needsTunnelChoice(readTunnelState())).toBe(false);
     expect(isNamedTunnelReady(saved)).toBe(false);
   });
 
@@ -386,16 +386,14 @@ describe("tunnel preference state", () => {
       routeDns: async () => undefined,
     };
     return provisionNamedTunnel({
-      workspaceId: "abcdef123456",
-      workspaceName: "Demo",
       zone: "example.com",
       account,
     }).then((result) => {
       expect(result.fallback).toBe(false);
       expect(result.state.preference).toBe("named");
-      expect(result.state.hostname).toBe("c2c-demo.example.com");
-      expect(result.state.tunnelName).toBe("c2c-abcdef123456");
-      expect(isNamedTunnelReady(readTunnelState("abcdef123456"))).toBe(true);
+      expect(result.state.hostname).toBe("c2c.example.com");
+      expect(result.state.tunnelName).toBe("c2c-awehitch");
+      expect(isNamedTunnelReady(readTunnelState())).toBe(true);
     });
   });
 
@@ -411,8 +409,6 @@ describe("tunnel preference state", () => {
       routeDns: async () => undefined,
     };
     return provisionNamedTunnel({
-      workspaceId: "ws2",
-      workspaceName: "Demo",
       zone: "example.com",
       account,
     }).then((result) => {

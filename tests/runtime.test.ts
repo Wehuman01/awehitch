@@ -10,20 +10,18 @@ import {
 } from "../src/bridge/runtime.js";
 import { ensureBridge } from "../src/process/daemon.js";
 import { SERVICE_NAME, VERSION } from "../src/version.js";
-import { Workspace } from "../src/workspace/manager.js";
 import { cleanup, isolateStateDir, makeTmpDir, write } from "./helpers.js";
 
-function stubRuntime(workspaceId: string, workspaceRoot: string, pid: number, port: number): RuntimeState {
+function stubRuntime(pid: number, port: number, workspaces: string[] = []): RuntimeState {
   return {
     service: SERVICE_NAME,
     version: VERSION,
-    workspaceId,
-    workspaceRoot,
     pid,
     port,
     adminToken: "test-token",
     publicUrl: null,
     startedAt: new Date().toISOString(),
+    workspaces,
   };
 }
 
@@ -41,11 +39,10 @@ describe("findBridgeObservation", () => {
     const root = makeTmpDir("obs-missing");
     dirs.push(root);
     write(root, "a.txt", "a");
-    const workspace = new Workspace(root);
-    const observation = await findBridgeObservation(workspace.id);
+    const observation = await findBridgeObservation();
     expect(observation.state).toBe("stopped");
     if (observation.state === "stopped") expect(observation.reason).toBe("runtime_missing");
-    expect(await findLiveBridge(workspace.id)).toBeNull();
+    expect(await findLiveBridge()).toBeNull();
   });
 
   it("treats a dead pid plus a failed probe as stopped", async () => {
@@ -53,12 +50,11 @@ describe("findBridgeObservation", () => {
     const root = makeTmpDir("obs-dead");
     dirs.push(root);
     write(root, "a.txt", "a");
-    const workspace = new Workspace(root);
-    writeRuntimeState(stubRuntime(workspace.id, workspace.root, 999_999_999, 1));
-    const observation = await findBridgeObservation(workspace.id);
+    writeRuntimeState(stubRuntime(999_999_999, 1));
+    const observation = await findBridgeObservation();
     expect(observation.state).toBe("stopped");
     if (observation.state === "stopped") expect(observation.reason).toBe("pid_missing");
-    expect(await findLiveBridge(workspace.id)).toBeNull();
+    expect(await findLiveBridge()).toBeNull();
   });
 
   it("does not treat a live awehitch bridge pid plus a failed probe as stopped", async () => {
@@ -66,12 +62,11 @@ describe("findBridgeObservation", () => {
     const root = makeTmpDir("obs-unknown");
     dirs.push(root);
     write(root, "a.txt", "a");
-    const workspace = new Workspace(root);
     // Spawn a process whose command line LOOKS like an awehitch bridge so
     // findBridgeObservation treats it as a real bridge (not a pid reuse).
     const child = spawn(
       process.execPath,
-      ["-e", "setInterval(() => {}, 1000)", "--", "awehitch", "serve", "--workspace", workspace.root],
+      ["-e", "setInterval(() => {}, 1000)", "--", "awehitch", "serve", "--workspace", root],
       {
         stdio: "ignore",
         detached: true,
@@ -80,11 +75,11 @@ describe("findBridgeObservation", () => {
     child.unref();
     try {
       if (!child.pid) throw new Error("failed to spawn helper");
-      writeRuntimeState(stubRuntime(workspace.id, workspace.root, child.pid, 1));
-      const observation = await findBridgeObservation(workspace.id);
+      writeRuntimeState(stubRuntime(child.pid, 1, [root]));
+      const observation = await findBridgeObservation();
       expect(observation.state).toBe("unknown");
       if (observation.state === "unknown") expect(observation.reason).toBe("probe_failed");
-      expect(await findLiveBridge(workspace.id)).toBeNull();
+      expect(await findLiveBridge()).toBeNull();
       await expect(ensureBridge(root)).rejects.toThrow(/uncertain/);
     } finally {
       if (child.pid) {
@@ -105,15 +100,15 @@ describe("findBridgeObservation", () => {
     const auth = path.join(makeTmpDir("obs-auth"), "store.json");
     dirs.push(path.dirname(auth));
     const bridge = await startBridge({
-      workspaceRoot: root,
+      workspaceRoots: [root],
       port: 0,
       persistRuntime: true,
       authStoreFile: auth,
     });
     try {
-      const observation = await findBridgeObservation(bridge.workspace.id);
+      const observation = await findBridgeObservation();
       expect(observation.state).toBe("healthy");
-      expect(await findLiveBridge(bridge.workspace.id)).not.toBeNull();
+      expect(await findLiveBridge()).not.toBeNull();
     } finally {
       await bridge.close();
     }

@@ -5,7 +5,6 @@ import type { Logger } from "../logger/index.js";
 
 export interface BearerAuthDeps {
   store: AuthStore;
-  workspaceId: string;
   getBaseUrl: (req: Request) => string;
   logger: Logger;
 }
@@ -13,7 +12,9 @@ export interface BearerAuthDeps {
 /**
  * Bearer-token guard for /mcp.
  * - missing/invalid/expired token  -> 401 (+ WWW-Authenticate with resource metadata)
- * - valid token for another workspace -> 403
+ *
+ * v0.2.6: the store is machine-scoped, so a valid token authorizes the whole
+ * registry — no per-workspace comparison is needed (or possible) any more.
  */
 export function bearerAuth(deps: BearerAuthDeps) {
   return (req: Request, res: Response, next: NextFunction): void => {
@@ -37,14 +38,6 @@ export function bearerAuth(deps: BearerAuthDeps) {
         .status(401)
         .set("WWW-Authenticate", challenge("invalid_token", `Token ${verdict.reason}`))
         .json({ error: "unauthorized", error_description: `Token ${verdict.reason}` });
-      return;
-    }
-    if (verdict.record.workspaceId !== deps.workspaceId) {
-      deps.logger.warn("Rejected MCP request: token bound to a different workspace");
-      res.status(403).json({
-        error: "forbidden",
-        error_description: "This token is not authorized for the connected workspace",
-      });
       return;
     }
     const authInfo: AuthInfo = {

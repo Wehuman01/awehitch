@@ -5,7 +5,7 @@ import readline from "node:readline";
 import type { ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { startBridge } from "../bridge/server.js";
-import { findBridgeObservation, findLiveBridge, listRuntimeWorkspaceIds, type RuntimeState } from "../bridge/runtime.js";
+import { findBridgeObservation, findLiveBridge, readLegacyRuntimeStates, type RuntimeState } from "../bridge/runtime.js";
 import {
   adminFetch,
   bridgeLogPath,
@@ -15,6 +15,7 @@ import {
   stopBridgeAndWait,
 } from "../process/daemon.js";
 import { Workspace } from "../workspace/manager.js";
+import { readRegistryRoots } from "../workspace/registry.js";
 import { AuthStore } from "../auth/store.js";
 import { detectTunnelBinaries } from "../tunnel/detect.js";
 import {
@@ -22,8 +23,9 @@ import {
   hasCloudflaredCert,
   ProcessCloudflaredAccount,
   provisionNamedTunnel,
+  suggestedMachineHostname,
 } from "../tunnel/named-provision.js";
-import { parseZoneInput, suggestedNamedHostname } from "../tunnel/hostname.js";
+import { parseZoneInput } from "../tunnel/hostname.js";
 import {
   isNamedTunnelReady,
   NAMED_LOGIN_PROMPT,
@@ -42,6 +44,7 @@ import {
   CHATGPT_PLUGINS_URL,
   connectorAction,
   connectorNameFor,
+  legacyEndpointForMcpUrl,
   mcpUrlFromPublic,
   normalizePublicUrl,
   readLastEndpoint,
@@ -49,13 +52,17 @@ import {
   writeLastEndpoint,
   type LastEndpoint,
 } from "../config/endpoint.js";
+import { migrateLegacyStateToMachine } from "../config/migrate.js";
 import { PRODUCT_NAME, VERSION } from "../version.js";
 import {
   clearChatPointer,
   mergeSession,
   readSession,
+  readTaskSession,
   resolveConversation,
+  taskSessionFile,
   writeSession,
+  writeTaskSession,
   PROTOCOL_STATES,
   WAITING_FOR,
   type ConversationMode,
@@ -156,23 +163,18 @@ function readCappedUtf8(filePath: string, maxBytes: number): string {
   }
 }
 
-function persistWorkspaceEndpoint(opts: {
-  workspaceId: string;
-  workspaceName: string;
+function persistMachineEndpoint(opts: {
   port: number;
   publicUrl: string | null;
   mcpUrl: string;
   previous?: LastEndpoint | null;
 }): string {
-  const previous = opts.previous ?? readLastEndpoint(opts.workspaceId);
+  const previous = opts.previous ?? readLastEndpoint();
   const connectorName = connectorNameFor({
-    workspaceName: opts.workspaceName,
-    workspaceId: opts.workspaceId,
     previousName: previous?.connectorName,
-    hadEndpointBefore: Boolean(previous),
+    legacyMatch: legacyEndpointForMcpUrl(opts.mcpUrl),
   });
   writeLastEndpoint({
-    workspaceId: opts.workspaceId,
     port: opts.port,
     publicUrl: opts.publicUrl,
     mcpUrl: opts.mcpUrl,
@@ -181,8 +183,8 @@ function persistWorkspaceEndpoint(opts: {
   return connectorName;
 }
 
-function tunnelChoicePayload(workspace: Workspace, zoneHint?: string): Record<string, unknown> {
-  const state = readTunnelState(workspace.id);
+function tunnelChoicePayload(zoneHint?: string): Record<string, unknown> {
+  const state = readTunnelState();
   const zone = parseZoneInput(zoneHint ?? "") ?? state.zone ?? null;
   return {
     ok: true,
@@ -192,7 +194,7 @@ function tunnelChoicePayload(workspace: Workspace, zoneHint?: string): Record<st
     namedReady: isNamedTunnelReady(state),
     zone,
     hostname: state.hostname ?? null,
-    suggestedHostname: zone ? suggestedNamedHostname(zone, workspace.name, workspace.id) : null,
+    suggestedHostname: zone ? suggestedMachineHostname(zone) : null,
     userPrompt: needsTunnelChoice(state) ? TUNNEL_CHOICE_PROMPT : undefined,
     loginPrompt: NAMED_LOGIN_PROMPT,
     fallbackReason: state.fallbackReason,
@@ -222,9 +224,8 @@ interface PairingResponse {
 }
 
 interface AdminInfo {
-  workspaceId: string;
-  workspaceName: string;
-  workspaceRoot: string;
+  scope: "machine";
+  workspaces: { workspaceId: string; workspaceName: string; workspaceRoot: string }[];
   port: number;
   publicUrl: string | null;
   tunnel: { running: boolean; url: string | null; provider: string };
@@ -237,8 +238,9 @@ interface AdminInfo {
 async function ensureBridgeAndTunnel(
   workspaceRoot: string,
   opts: { tunnel: boolean; foreground?: boolean }
-): Promise<{ runtime: RuntimeState; info: AdminInfo; mcpUrl: string | null; stopped: RuntimeState[]; child: ChildProcess | null }> {
-  const { runtime, stopped, child } = await ensureBridge(workspaceRoot, { foreground: opts.foreground });
+): Promise<{ runtime: RuntimeState; info: AdminInfo; mcpUrl: string | null; child: ChildProcess | null }> {
+  migrateLegacyStateToMachine();
+  const { runtime, child } = await ensureBridge(workspaceRoot, { foreground: opts.foreground });
   let info = await adminFetch<AdminInfo>(runtime, "GET", "/admin/info");
   let mcpUrl: string | null = info.publicUrl ? `${info.publicUrl}/mcp` : null;
   if (opts.tunnel && !info.publicUrl) {
@@ -253,21 +255,21 @@ async function ensureBridgeAndTunnel(
     info = await adminFetch<AdminInfo>(runtime, "GET", "/admin/info");
     mcpUrl = `${result.url}/mcp`;
   }
-  return { runtime, info, mcpUrl, stopped, child };
+  return { runtime, info, mcpUrl, child };
 }
 
 /**
- * Revoke ChatGPT's access for a workspace: via the live bridge when one is
+ * Revoke ChatGPT's access on this machine: via the live bridge when one is
  * running, otherwise directly on the persisted auth store. Split out so tests
  * can exercise the offline (no-bridge) path without a running daemon.
  */
-export async function revokeConnectorAccess(workspaceId: string): Promise<void> {
-  const runtime = await findLiveBridge(workspaceId);
+export async function revokeConnectorAccess(): Promise<void> {
+  const runtime = await findLiveBridge();
   if (runtime) {
     await adminFetch(runtime, "POST", "/admin/revoke-all");
   } else {
     // bridge not running: revoke directly in the persisted store
-    new AuthStore(workspaceId).revokeAll();
+    new AuthStore().revokeAll();
   }
 }
 
@@ -292,15 +294,13 @@ function waitForEnter(): Promise<void> {
  *   and a bridge that dies on its own ends the attach.
  */
 async function attachForeground(
-  root: string,
   child: ChildProcess | null,
-  workspace: Workspace,
   exitCode: number
 ): Promise<void> {
   if (!child) {
     const stopStreaming = followLogFile(bridgeLogPath(), (text) => process.stdout.write(text));
     const watch = setInterval(() => {
-      void findLiveBridge(workspace.id).then((live) => {
+      void findLiveBridge().then((live) => {
         if (!live) {
           clearInterval(watch);
           stopStreaming();
@@ -311,7 +311,7 @@ async function attachForeground(
     const shutdown = (): void => {
       clearInterval(watch);
       stopStreaming();
-      void stopBridgeAndWait(root).then((ok) => process.exit(ok ? exitCode : 1));
+      void stopBridgeAndWait().then((ok) => process.exit(ok ? exitCode : 1));
     };
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
@@ -362,7 +362,7 @@ function connectorError(payload: ConnectorSetupResult): { code: string; message:
  * must be captured before the run).
  */
 async function runConnectorFor(
-  workspace: Workspace,
+  workspaceId: string,
   runtime: RuntimeState,
   info: AdminInfo,
   mcpUrl: string,
@@ -374,7 +374,7 @@ async function runConnectorFor(
   const pairing = await adminFetch<PairingResponse>(runtime, "POST", "/admin/pairing");
   const tokensBefore = info.tokenCount;
   const result = await runConnectorSetup({
-    workspaceId: workspace.id,
+    workspaceId,
     connectorName,
     mcpUrl: resolvedMcpUrl,
     pairingCode: pairing.code,
@@ -391,7 +391,6 @@ async function runConnectorFor(
   const finalName = result.connectorName ?? connectorName;
   if (result.ok && finalName !== connectorName) {
     writeLastEndpoint({
-      workspaceId: workspace.id,
       port: runtime.port,
       publicUrl: info.publicUrl,
       mcpUrl: resolvedMcpUrl,
@@ -467,23 +466,15 @@ program
     let runtime: RuntimeState;
     let info: AdminInfo;
     let mcpUrl: string | null;
-    let stoppedPrevious: RuntimeState[] = [];
     try {
       const out = await ensureBridgeAndTunnel(root, { tunnel: !opts.noTunnel, foreground: fg });
       runtime = out.runtime;
       info = out.info;
       mcpUrl = out.mcpUrl;
-      stoppedPrevious = out.stopped;
       fgChild = out.child;
     } catch (error) {
       handleCliError(error, json);
       return;
-    }
-    if (stoppedPrevious.length > 0 && !json) {
-      for (const previous of stoppedPrevious) {
-        say(`Stopped the previous workspace's bridge (${previous.workspaceRoot}) — one bridge per machine.`);
-      }
-      say("");
     }
 
     const onNotice = (message: string): void => {
@@ -492,21 +483,17 @@ program
     // Snapshot the previous endpoint BEFORE persisting: connectorAction must
     // compare the OLD address against the new one, or an address change is
     // never detected (doctor follows the same ordering).
-    const previousEndpoint = readLastEndpoint(info.workspaceId);
+    const previousEndpoint = readLastEndpoint();
     const connectorName = mcpUrl
-      ? persistWorkspaceEndpoint({
-          workspaceId: info.workspaceId,
-          workspaceName: info.workspaceName,
+      ? persistMachineEndpoint({
           port: runtime.port,
           publicUrl: info.publicUrl,
           mcpUrl,
           previous: previousEndpoint,
         })
-      : previousEndpoint?.connectorName ?? connectorNameFor({
-          workspaceName: info.workspaceName,
-          workspaceId: info.workspaceId,
+      : connectorNameFor({
           previousName: previousEndpoint?.connectorName,
-          hadEndpointBefore: Boolean(previousEndpoint),
+          legacyMatch: legacyEndpointForMcpUrl(previousEndpoint?.mcpUrl),
         });
 
     // 2. Decide whether the ChatGPT side needs any action. Without a public
@@ -521,7 +508,7 @@ program
     const connector: { outcome: ConnectorOutcome | null } = { outcome: null };
     if (mcpUrl && !(action === "none" && info.tokenCount > 0)) {
       const attempt = async (): Promise<"ok" | "failed" | "paused"> => {
-        const outcome = await runConnectorFor(workspace, runtime, info, mcpUrl, connectorName, opts.timeout, onNotice);
+        const outcome = await runConnectorFor(workspace.id, runtime, info, mcpUrl, connectorName, opts.timeout, onNotice);
         if (outcome.result.ok) {
           connector.outcome = outcome;
           connectorUpdated = true;
@@ -535,7 +522,7 @@ program
           say("Log in to ChatGPT in the opened window, then press Enter…");
           await waitForEnter();
           await interactiveLogin(workspace.id, opts.timeout * 60_000).catch(() => undefined);
-          const retry = await runConnectorFor(workspace, runtime, info, mcpUrl, connectorName, opts.timeout, onNotice);
+          const retry = await runConnectorFor(workspace.id, runtime, info, mcpUrl, connectorName, opts.timeout, onNotice);
           if (retry.result.ok) {
             connector.outcome = retry;
             connectorUpdated = true;
@@ -550,7 +537,7 @@ program
         }
         if (code === "CONNECTOR_PAIRING_REJECTED") {
           onNotice("The pairing code expired; generated a fresh one and retrying.");
-          const retry = await runConnectorFor(workspace, runtime, info, mcpUrl, connectorName, opts.timeout, onNotice);
+          const retry = await runConnectorFor(workspace.id, runtime, info, mcpUrl, connectorName, opts.timeout, onNotice);
           if (retry.result.ok) {
             connector.outcome = retry;
             connectorUpdated = true;
@@ -598,7 +585,7 @@ program
       for (const harness of requested) {
         try {
           const impl = await loadAdapter(harness);
-          const base = readLastEndpoint(info.workspaceId)?.connectorName ?? connectorName;
+          const base = readLastEndpoint()?.connectorName ?? connectorName;
           const result = impl.setup({ workspaceRoot: root, cliEntry: awehitchCliEntry(), connectorName: base });
           harnesses.push({ id: harness, installed: true, skillPath: result.skillPath });
           if (harness === "codex") trySandboxAllow();
@@ -612,12 +599,17 @@ program
 
     // 4. Output.
     const finalName = connector.outcome?.connectorName ?? connectorName;
-    const tunnelState = readTunnelState(info.workspaceId);
+    const tunnelState = readTunnelState();
+    const served = info.workspaces.length > 0
+      ? info.workspaces.map((w) => w.workspaceName).join(", ")
+      : workspace.name;
     if (json) {
       say(JSON.stringify({
         ok: true,
-        workspaceId: info.workspaceId,
-        workspaceName: info.workspaceName,
+        scope: "machine",
+        workspaceId: workspace.id,
+        workspaceName: workspace.name,
+        servedWorkspaces: info.workspaces,
         connectorName: finalName,
         mcpUrl: mcpUrl ?? `http://127.0.0.1:${runtime.port}/mcp`,
         port: runtime.port,
@@ -628,15 +620,15 @@ program
         harnesses,
         needsLogin: false,
         connectorUpdated,
-        stoppedWorkspaces: stoppedPrevious.map((s) => s.workspaceRoot),
       }));
       return;
     }
 
     say(PRODUCT_NAME);
     say("");
-    if (mcpUrl) check(`ChatGPT is connected to ${info.workspaceName}`);
-    else say("· Local mode started (no public connection; ChatGPT cannot reach this workspace yet)");
+    if (mcpUrl) check(`ChatGPT is connected to this machine's workspaces`);
+    else say("· Local mode started (no public connection; ChatGPT cannot reach this machine yet)");
+    say(`· Serving ${info.workspaces.length} workspace(s): ${served}`);
     if (requested.length === 0) say("· No coding agent detected (codex / opencode / zcode); pass --harness to pick one");
     else say(`· Wired ${requested.map((h) => harnessLabel(h)).join(", ")}`);
     say("");
@@ -652,7 +644,7 @@ program
       say(fgChild
         ? "Foreground mode: service logs stream below. Press Ctrl+C to stop awehitch."
         : "Bridge already running: streaming its log below. Press Ctrl+C to stop awehitch.");
-      await attachForeground(root, fgChild, workspace, fgExit);
+      await attachForeground(fgChild, fgExit);
       return;
     }
     say("");
@@ -678,38 +670,35 @@ function handleConnectorFailure(outcome: ConnectorOutcome, json: boolean): void 
 
 program
   .command("off")
-  .description("Disconnect ChatGPT from this workspace")
-  .option("-w, --workspace <path>")
+  .description("Disconnect ChatGPT and stop the machine's awehitch bridge")
+  .option("-w, --workspace <path>", "accepted for compatibility; the bridge is machine-wide")
   .option("--json", "machine-readable output", false)
   .action(async (opts: { workspace?: string; json: boolean }) => {
-    const root = resolveWorkspace(opts.workspace);
-    const workspace = new Workspace(root);
     try {
-      await revokeConnectorAccess(workspace.id);
-      await stopBridge(root);
+      await revokeConnectorAccess();
+      await stopBridge();
     } catch (error) {
       handleCliError(error, opts.json);
       return;
     }
     if (opts.json) {
-      const name = readLastEndpoint(workspace.id)?.connectorName;
-      say(JSON.stringify({ ok: true, workspaceName: workspace.name, connectorName: name ?? null, pluginsUrl: "https://chatgpt.com/plugins" }));
+      const name = readLastEndpoint()?.connectorName;
+      say(JSON.stringify({ ok: true, scope: "machine", connectorName: name ?? null, pluginsUrl: "https://chatgpt.com/plugins" }));
       return;
     }
-    check(`Disconnected ChatGPT from ${workspace.name}`);
-    const name = readLastEndpoint(workspace.id)?.connectorName;
+    check("Disconnected ChatGPT from this machine");
+    const name = readLastEndpoint()?.connectorName;
     if (name) say("· To remove it fully, delete \"" + name + "\" on https://chatgpt.com/plugins");
   });
 
 program
   .command("serve", { hidden: true })
   .description("Run the bridge in the foreground (internal)")
-  .requiredOption("--workspace <path>")
   .option("--port <port>", "preferred port")
-  .action(async (opts: { workspace: string; port?: string }) => {
+  .action(async (opts: { port?: string }) => {
+    migrateLegacyStateToMachine();
     const logger = new Logger({ name: "bridge", console: true });
     const bridge = await startBridge({
-      workspaceRoot: resolveWorkspace(opts.workspace),
       port: opts.port ? parseInt(opts.port, 10) : undefined,
       logger,
     });
@@ -718,7 +707,7 @@ program
     };
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
-    say(`bridge ready on ${bridge.localBaseUrl()} (workspace ${bridge.workspace.name})`);
+    say(`bridge ready on ${bridge.localBaseUrl()} serving ${bridge.workspaces.length} workspace(s)`);
   });
 
 // ---------------------------------------------------------------- control-plane (stdio MCP)
@@ -752,21 +741,17 @@ program
       }
       const { runtime, info, mcpUrl } = await ensureBridgeAndTunnel(root, { tunnel: opts.tunnel });
       const connectorName = mcpUrl
-        ? persistWorkspaceEndpoint({
-            workspaceId: info.workspaceId,
-            workspaceName: info.workspaceName,
+        ? persistMachineEndpoint({
             port: runtime.port,
             publicUrl: info.publicUrl,
             mcpUrl,
           })
         : connectorNameFor({
-            workspaceName: info.workspaceName,
-            workspaceId: info.workspaceId,
-            previousName: readLastEndpoint(info.workspaceId)?.connectorName,
-            hadEndpointBefore: Boolean(readLastEndpoint(info.workspaceId)),
+            previousName: readLastEndpoint()?.connectorName,
+            legacyMatch: legacyEndpointForMcpUrl(readLastEndpoint()?.mcpUrl),
           });
       const pairingResult = await adminFetch<PairingResponse>(runtime, "POST", "/admin/pairing");
-      const tunnelState = readTunnelState(info.workspaceId);
+      const tunnelState = readTunnelState();
 
       // Harness adapter (repeatable): wire the control plane into the harness.
       let adapter: Record<string, unknown> | null = null;
@@ -788,8 +773,8 @@ program
         say(
           JSON.stringify({
             ok: true,
-            workspaceId: info.workspaceId,
-            workspaceName: info.workspaceName,
+            scope: "machine",
+            servedWorkspaces: info.workspaces,
             connectorName,
             mcpUrl: mcpUrl ?? `http://127.0.0.1:${runtime.port}/mcp`,
             local: mcpUrl === null,
@@ -805,8 +790,7 @@ program
         );
         return;
       }
-      check(`Workspace identified (${info.workspaceName})`);
-      check("Workspace bridge is up");
+      check(`Bridge is up (${info.workspaces.length} workspace(s) served)`);
       if (mcpUrl) check("Secure connection established");
       if (adapter) check(`Wired ${harnessLabel(adapter.harness as HarnessId)}`);
       say("");
@@ -903,13 +887,11 @@ program
     };
     try {
       const workspace = new Workspace(root);
-      const previous = readLastEndpoint(workspace.id);
+      const previous = readLastEndpoint();
       const nameFor = (): string =>
         connectorNameFor({
-          workspaceName: workspace.name,
-          workspaceId: workspace.id,
           previousName: previous?.connectorName,
-          hadEndpointBefore: Boolean(previous),
+          legacyMatch: legacyEndpointForMcpUrl(previous?.mcpUrl),
         });
 
       if (opts.dryRun) {
@@ -931,9 +913,7 @@ program
 
       const { runtime, info, mcpUrl } = await ensureBridgeAndTunnel(root, { tunnel: true });
       const connectorName = mcpUrl
-        ? persistWorkspaceEndpoint({
-            workspaceId: info.workspaceId,
-            workspaceName: info.workspaceName,
+        ? persistMachineEndpoint({
             port: runtime.port,
             publicUrl: info.publicUrl,
             mcpUrl,
@@ -965,7 +945,6 @@ program
       const finalName = result.connectorName ?? connectorName;
       if (result.ok && finalName !== connectorName) {
         writeLastEndpoint({
-          workspaceId: info.workspaceId,
           port: runtime.port,
           publicUrl: info.publicUrl,
           mcpUrl: resolvedMcpUrl,
@@ -988,112 +967,112 @@ program
 
 program
   .command("stop", { hidden: true })
-  .description("Stop the bridge for this workspace")
-  .option("-w, --workspace <path>")
-  .action(async (opts: { workspace?: string }) => {
-    const stopped = await stopBridge(resolveWorkspace(opts.workspace));
+  .description("Stop the machine's bridge")
+  .option("-w, --workspace <path>", "accepted for compatibility; the bridge is machine-wide")
+  .action(async () => {
+    const stopped = await stopBridge();
     if (stopped) check("Bridge stopped");
     else say("No bridge is running.");
   });
 
 program
   .command("restart", { hidden: true })
-  .description("Restart the bridge for this workspace")
-  .option("-w, --workspace <path>")
+  .description("Restart the machine's bridge")
+  .option("-w, --workspace <path>", "workspace whose directory stays registered")
   .option("--tunnel", "re-establish the secure public connection", false)
   .action(async (opts: { workspace?: string; tunnel: boolean }) => {
     const root = resolveWorkspace(opts.workspace);
-    await stopBridge(root);
+    await stopBridge();
     await new Promise((resolve) => setTimeout(resolve, 500));
     try {
       const { info, mcpUrl } = await ensureBridgeAndTunnel(root, { tunnel: opts.tunnel });
-      check(`Bridge restarted (${info.workspaceName})`);
+      check(`Bridge restarted (${info.workspaces.length} workspace(s) served)`);
       if (mcpUrl) check("Secure connection established");
     } catch (error) {
       handleCliError(error, false);
     }
   });
 
-// ---------------------------------------------------------------- status (machine-wide service listing)
+// ---------------------------------------------------------------- status (machine-wide service view)
 
 /**
- * Machine-level view, not a per-workspace one: `doctor --no-fix` remains the
- * read-only deep check for ONE workspace, while `status` answers "what is
- * (or was) mounted on this machine" across workspaces — the first thing a
- * human needs after the one-bridge-per-machine rule switched something.
+ * Machine-level view: the one bridge plus the workspace registry it serves.
+ * `doctor --no-fix` remains the read-only deep check for one workspace's
+ * wiring; `status` answers "is the service up, and what does it serve".
  */
 const STATUS_REASON_TEXT: Record<string, string> = {
+  runtime_missing: "no runtime record (service not started)",
   pid_missing: "process exited (crash or kill)",
   stale_pid: "its pid now belongs to another process",
   probe_failed: "not answering on its port",
   pid_unknown: "process state unreadable",
-  workspace_mismatch: "a different service answered on its port",
+  legacy_workspace_scoped: "a pre-0.2.6 workspace-scoped bridge is still running; re-run `awehitch up` to replace it",
 };
 
 program
   .command("status")
-  .description("Show the awehitch service(s) registered on this machine and whether each is alive")
+  .description("Show the awehitch bridge on this machine and the workspaces it serves")
   .option("--json", "machine-readable output", false)
   .action(async (opts: { json: boolean }) => {
-    const services: {
-      workspaceId: string;
-      workspaceRoot: string;
-      name: string;
-      pid: number;
-      port: number;
-      publicUrl: string | null;
-      startedAt: string;
-      state: "running" | "stopped" | "unknown";
-      reason?: string;
-      reasonText?: string;
-    }[] = [];
-    for (const id of listRuntimeWorkspaceIds()) {
-      const observation = await findBridgeObservation(id);
-      const runtime = observation.runtime;
-      if (!runtime) continue; // unreadable record: nothing honest to report
-      const state = observation.state === "healthy" ? "running" : observation.state;
-      services.push({
-        workspaceId: runtime.workspaceId,
-        workspaceRoot: runtime.workspaceRoot,
-        name: path.basename(runtime.workspaceRoot),
-        pid: runtime.pid,
-        port: runtime.port,
-        publicUrl: runtime.publicUrl,
-        startedAt: runtime.startedAt,
-        state,
-        reason: observation.state === "healthy" ? undefined : observation.reason,
-        reasonText:
-          observation.state === "healthy" ? undefined : STATUS_REASON_TEXT[observation.reason] ?? observation.reason,
-      });
-    }
-    // Running first, then the rest: on this machine at most one can run.
-    // sort is stable, so records keep their id order within each group.
-    services.sort((a, b) => Number(b.state === "running") - Number(a.state === "running"));
+    const observation = await findBridgeObservation();
+    const registryRoots = readRegistryRoots();
+    const legacy = readLegacyRuntimeStates();
+    const runtime = observation.runtime;
+
+    const bridge =
+      observation.state === "healthy"
+        ? {
+            state: "running" as const,
+            pid: runtime?.pid,
+            port: runtime?.port,
+            publicUrl: runtime?.publicUrl ?? null,
+            startedAt: runtime?.startedAt,
+          }
+        : {
+            state: observation.state,
+            reason: observation.reason,
+            reasonText: STATUS_REASON_TEXT[observation.reason] ?? observation.reason,
+          };
 
     if (opts.json) {
-      say(JSON.stringify({ ok: true, onePerMachine: true, services }));
+      say(JSON.stringify({
+        ok: true,
+        scope: "machine",
+        bridge,
+        registryRoots,
+        legacyRecords: legacy.map((entry) => ({ pid: entry.pid, port: entry.port })),
+      }));
       return;
     }
-    if (services.length === 0) {
-      say("No awehitch service on this machine.");
-      say("Connect one: awehitch up -w <workspace>");
-      return;
-    }
-    for (const service of services) {
-      if (service.state === "running") {
-        check(`${service.workspaceRoot} — running (pid ${service.pid}, port ${service.port})`);
-        if (service.publicUrl) say(`  Public: ${service.publicUrl}`);
-        say(`  Since: ${new Date(service.startedAt).toLocaleString()}`);
-      } else if (service.state === "stopped") {
-        cross(`${service.workspaceRoot} — not running (${service.reasonText}; leftover record)`);
+
+    if (observation.state === "healthy") {
+      const rt = observation.runtime;
+      check(`awehitch bridge — running (pid ${rt.pid}, port ${rt.port})`);
+      if (rt.publicUrl) say(`  Public: ${rt.publicUrl}`);
+      say(`  Since: ${new Date(rt.startedAt).toLocaleString()}`);
+    } else if (observation.state === "unknown") {
+      say(`! Bridge state is uncertain (${STATUS_REASON_TEXT[observation.reason] ?? observation.reason})`);
+      say("  Check: awehitch doctor");
+    } else {
+      const reasonText = STATUS_REASON_TEXT[observation.reason] ?? observation.reason;
+      if (observation.reason === "legacy_workspace_scoped") {
+        cross(`awehitch bridge — ${reasonText}`);
       } else {
-        say(`! ${service.workspaceRoot} — state uncertain (${service.reasonText})`);
-        say(`  Check: awehitch doctor -w ${service.workspaceRoot}`);
+        say(`· Bridge is not running (${reasonText}).`);
       }
     }
-    if (services.some((service) => service.state === "stopped")) {
-      say("");
-      say("Leftover records clear themselves on the next `awehitch up -w <workspace>`.");
+
+    if (registryRoots.length > 0) {
+      say(`  Registered workspaces (${registryRoots.length}):`);
+      for (const root of registryRoots) say(`    · ${root}`);
+    } else if (observation.state === "healthy") {
+      say("  No workspaces registered yet: run `awehitch up -w <directory>`.");
+    }
+    if (legacy.length > 0) {
+      say(`· ${legacy.length} leftover pre-0.2.6 runtime record(s); they stop being written after the next \`awehitch up\`.`);
+    }
+    if (observation.state === "stopped" && observation.reason !== "legacy_workspace_scoped") {
+      say("Start it: awehitch up -w <workspace>");
     }
   });
 
@@ -1152,8 +1131,8 @@ program
     // Bridge
     let runtime: RuntimeState | null = null;
     let bridgeUnknown = false;
-    if (workspace) {
-      const observation = await findBridgeObservation(workspace.id);
+    {
+      const observation = await findBridgeObservation();
       if (observation.state === "healthy") {
         runtime = observation.runtime;
       } else if (observation.state === "unknown") {
@@ -1193,17 +1172,13 @@ program
     }
 
     // Tunnel + remote reachability
-    const lastEndpoint = workspace ? readLastEndpoint(workspace.id) : null;
-    const connectorName = workspace
-      ? connectorNameFor({
-          workspaceName: workspace.name,
-          workspaceId: workspace.id,
-          previousName: lastEndpoint?.connectorName,
-          hadEndpointBefore: Boolean(lastEndpoint),
-        })
-      : PRODUCT_NAME;
-    const tunnelState = workspace ? readTunnelState(workspace.id) : null;
-    const namedReady = tunnelState ? isNamedTunnelReady(tunnelState) : false;
+    const lastEndpoint = readLastEndpoint();
+    const connectorName = connectorNameFor({
+      previousName: lastEndpoint?.connectorName,
+      legacyMatch: legacyEndpointForMcpUrl(lastEndpoint?.mcpUrl),
+    });
+    const tunnelState = readTunnelState();
+    const namedReady = isNamedTunnelReady(tunnelState);
     let namedRepair: { needed: boolean; userMessage?: string } = { needed: false };
     let chatgptRepair: {
       needed: boolean;
@@ -1236,7 +1211,7 @@ program
     if (runtime) {
       let info = await adminFetch<AdminInfo>(runtime, "GET", "/admin/info");
       if (namedReady && opts.fix && info.tunnel.provider !== "cloudflare-named") {
-        await stopBridge(root);
+        await stopBridge();
         await new Promise((resolve) => setTimeout(resolve, 400));
         try {
           runtime = (await ensureBridge(root)).runtime;
@@ -1286,19 +1261,15 @@ program
         const action = connectorAction(lastEndpoint?.mcpUrl, nextMcp);
         const boundName = nextMcp
           ? opts.fix
-            ? persistWorkspaceEndpoint({
-                workspaceId: info.workspaceId,
-                workspaceName: info.workspaceName,
+            ? persistMachineEndpoint({
                 port: runtime.port,
                 publicUrl: currentUrl,
                 mcpUrl: nextMcp,
                 previous: lastEndpoint,
               })
             : connectorNameFor({
-                workspaceName: info.workspaceName,
-                workspaceId: info.workspaceId,
                 previousName: lastEndpoint?.connectorName,
-                hadEndpointBefore: Boolean(lastEndpoint),
+                legacyMatch: legacyEndpointForMcpUrl(nextMcp),
               })
           : connectorName;
         chatgptRepair = {
@@ -1522,19 +1493,17 @@ program
 
 program
   .command("unpair", { hidden: true })
-  .description("Revoke ChatGPT's access to this workspace immediately")
-  .option("-w, --workspace <path>")
-  .action(async (opts: { workspace?: string }) => {
-    const root = resolveWorkspace(opts.workspace);
-    const workspace = new Workspace(root);
-    const runtime = await findLiveBridge(workspace.id);
+  .description("Revoke ChatGPT's access on this machine immediately")
+  .option("-w, --workspace <path>", "accepted for compatibility; access is machine-wide")
+  .action(async () => {
+    const runtime = await findLiveBridge();
     if (runtime) {
       await adminFetch(runtime, "POST", "/admin/revoke-all");
     } else {
       // bridge not running: revoke directly in the persisted store
-      new AuthStore(workspace.id).revokeAll();
+      new AuthStore().revokeAll();
     }
-    check("Disconnected ChatGPT from this workspace (all tokens revoked)");
+    check("Disconnected ChatGPT from this machine (all tokens revoked)");
   });
 
 // ---------------------------------------------------------------- logs / workspace / record
@@ -1542,15 +1511,13 @@ program
 program
   .command("logs", { hidden: true })
   .description("Show recent bridge logs")
-  .option("-w, --workspace <path>")
   .option("-n, --lines <n>", "number of lines", parsePositiveInteger, 50)
   .option("--verbose", "include debug detail", false)
-  .action((opts: { workspace?: string; lines: number; verbose: boolean }) => {
+  .action((opts: { lines: number; verbose: boolean }) => {
     try {
-      const workspace = new Workspace(resolveWorkspace(opts.workspace));
       const candidates = [
         path.join(getStateDir(), "logs", "bridge.log"),
-        path.join(getStateDir(), "logs", `bridge-${workspace.id}.out.log`),
+        path.join(getStateDir(), "logs", "bridge.out.log"),
       ];
       let shown = false;
       for (const file of candidates) {
@@ -1599,17 +1566,20 @@ session
   .description("Show the saved ChatGPT conversation / Project for this workspace")
   .option("-w, --workspace <path>")
   .option("-H, --harness <id>", "harness slice (must match the control-plane's --harness)", parseHarnessKey)
+  .option("--task <id>", "read a specific task's checkpoint slot instead of the workspace slot")
   .option("--json", "machine-readable output", false)
-  .action((opts: { workspace?: string; harness?: string; json: boolean }) => {
+  .action((opts: { workspace?: string; harness?: string; task?: string; json: boolean }) => {
     try {
       const workspace = new Workspace(resolveWorkspace(opts.workspace));
-      const saved = readSession(workspace.id, opts.harness);
+      const saved = opts.task
+        ? readTaskSession(workspace.id, opts.task, opts.harness)
+        : readSession(workspace.id, opts.harness);
       const conversation = resolveConversation(saved);
-      if (opts.json) say(JSON.stringify({ ok: true, session: saved, conversation }));
+      if (opts.json) say(JSON.stringify({ ok: true, task: opts.task ?? null, session: saved, conversation }));
       else if (!saved) {
-        say("No ChatGPT conversation recorded yet. New workspaces default to a Project collection.");
+        say(opts.task ? `No checkpoint recorded for task ${opts.task}.` : "No ChatGPT conversation recorded yet. New workspaces default to a Project collection.");
       } else {
-        say(`Mode: ${conversation.mode === "project" ? "Project collection" : "long-running chat"}`);
+        say(opts.task ? `Task ${opts.task}:` : `Mode: ${conversation.mode === "project" ? "Project collection" : "long-running chat"}`);
         if (conversation.projectUrl) say(`Collection: ${conversation.projectUrl}`);
         if (saved.title) say(`Session: ${saved.title}`);
         if (saved.url) say(`Chat: ${saved.url}`);
@@ -1633,7 +1603,7 @@ session
   .option("-H, --harness <id>", "harness slice (must match the control-plane's --harness)", parseHarnessKey)
   .option("--url <url>", "ChatGPT conversation URL from the address bar")
   .option("--title <title>")
-  .option("--task <id>")
+  .option("--task <id>", "task id: writes this task's own checkpoint slot (concurrent sessions stay isolated)")
   .option("--iteration <n>")
   .option("--state <state>", "last protocol state, e.g. EXECUTED")
   .option("--mode <mode>", "long-chat or project")
@@ -1685,7 +1655,11 @@ session
         if (waitingNorm && !WAITING_FOR.includes(waitingNorm as WaitingFor)) {
           throw new Error(`waiting-for must be one of ${WAITING_FOR.join(", ")}`);
         }
-        const saved = mergeSession(readSession(workspace.id, opts.harness), {
+        const saved = mergeSession(
+          opts.task
+            ? readTaskSession(workspace.id, opts.task, opts.harness)
+            : readSession(workspace.id, opts.harness),
+          {
           url: opts.url,
           title: opts.title,
           taskId: opts.task,
@@ -1706,9 +1680,12 @@ session
               }
             : undefined,
         });
-        writeSession(workspace.id, saved, opts.harness);
+        if (opts.task) writeTaskSession(workspace.id, opts.task, saved, opts.harness);
+        else writeSession(workspace.id, saved, opts.harness);
         if (saved.projectUrl && saved.conversationMode === "project") {
           check("Recorded the ChatGPT collection; later chats open or reuse from the collection page");
+        } else if (opts.task) {
+          check(`Recorded the checkpoint for task ${opts.task}`);
         } else {
           check("Recorded the ChatGPT conversation; later tasks will reuse it");
         }
@@ -1723,10 +1700,18 @@ session
   .description("Forget the current ChatGPT chat (Project binding is kept)")
   .option("-w, --workspace <path>")
   .option("-H, --harness <id>", "harness slice (must match the control-plane's --harness)", parseHarnessKey)
+  .option("--task <id>", "clear a specific task's checkpoint slot instead of the workspace slot")
   .option("--json", "machine-readable output", false)
-  .action((opts: { workspace?: string; harness?: string; json: boolean }) => {
+  .action((opts: { workspace?: string; harness?: string; task?: string; json: boolean }) => {
     try {
       const workspace = new Workspace(resolveWorkspace(opts.workspace));
+      if (opts.task) {
+        const existed = readTaskSession(workspace.id, opts.task, opts.harness) !== null;
+        fs.rmSync(taskSessionFile(workspace.id, opts.task, opts.harness), { force: true });
+        if (!existed) say(`No checkpoint recorded for task ${opts.task}.`);
+        else check(`Cleared the checkpoint for task ${opts.task}`);
+        return;
+      }
       const result = clearChatPointer(workspace.id, opts.harness);
       if (!result.cleared) say("No ChatGPT conversation recorded yet.");
       else if (result.keptProject) check("Cleared the current chat; the collection binding is kept");
@@ -1874,14 +1859,12 @@ const tunnelCmd = program.command("tunnel").description("Choose or inspect the p
 
 tunnelCmd
   .command("status", { isDefault: true })
-  .description("Show whether this workspace still needs a one-time connection choice")
-  .option("-w, --workspace <path>")
+  .description("Show whether this machine still needs a one-time connection choice")
   .option("--zone <domain>", "optional domain, used to preview the stable hostname")
   .option("--json", "machine-readable output", false)
-  .action((opts: { workspace?: string; zone?: string; json: boolean }) => {
+  .action((opts: { zone?: string; json: boolean }) => {
     try {
-      const workspace = new Workspace(resolveWorkspace(opts.workspace));
-      const payload = tunnelChoicePayload(workspace, opts.zone);
+      const payload = tunnelChoicePayload(opts.zone);
       if (opts.json) {
         say(JSON.stringify(payload));
         return;
@@ -1898,22 +1881,19 @@ tunnelCmd
   .command("choose")
   .description("Remember quick vs named, and provision a named hostname when asked")
   .requiredOption("--mode <mode>", "quick or named")
-  .option("-w, --workspace <path>")
   .option("--zone <domain>", "Cloudflare domain for a named hostname")
-  .option("--hostname <hostname>", "override the default c2c-<project>.<zone>")
+  .option("--hostname <hostname>", "override the default c2c.<zone>")
   .option("--json", "machine-readable output", false)
-  .action(async (opts: { mode: string; workspace?: string; zone?: string; hostname?: string; json: boolean }) => {
-    const root = resolveWorkspace(opts.workspace);
+  .action(async (opts: { mode: string; zone?: string; hostname?: string; json: boolean }) => {
     try {
-      const workspace = new Workspace(root);
       const mode = opts.mode.trim().toLowerCase();
-      const previous = readTunnelState(workspace.id);
+      const previous = readTunnelState();
       if (mode === "quick") {
-        const state = chooseQuickTunnel(workspace.id);
-        if (await findLiveBridge(workspace.id)) {
-          if (previous.preference === "named") await stopBridge(root);
-        }
-        const payload = { ...tunnelChoicePayload(workspace), state };
+        const state = chooseQuickTunnel();
+        // The bridge picks its tunnel at startup: stop it so the next `up`
+        // comes back with the new connection kind.
+        if (previous.preference === "named" && (await findLiveBridge())) await stopBridge();
+        const payload = { ...tunnelChoicePayload(), state };
         if (opts.json) say(JSON.stringify(payload));
         else check("Using a temporary address");
         return;
@@ -1938,14 +1918,12 @@ tunnelCmd
       }
       if (!opts.json) say(NAMED_LOGIN_PROMPT);
       const result = await provisionNamedTunnel({
-        workspaceId: workspace.id,
-        workspaceName: workspace.name,
         zone,
         hostname: opts.hostname,
       });
-      if (await findLiveBridge(workspace.id)) await stopBridge(root);
+      if (await findLiveBridge()) await stopBridge();
       const payload = {
-        ...tunnelChoicePayload(workspace),
+        ...tunnelChoicePayload(),
         ok: true,
         fallback: result.fallback,
         userMessage: result.userMessage,

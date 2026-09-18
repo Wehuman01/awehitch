@@ -5,48 +5,54 @@ import { ensureDir, getStateDir, readJsonIfExists, writeSecureJson } from "../co
 import { SERVICE_NAME, VERSION } from "../version.js";
 
 /**
- * Runtime state file: how the CLI/Skill finds a running bridge for a
- * workspace. Contains the admin token, so it is 0600 and lives in the user
- * state dir, never in the project.
+ * Runtime state file: how the CLI/Skill finds the running bridge. v0.2.6 made
+ * the bridge machine-scoped — one file (`runtime/bridge.json`), serving every
+ * workspace in the machine registry. Contains the admin token, so it is 0600
+ * and lives in the user state dir, never in the project.
  */
 export interface RuntimeState {
   service: string;
   version: string;
-  workspaceId: string;
-  workspaceRoot: string;
   pid: number;
   port: number;
   adminToken: string;
   publicUrl: string | null;
   startedAt: string;
+  /** Registered workspace roots at the time this state was persisted (informational). */
+  workspaces: string[];
 }
 
-export function runtimeFile(workspaceId: string): string {
-  return path.join(ensureDir(path.join(getStateDir(), "runtime")), `${workspaceId}.json`);
+export function runtimeFile(): string {
+  return path.join(ensureDir(path.join(getStateDir(), "runtime")), "bridge.json");
 }
 
 export function writeRuntimeState(state: RuntimeState): void {
-  writeSecureJson(runtimeFile(state.workspaceId), state);
+  writeSecureJson(runtimeFile(), state);
 }
 
-export function readRuntimeState(workspaceId: string): RuntimeState | null {
-  return readJsonIfExists<RuntimeState>(runtimeFile(workspaceId));
+export function readRuntimeState(): RuntimeState | null {
+  return readJsonIfExists<RuntimeState>(runtimeFile());
 }
 
-export function clearRuntimeState(workspaceId: string): void {
+export function clearRuntimeState(): void {
   try {
-    fs.rmSync(runtimeFile(workspaceId), { force: true });
+    fs.rmSync(runtimeFile(), { force: true });
   } catch {
     // ignore
   }
 }
 
+interface LegacyRuntimeFile extends Partial<RuntimeState> {
+  workspaceId?: string;
+  workspaceRoot?: string;
+}
+
 /**
- * Workspace ids of all persisted runtime records on this machine (ensure-*
- * lock files excluded). A record may be stale — the bridge self-deletes it
- * on graceful shutdown, so a leftover file means a crash or a kill.
+ * Runtime files from the pre-0.2.6 layout: one bridge per workspace, keyed by
+ * workspace id. Still read (never written) so a v0.2.5 bridge still running
+ * after an upgrade can be found and stopped by its own admin token.
  */
-export function listRuntimeWorkspaceIds(): string[] {
+export function readLegacyRuntimeStates(): RuntimeState[] {
   const dir = path.join(getStateDir(), "runtime");
   let names: string[];
   try {
@@ -54,20 +60,37 @@ export function listRuntimeWorkspaceIds(): string[] {
   } catch {
     return [];
   }
-  return names
-    .filter((name) => name.endsWith(".json") && !name.startsWith("ensure-"))
-    .map((name) => name.slice(0, -".json".length))
-    .sort();
+  const states: RuntimeState[] = [];
+  for (const name of names.sort()) {
+    if (!name.endsWith(".json") || name.startsWith("ensure-") || name === "bridge.json") continue;
+    const candidate = readJsonIfExists<LegacyRuntimeFile>(path.join(dir, name));
+    if (!candidate || typeof candidate.pid !== "number" || typeof candidate.port !== "number") continue;
+    states.push({
+      service: String(candidate.service ?? SERVICE_NAME),
+      version: String(candidate.version ?? ""),
+      pid: candidate.pid,
+      port: candidate.port,
+      adminToken: String(candidate.adminToken ?? ""),
+      publicUrl: candidate.publicUrl ?? null,
+      startedAt: String(candidate.startedAt ?? ""),
+      workspaces: typeof candidate.workspaceRoot === "string" ? [candidate.workspaceRoot] : [],
+    });
+  }
+  return states;
 }
 
 export interface HealthPayload {
   service: string;
   version: string;
-  workspaceId: string;
+  /** v0.2.5 and earlier: the one workspace this bridge served. */
+  workspaceId?: string;
+  /** v0.2.6+: always "machine" — the bridge serves the whole registry. */
+  scope?: "machine";
+  workspaceCount?: number;
   status: string;
 }
 
-/** Probe a port and check whether a healthy c2c bridge for the workspace answers. */
+/** Probe a port and check whether a healthy awehitch bridge answers. */
 export async function probeBridge(
   port: number,
   timeoutMs = 2000
@@ -88,8 +111,8 @@ export async function probeBridge(
 
 export type BridgeObservation =
   | { state: "healthy"; runtime: RuntimeState }
-  | { state: "stopped"; runtime: RuntimeState | null; reason: "runtime_missing" | "pid_missing" | "stale_pid" }
-  | { state: "unknown"; runtime: RuntimeState | null; reason: "probe_failed" | "pid_unknown" | "workspace_mismatch" };
+  | { state: "stopped"; runtime: RuntimeState | null; reason: "runtime_missing" | "pid_missing" | "stale_pid" | "legacy_workspace_scoped" }
+  | { state: "unknown"; runtime: RuntimeState | null; reason: "probe_failed" | "pid_unknown" };
 
 function observePid(pid: number): "present" | "missing" | "unknown" {
   if (!Number.isInteger(pid) || pid <= 0) return "unknown";
@@ -133,15 +156,14 @@ export function readProcessCmdline(pid: number): string | null {
 }
 
 /**
- * True when a command line looks like an awehitch bridge serving this
- * workspace. Heuristic by design: it guards against killing a pid the system
- * reused, not against a local adversary who can spoof cmdlines.
+ * True when a command line looks like an awehitch bridge serve process.
+ * Heuristic by design: it guards against killing a pid the system reused, not
+ * against a local adversary who can spoof cmdlines.
  */
-export function isAwehitchBridge(cmdline: string | null, workspaceRoot: string): boolean {
+export function isAwehitchBridge(cmdline: string | null): boolean {
   if (!cmdline) return false;
   const normalized = cmdline.toLowerCase();
   if (!normalized.includes("serve")) return false;
-  if (!normalized.includes(workspaceRoot.toLowerCase())) return false;
   // The entry appears as ".../awehitch" (installed) or ".../cli/index.js"
   // (repo dist/src layout).
   return normalized.includes("awehitch") || normalized.includes(`cli${path.sep}`);
@@ -151,17 +173,17 @@ export function isAwehitchBridge(cmdline: string | null, workspaceRoot: string):
  * Distinguish a dead bridge from a probe that simply failed.
  * Read-only: never starts, stops, or clears runtime.
  */
-export async function findBridgeObservation(workspaceId: string): Promise<BridgeObservation> {
-  const runtime = readRuntimeState(workspaceId);
+export async function findBridgeObservation(): Promise<BridgeObservation> {
+  const runtime = readRuntimeState();
   if (!runtime) return { state: "stopped", runtime: null, reason: "runtime_missing" };
 
   const health = await probeBridge(runtime.port);
-  if (health && health.workspaceId === workspaceId) {
+  if (health?.scope === "machine") {
     return { state: "healthy", runtime };
   }
-  if (health) {
-    return { state: "unknown", runtime, reason: "workspace_mismatch" };
-  }
+  // A probe hit from a bridge without machine scope is a pre-0.2.6 bridge
+  // still bound to one workspace: replace it, do not reuse it.
+  if (health) return { state: "stopped", runtime, reason: "legacy_workspace_scoped" };
 
   const pid = observePid(runtime.pid);
   if (pid === "missing") return { state: "stopped", runtime, reason: "pid_missing" };
@@ -172,7 +194,7 @@ export async function findBridgeObservation(workspaceId: string): Promise<Bridge
       // or a healthy-but-unverifiable bridge could be double-spawned.
       return { state: "unknown", runtime, reason: "pid_unknown" };
     }
-    if (!isAwehitchBridge(cmdline, runtime.workspaceRoot)) {
+    if (!isAwehitchBridge(cmdline)) {
       // The pid lives on as an unrelated process: the runtime file is stale.
       return { state: "stopped", runtime, reason: "stale_pid" };
     }
@@ -180,8 +202,8 @@ export async function findBridgeObservation(workspaceId: string): Promise<Bridge
   return { state: "unknown", runtime, reason: pid === "unknown" ? "pid_unknown" : "probe_failed" };
 }
 
-export async function findLiveBridge(workspaceId: string): Promise<RuntimeState | null> {
-  const observation = await findBridgeObservation(workspaceId);
+export async function findLiveBridge(): Promise<RuntimeState | null> {
+  const observation = await findBridgeObservation();
   return observation.state === "healthy" ? observation.runtime : null;
 }
 

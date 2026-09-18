@@ -1,5 +1,49 @@
 # Changelog
 
+## v0.2.6 - 2026-09-18
+
+### Features
+- One machine, one bridge: a single awehitch service now serves every
+  registered directory. Running `awehitch up -w <dir>` in a new place
+  registers that directory with the running service instead of taking the
+  old one over — the last-up-wins takeover (`scanForeignBridges`,
+  `stoppedWorkspaces`) is gone. One machine bridge ↔ one ChatGPT
+  connector, no matter how many project directories you work in.
+- Multi-root ChatGPT-facing MCP: every data tool accepts an optional
+  `workspace` selector (name or id), and a new `list_workspaces` tool
+  enumerates the served roots. With a single registered workspace it is the
+  implicit default; with several, the boot prompt asks the agent once and
+  passes that name on every call. Ambiguous or unknown selectors fail fast
+  (`AMBIGUOUS_WORKSPACE` / `UNKNOWN_WORKSPACE`).
+- Per-task ChatGPT chats: checkpoints are stored per `(session, task)` at
+  `sessions/task/<sessionKey>--<taskSlug>.json`, so concurrent same-harness
+  sessions no longer overwrite each other. `awehitch session set/get/clear
+  --task <id>` and the control plane's `send_handoff` `task_id` select the
+  right slot — one agent task ↔ one ChatGPT conversation.
+- Machine auth / pairing / tunnel / endpoint: one `auth/machine.json`, one
+  `tunnels/machine.json` (`c2c-awehitch`), one `endpoints/machine.json`. A
+  legacy per-workspace connector pointing at the same address is adopted by
+  title so the upgrade does not orphan it in ChatGPT.
+  `migrateLegacyStateToMachine()` runs on every `up`/`serve` — idempotent.
+- Legacy upgrade path: a pre-0.2.6 workspace-scoped bridge found on disk is
+  stopped via its own admin token and replaced. `awehitch status` reports
+  `legacy_workspace_scoped` and tells the user to re-run `up`.
+
+### Fixes
+- `POST /admin/workspaces` now parses a JSON body (the admin router was
+  missing `express.json`) and pushes the root into the in-memory workspace
+  list based on what was already known — not on the registry write — so live
+  registration by `ensureBridge` actually raises `workspaceCount`.
+- `stopLegacyBridges` only stops a foreign bridge whose `/health` reports a
+  workspace-scoped (pre-0.2.6) build; a healthy machine bridge is left alone.
+
+### Documentation
+- Skill template rewritten for the machine model: one service per machine
+  serving all registered directories; the boot prompt asks which workspace
+  once when `list_workspaces` shows several; checkpoint commands always
+  carry `-H {{HARNESS_ID}} --task {{TASK_ID}}`; handoff reads from this
+  task's checkpoint; the disconnect message is machine-scoped.
+
 ## v0.2.5 - 2026-09-18
 
 ### Features

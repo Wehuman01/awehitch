@@ -29,35 +29,24 @@ describe("connectorAction", () => {
 });
 
 describe("connectorNameFor", () => {
-  it("keeps a stored name for the same workspace", () => {
+  it("keeps the stored machine connector name", () => {
     expect(
       connectorNameFor({
-        workspaceName: "EchoMind",
-        workspaceId: "abc123abc123",
         previousName: "awehitch",
-        hadEndpointBefore: true,
       })
     ).toBe(DEFAULT_CONNECTOR_NAME);
   });
 
-  it("keeps the legacy title when this workspace was used before the name field existed", () => {
+  it("adopts a legacy connector title that points at the same address", () => {
     expect(
       connectorNameFor({
-        workspaceName: "EchoMind",
-        workspaceId: "abc123abc123",
-        hadEndpointBefore: true,
+        legacyMatch: { port: 8787, publicUrl: "https://old.trycloudflare.com", mcpUrl: "https://old.trycloudflare.com/mcp", connectorName: "awehitch · EchoMind", savedAt: "t" },
       })
-    ).toBe(DEFAULT_CONNECTOR_NAME);
+    ).toBe("awehitch · EchoMind");
   });
 
-  it("gives a new workspace its own connector title", () => {
-    expect(
-      connectorNameFor({
-        workspaceName: "Landing",
-        workspaceId: "def456def456",
-        hadEndpointBefore: false,
-      })
-    ).toBe("awehitch · Landing");
+  it("falls back to the default name when nothing is known", () => {
+    expect(connectorNameFor({})).toBe(DEFAULT_CONNECTOR_NAME);
   });
 });
 

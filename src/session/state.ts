@@ -99,6 +99,41 @@ export function writeSession(workspaceId: string, session: SavedSession, harness
   return session;
 }
 
+/** Safe filename fragment from a task id (agents pass arbitrary strings). */
+function taskSlug(taskId: string): string {
+  const slug = taskId.trim().replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 100);
+  return slug || "task";
+}
+
+/**
+ * Per-task session slot (v0.2.6): several sessions of the same harness can run
+ * in one workspace at the same time, so each task keeps its own checkpoint
+ * under sessions/task/. The workspace-level file stays as the fallback slot
+ * (and the `awehitch session` view) for single-session use.
+ */
+export function taskSessionFile(workspaceId: string, taskId: string, harness?: string): string {
+  return path.join(
+    getStateDir(),
+    "sessions",
+    "task",
+    `${sessionKey(workspaceId, harness)}--${taskSlug(taskId)}.json`
+  );
+}
+
+export function readTaskSession(workspaceId: string, taskId: string, harness?: string): SavedSession | null {
+  return readJsonIfExists<SavedSession>(taskSessionFile(workspaceId, taskId, harness));
+}
+
+export function writeTaskSession(
+  workspaceId: string,
+  taskId: string,
+  session: SavedSession,
+  harness?: string
+): SavedSession {
+  writeSecureJson(taskSessionFile(workspaceId, taskId, harness), session);
+  return session;
+}
+
 export function normalizeProjectUrl(url: string): string | null {
   try {
     const parsed = new URL(url.trim());

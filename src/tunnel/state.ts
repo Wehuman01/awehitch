@@ -1,10 +1,14 @@
+import fs from "node:fs";
 import path from "node:path";
 import { getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
 
 export type TunnelPreference = "unset" | "quick" | "named";
 
+/**
+ * Tunnel state is machine-scoped (v0.2.6): the one bridge owns one public
+ * connection — a stable hostname when provisioned, a temporary URL otherwise.
+ */
 export interface TunnelState {
-  workspaceId: string;
   preference: TunnelPreference;
   askedAt?: string;
   provider?: "cloudflare-quick" | "cloudflare-named";
@@ -16,22 +20,42 @@ export interface TunnelState {
   fallbackReason?: string;
 }
 
-export function tunnelStateFile(workspaceId: string): string {
-  return path.join(getStateDir(), "tunnels", `${workspaceId}.json`);
+export function tunnelStateFile(): string {
+  return path.join(getStateDir(), "tunnels", "machine.json");
 }
 
-export function readTunnelState(workspaceId: string): TunnelState {
-  return (
-    readJsonIfExists<TunnelState>(tunnelStateFile(workspaceId)) ?? {
-      workspaceId,
-      preference: "unset",
-    }
-  );
+export function readTunnelState(): TunnelState {
+  return readJsonIfExists<TunnelState>(tunnelStateFile()) ?? { preference: "unset" };
 }
 
 export function writeTunnelState(state: TunnelState): TunnelState {
-  writeSecureJson(tunnelStateFile(state.workspaceId), state);
+  writeSecureJson(tunnelStateFile(), state);
   return state;
+}
+
+/**
+ * Per-workspace tunnel files from the pre-0.2.6 layout. Read-only: the
+ * machine migration adopts a named binding from them once, then they are
+ * dead state.
+ */
+export function readLegacyTunnelStates(): { workspaceId: string; state: TunnelState }[] {
+  const dir = path.join(getStateDir(), "tunnels");
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const out: { workspaceId: string; state: TunnelState }[] = [];
+  for (const name of names.sort()) {
+    if (!name.endsWith(".json") || name === "machine.json") continue;
+    const state = readJsonIfExists<TunnelState & { workspaceId?: string }>(path.join(dir, name));
+    if (state && typeof state.workspaceId === "string") {
+      const { workspaceId, ...rest } = state;
+      out.push({ workspaceId, state: rest });
+    }
+  }
+  return out;
 }
 
 export function needsTunnelChoice(state: TunnelState): boolean {

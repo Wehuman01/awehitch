@@ -53,11 +53,11 @@ strategy. Two connections make this work:
 
 - CLI: `awehitch <command>` (all commands support `--json`).
 - Always pass `-w <workspace root>` (the project the user is working on).
-- One service per machine: `awehitch up` for a workspace switches the
-  machine to it. When its JSON reports non-empty `stoppedWorkspaces`, the
-  service for those workspaces was just stopped — tell the user that
-  immediately (name the roots), because a human may be watching that other
-  terminal stream its logs.
+- ONE service per machine, serving ALL of its registered directories:
+  `awehitch up -w <dir>` registers that directory with the running service
+  (or starts it). Running `up` in another directory never disrupts existing
+  work — it only adds the directory to the registry. `awehitch status --json`
+  shows what is registered.
 
 ## Workflow: first-time setup ("set up awehitch")
 
@@ -68,8 +68,7 @@ strategy. Two connections make this work:
    harness adapter, and creates or repairs the ChatGPT connector itself
    (it opens the control-plane browser when needed). **Run it, do not talk
    the user through the ChatGPT settings.** Handle exactly one of:
-   - `ok: true` → if `stoppedWorkspaces` is non-empty, tell the user first
-     (see Locations), then continue at step 3.
+   - `ok: true` → continue at step 3.
    - `ok: false` with `needsLogin: true` (exit code 0) → the browser is open
      and waiting. ONE action: "Log in to ChatGPT in the opened window, then
      tell me 'done'", then re-run the same command.
@@ -93,8 +92,7 @@ strategy. Two connections make this work:
 ```
 awehitch
 
-✓ Workspace identified
-✓ Workspace bridge is up
+✓ Service is up (serving N workspace(s))
 ✓ Secure connection established
 ✓ ChatGPT connected
 ✓ File-read probe passed
@@ -110,30 +108,33 @@ You are the planning and review layer of a coding session.
 The local agent owns execution.
 You own high-level reasoning, planning and review.
 
-You have access to the current local workspace through the
+You have access to the local workspaces through the
 "{{CONNECTOR_NAME}}" MCP connector.
 
 Rules:
 
 1. Do not ask the agent to paste files that are available through MCP.
 2. Inspect only the files needed for the task.
-3. Use MCP to inspect current code, git status and diff.
-4. Produce concise executable plans.
-5. The agent will execute your plan using its own harness.
-6. After the agent reports EXECUTED, independently inspect the diff.
+3. If list_workspaces shows several workspaces, ask the agent which one
+   this task is for (once), then pass that name as the `workspace`
+   parameter on every tool call.
+4. Use MCP to inspect current code, git status and diff.
+5. Produce concise executable plans.
+6. The agent will execute your plan using its own harness.
+7. After the agent reports EXECUTED, independently inspect the diff.
    If execution_output lists a readable item for this iteration, list
    then read it. If status is restricted, ignore the body and review
    from git. When the EXECUTED message carries a PROJECT_DIR other than
    `.`, pass it as `path` to git_status/git_diff — the workspace root
    itself may not be a git repo; the project subdirectory is.
-7. Do not assume an implementation succeeded just because the agent says so.
-8. Continue until the implementation satisfies the success criteria.
-9. Avoid unnecessary rewrites.
-10. Return C2C structured control messages.
-11. Be substantive. PLAN and review replies must carry rationale, per-file
+8. Do not assume an implementation succeeded just because the agent says so.
+9. Continue until the implementation satisfies the success criteria.
+10. Avoid unnecessary rewrites.
+11. Return C2C structured control messages.
+12. Be substantive. PLAN and review replies must carry rationale, per-file
     natural-language suggestions, risks worth checking, and test advice.
     Never reply with a bare one-liner. No 40-step epics either.
-12. If you receive a HANDOFF message, this conversation continues an
+13. If you receive a HANDOFF message, this conversation continues an
     existing task. Trust the handoff brief, re-read code through MCP, and
     resume from NEXT_EXPECTED_STEP.
 ```
@@ -148,8 +149,7 @@ plan/execute loop, no session records. The golden rules still apply.
    pairing survive restarts. `ok: false` with `needsLogin: true` → ONE action:
    "Log in to ChatGPT in the opened window, then tell me 'done'", then re-run.
    Any other failure → `awehitch doctor -w <workspace> --json` and follow its
-   repair guidance. Non-empty `stoppedWorkspaces` in the JSON → tell the
-   user first (see Locations) before proceeding.
+   repair guidance.
 2. `awehitch_open_chat` with `task_id=quick-<short-slug>`. On a new
    conversation send the boot prompt (above) first.
 3. Send the user's question via `awehitch_send_state` as a short note telling
@@ -171,13 +171,16 @@ Quick question — answer in plain language; no [C2C] message needed.
 Protocol states exchanged with ChatGPT:
 `INIT → PLAN → EXECUTING → EXECUTED → REVIEW → (PLAN | DONE | BLOCKED)`.
 All control messages start with `[C2C]`, keep them under 1 KB.
-Store progress in the session checkpoint via `awehitch session set` (always with `-H {{HARNESS_ID}}`: each harness keeps its own checkpoint and ChatGPT browser, so several agents can run C2C in parallel).
+Store progress in the session checkpoint via `awehitch session set` (always
+with `-H {{HARNESS_ID}} --task {{TASK_ID}}`: every task keeps its own
+checkpoint, so several agents — even in the same harness and workspace — can
+run C2C in parallel without overwriting each other).
 
 0. `awehitch doctor -w <workspace> --json` (auto-repairs). Doctor gate: if
    local is not green, do not open ChatGPT and do not send INIT. Follow its
    `chatgptRepair` / `namedRepair` guidance first.
-1. `awehitch session -w <workspace> -H {{HARNESS_ID}} --json` → resume from `session.checkpoint`
-   before any INIT (details in `awehitch session get -H {{HARNESS_ID}} --json`). Never re-pair or
+1. `awehitch session get -w <workspace> -H {{HARNESS_ID}} --task {{TASK_ID}} --json`
+   → resume from `session.checkpoint` before any INIT. Never re-pair or
    recreate the connector just to resume.
 2. `awehitch_open_chat` with `task_id={{TASK_ID}}`. A NEW task automatically
    gets a fresh chat; a task with an existing binding reopens ITS chat —
@@ -185,15 +188,15 @@ Store progress in the session checkpoint via `awehitch session set` (always with
    conversation send the boot prompt, then:
 
 ```
-Use the "{{CONNECTOR_NAME}}" connector: call workspace_info and read hello-style top-level file. Reply with the workspace name.
+Use the "{{CONNECTOR_NAME}}" connector: call workspace_info (pass workspace=<name> if list_workspaces shows several) and read a hello-style top-level file. Reply with the workspace name.
 ```
 
    Confirm the reply names this workspace.
    If the task's saved chat is gone (404 / lost) or the user asks for a new
    chat: `awehitch_open_chat` with `task_id={{TASK_ID}}` and `fresh=true`,
    send the boot prompt + workspace check, then `awehitch_send_handoff`
-   (composes the HANDOFF brief from the checkpoint). Resume the protocol
-   from the checkpoint state — do not restart the task.
+   (composes the HANDOFF brief from this task's checkpoint). Resume the
+   protocol from the checkpoint state — do not restart the task.
 3. Send INIT via `awehitch_send_state`:
 
 ```
@@ -213,9 +216,9 @@ Produce a C2C PLAN message.
    Then `awehitch session set -w <ws> -H {{HARNESS_ID}} --task {{TASK_ID}} --iteration 0 --state INIT --protocol-state INIT --waiting-for GPT_PLAN --goal "<short goal>" --next-step "wait for PLAN"`.
 4. `awehitch_wait_reply` (expect_state=PLAN). Read GOAL/ACTIONS/TESTS/
    SUCCESS_CRITERIA. If the PLAN is a bare one-liner, ask once for rationale
-   and per-file suggestions. Then `awehitch session set -H {{HARNESS_ID}} --protocol-state PLAN_RECEIVED --waiting-for none --next-step "execute PLAN"`.
+   and per-file suggestions. Then `awehitch session set -H {{HARNESS_ID}} --task {{TASK_ID}} --protocol-state PLAN_RECEIVED --waiting-for none --next-step "execute PLAN"`.
 5. Execute the plan yourself with your own tools. Before starting:
-   `awehitch session set -H {{HARNESS_ID}} --protocol-state EXECUTING --waiting-for none --next-step "finish PLAN then record"`.
+   `awehitch session set -H {{HARNESS_ID}} --task {{TASK_ID}} --protocol-state EXECUTING --waiting-for none --next-step "finish PLAN then record"`.
 6. Record the execution (metadata always; command output when a test/build/
    lint ran):
 
@@ -252,21 +255,21 @@ If status is restricted, ignore it and review from git_diff.
    workspace root itself is not a repo (home-rooted workspaces), `.`
    otherwise.
 
-   Then `awehitch session set -H {{HARNESS_ID}} --protocol-state EXECUTED_SENT --waiting-for GPT_REVIEW --next-step "wait for PLAN or DONE"`.
+   Then `awehitch session set -H {{HARNESS_ID}} --task {{TASK_ID}} --protocol-state EXECUTED_SENT --waiting-for GPT_REVIEW --next-step "wait for PLAN or DONE"`.
 8. `awehitch_wait_reply`. ChatGPT reviews via MCP and replies DONE / PLAN
    (next iteration) / BLOCKED. Loop; respect maxIterations (`.c2c.json`,
    default 12) — at the limit ask the user whether to continue.
 9. On DONE: summarize in plain language and
-   `awehitch session set -H {{HARNESS_ID}} --state DONE --clear-checkpoint`.
+   `awehitch session set -H {{HARNESS_ID}} --task {{TASK_ID}} --state DONE --clear-checkpoint`.
 10. On BLOCKED: surface the reason or the single decision the user must make.
 
 ## Workflow: reconnect after address reclaim
 
 When doctor reports `chatgptSetup.needed` or `chatgptRepair.needed`: tell the
 user its `userMessage`, then run `awehitch up -w <workspace> --json --daemon`
-(or `chatgptSetup.command`). It deletes THIS workspace's connector and
-recreates it with the new address — it never clicks Reconnect, and never
-touches another workspace's connector. Then doctor again.
+(or `chatgptSetup.command`). It deletes THIS machine's connector and
+recreates it with the new address — it never clicks Reconnect. Then doctor
+again.
 
 If that command fails, fall back to the manual path in the first-time setup
 workflow: follow `manualFallback.steps` to delete and recreate
@@ -275,7 +278,7 @@ address is dead and that page hangs on "This site cannot be reached".
 
 ## Workflow: disconnect ("disconnect ChatGPT")
 
-1. `awehitch off -w <workspace>` (revokes all tokens and stops the service).
+1. `awehitch off` (revokes all tokens and stops the machine's service).
 2. Optionally remove the connector at chatgpt.com/plugins (the command output
    includes that URL).
-3. Tell the user: "Disconnected ChatGPT from this workspace."
+3. Tell the user: "Disconnected ChatGPT from this machine."

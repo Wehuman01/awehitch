@@ -3,13 +3,20 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { findBinary } from "./detect.js";
-import { suggestedNamedHostname } from "./hostname.js";
 import { normalizeNamedTunnelHostname } from "./cloudflared-named.js";
 import {
   NAMED_FALLBACK_MESSAGE,
   writeTunnelState,
   type TunnelState,
 } from "./state.js";
+
+/** One machine, one named tunnel: a stable name the user can recognize in Cloudflare. */
+export const MACHINE_TUNNEL_NAME = "c2c-awehitch";
+
+export function suggestedMachineHostname(zone: string): string {
+  const zoneHost = normalizeNamedTunnelHostname(zone);
+  return `c2c.${zoneHost}`;
+}
 
 const TUNNEL_ID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const LOGIN_TIMEOUT_MS = 5 * 60_000;
@@ -197,8 +204,6 @@ export interface ProvisionNamedResult {
 }
 
 export async function provisionNamedTunnel(opts: {
-  workspaceId: string;
-  workspaceName: string;
   zone: string;
   hostname?: string;
   account?: CloudflaredAccount;
@@ -208,18 +213,17 @@ export async function provisionNamedTunnel(opts: {
   try {
     hostname = opts.hostname
       ? normalizeNamedTunnelHostname(opts.hostname)
-      : suggestedNamedHostname(opts.zone, opts.workspaceName, opts.workspaceId);
+      : suggestedMachineHostname(opts.zone);
   } catch (error) {
-    return fallbackState(opts.workspaceId, "invalid_hostname", (error as Error).message);
+    return fallbackState("invalid_hostname", (error as Error).message);
   }
 
-  const tunnelName = `c2c-${opts.workspaceId}`;
+  const tunnelName = MACHINE_TUNNEL_NAME;
   try {
     if (!account.hasCert()) await account.login();
     const tunnel = await account.createTunnel(tunnelName);
     await account.routeDns(tunnel.name, hostname);
     const state = writeTunnelState({
-      workspaceId: opts.workspaceId,
       preference: "named",
       askedAt: new Date().toISOString(),
       provider: "cloudflare-named",
@@ -231,13 +235,12 @@ export async function provisionNamedTunnel(opts: {
     });
     return { ok: true, state, fallback: false };
   } catch (error) {
-    return fallbackState(opts.workspaceId, "provision_failed", (error as Error).message);
+    return fallbackState("provision_failed", (error as Error).message);
   }
 }
 
-export function chooseQuickTunnel(workspaceId: string, fallbackReason?: string): TunnelState {
+export function chooseQuickTunnel(fallbackReason?: string): TunnelState {
   return writeTunnelState({
-    workspaceId,
     preference: "quick",
     askedAt: new Date().toISOString(),
     provider: "cloudflare-quick",
@@ -245,8 +248,8 @@ export function chooseQuickTunnel(workspaceId: string, fallbackReason?: string):
   });
 }
 
-function fallbackState(workspaceId: string, reason: string, error: string): ProvisionNamedResult {
-  const state = chooseQuickTunnel(workspaceId, reason);
+function fallbackState(reason: string, error: string): ProvisionNamedResult {
+  const state = chooseQuickTunnel(reason);
   return {
     ok: true,
     state,

@@ -13,14 +13,16 @@ describe("port collision handling", () => {
     write(rootB, "b.txt", "b");
     const preferred = 47000 + Math.floor(Math.random() * 1000);
 
+    // A stale process holding the preferred port must not stop the machine
+    // bridge from starting: startBridge falls back to an ephemeral port.
     const bridgeA = await startBridge({
-      workspaceRoot: rootA,
+      workspaceRoots: [rootA],
       port: preferred,
       persistRuntime: false,
       authStoreFile: path.join(makeTmpDir("auth"), "a.json"),
     });
     const bridgeB = await startBridge({
-      workspaceRoot: rootB,
+      workspaceRoots: [rootB],
       port: preferred,
       persistRuntime: false,
       authStoreFile: path.join(makeTmpDir("auth"), "b.json"),
@@ -30,12 +32,13 @@ describe("port collision handling", () => {
     expect(bridgeB.port).not.toBe(preferred);
     expect(bridgeB.port).toBeGreaterThan(0);
 
-    // health identifies each bridge's workspace, so callers can detect reuse
+    // /health answers with machine scope and the served workspace count
     const healthA = await probeBridge(bridgeA.port);
     const healthB = await probeBridge(bridgeB.port);
-    expect(healthA?.workspaceId).toBe(bridgeA.workspace.id);
-    expect(healthB?.workspaceId).toBe(bridgeB.workspace.id);
-    expect(healthA?.workspaceId).not.toBe(healthB?.workspaceId);
+    expect(healthA?.scope).toBe("machine");
+    expect(healthB?.scope).toBe("machine");
+    expect(healthA?.workspaceCount).toBe(1);
+    expect(healthB?.workspaceCount).toBe(1);
 
     await bridgeA.close();
     await bridgeB.close();
@@ -47,7 +50,7 @@ describe("port collision handling", () => {
     const root = makeTmpDir("port-c");
     write(root, "c.txt", "c");
     await expect(
-      startBridge({ workspaceRoot: root, host: "0.0.0.0", persistRuntime: false })
+      startBridge({ workspaceRoots: [root], host: "0.0.0.0", persistRuntime: false })
     ).rejects.toThrow(/loopback/);
     cleanup(root);
   });

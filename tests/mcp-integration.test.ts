@@ -13,6 +13,7 @@ let bridge: Bridge;
 let client: Client;
 let accessToken: string;
 let stateDir: string;
+let workspaceId: string;
 
 function textOf(result: { content?: unknown }): string {
   const content = result.content as { type: string; text: string }[];
@@ -51,11 +52,12 @@ beforeAll(async () => {
   write(root, "src/index.ts", "export const answer = 43; // changed\n");
 
   bridge = await startBridge({
-    workspaceRoot: root,
+    workspaceRoots: [root],
     port: 0,
     persistRuntime: false,
     authStoreFile: path.join(makeTmpDir("auth"), "store.json"),
   });
+  workspaceId = bridge.workspaces[0].id;
   const tokens = bridge.authStore.issueTokens({
     clientId: "it-client",
     scopes: ["workspace.read", "workspace.search", "git.read", "execution.read"],
@@ -76,7 +78,7 @@ afterAll(async () => {
 });
 
 describe("MCP tools over Streamable HTTP", () => {
-  it("lists all nine read-only tools", async () => {
+  it("lists the read-only tools plus list_workspaces", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((tool) => tool.name).sort();
     expect(names).toEqual([
@@ -85,6 +87,7 @@ describe("MCP tools over Streamable HTTP", () => {
       "git_diff",
       "git_status",
       "list_directory",
+      "list_workspaces",
       "read_file",
       "search_workspace",
       "test_status",
@@ -95,6 +98,7 @@ describe("MCP tools over Streamable HTTP", () => {
       expect(names).not.toContain(forbidden);
     }
 
+    expectToolOutputSchema(tools, "list_workspaces", ["workspaces"]);
     expectToolOutputSchema(tools, "workspace_info", ["workspaceId", "workspaceName", "projectType", "git"]);
     expectToolOutputSchema(tools, "list_directory", ["path", "entries", "total", "hasMore"]);
     expectToolOutputSchema(tools, "read_file", ["path", "content", "startLine", "endLine", "nextStartLine"]);
@@ -118,7 +122,7 @@ describe("MCP tools over Streamable HTTP", () => {
   it("workspace_info returns identity and project detection", async () => {
     const result = await client.callTool({ name: "workspace_info", arguments: {} });
     const info = structuredJsonOf<{ workspaceId: string; projectType: string; frameworks: string[]; git: { isRepo: boolean; branch: string } }>(result);
-    expect(info.workspaceId).toBe(bridge.workspace.id);
+    expect(info.workspaceId).toBe(workspaceId);
     expect(info.projectType).toBe("node");
     expect(info.frameworks).toContain("React");
     expect(info.git.isRepo).toBe(true);
@@ -194,7 +198,7 @@ describe("MCP tools over Streamable HTTP", () => {
   });
 
   it("execution_summary and test_status read harness records", async () => {
-    appendExecutionRecord(bridge.workspace.id, {
+    appendExecutionRecord(workspaceId, {
       taskId: "c2c_test1",
       iteration: 1,
       changedFiles: ["src/index.ts"],
@@ -217,7 +221,7 @@ describe("MCP tools over Streamable HTTP", () => {
   });
 
   it("skips invalid persisted records when reporting execution status", async () => {
-    appendExecutionRecord(bridge.workspace.id, {
+    appendExecutionRecord(workspaceId, {
       taskId: "c2c_valid_before_invalid",
       iteration: 2,
       changedFiles: 0,
@@ -226,7 +230,7 @@ describe("MCP tools over Streamable HTTP", () => {
       timestamp: new Date().toISOString(),
     });
     fs.appendFileSync(
-      path.join(stateDir, "executions", `${bridge.workspace.id}.jsonl`),
+      path.join(stateDir, "executions", `${workspaceId}.jsonl`),
       JSON.stringify({
         taskId: "c2c_invalid",
         iteration: null,
@@ -250,12 +254,12 @@ describe("MCP tools over Streamable HTTP", () => {
   });
 
   it("execution_output lists readable items and refuses restricted bodies", async () => {
-    const readable = saveExecutionOutput(bridge.workspace.id, {
+    const readable = saveExecutionOutput(workspaceId, {
       command: "pnpm test",
       raw: "FAIL src/a.test.ts\nAssertionError: expected true",
       exitCode: 1,
     });
-    const hidden = saveExecutionOutput(bridge.workspace.id, {
+    const hidden = saveExecutionOutput(workspaceId, {
       command: "print-key",
       raw: "-----BEGIN RSA PRIVATE KEY-----\nsecret\n-----END RSA PRIVATE KEY-----",
       exitCode: 0,
@@ -355,6 +359,24 @@ describe("MCP tools over Streamable HTTP", () => {
     git(root, "reset", "--hard", "HEAD");
   });
 
+  it("list_workspaces shows the served roots; unknown selectors are refused", async () => {
+    const listed = structuredJsonOf<{ workspaces: { workspaceId: string; workspaceName: string }[] }>(
+      await client.callTool({ name: "list_workspaces", arguments: {} })
+    );
+    expect(listed.workspaces).toHaveLength(1);
+    expect(listed.workspaces[0].workspaceId).toBe(workspaceId);
+
+    // Selecting by id (single registered workspace) works…
+    const byId = structuredJsonOf<{ workspaceId: string }>(
+      await client.callTool({ name: "workspace_info", arguments: { workspace: workspaceId } })
+    );
+    expect(byId.workspaceId).toBe(workspaceId);
+    // …and an unknown name fails with a structured error.
+    const unknown = await client.callTool({ name: "workspace_info", arguments: { workspace: "no-such-workspace" } });
+    expect(unknown.isError).toBe(true);
+    expect(textOf(unknown)).toContain("UNKNOWN_WORKSPACE");
+  });
+
   it("git_diff over MCP with path='src' blocks cross-boundary rename leaks from root secrets", async () => {
     write(root, ".npmrc", "//registry.npmjs.org/:_authToken=root-mcp-scoped-secret\n");
     git(root, "add", "-f", ".npmrc");
@@ -376,4 +398,48 @@ describe("MCP tools over Streamable HTTP", () => {
 
     git(root, "reset", "--hard", "HEAD");
   });
+
+  it("registers a second workspace live and then demands a selector", async () => {
+    const root2 = makeTmpDir("mcp-ws-2");
+    write(root2, "hello.txt", "second workspace\n");
+    const register = await fetch(`${bridge.localBaseUrl()}/admin/workspaces`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${bridge.adminToken}`,
+        "content-type": "application/json",
+        // loopback only; the headers below must not look proxied
+      },
+      body: JSON.stringify({ root: root2 }),
+    });
+    expect(register.status).toBe(200);
+    const registered = (await register.json()) as { added: boolean; workspaceCount: number };
+    expect(registered.added).toBe(true);
+    expect(registered.workspaceCount).toBe(2);
+
+    const listed = structuredJsonOf<{ workspaces: string[] }>(
+      await client.callTool({ name: "list_workspaces", arguments: {} })
+    );
+    expect(listed.workspaces).toHaveLength(2);
+
+    // Two workspaces and no selector: the call must fail loudly, not guess.
+    const ambiguous = await client.callTool({ name: "workspace_info", arguments: {} });
+    expect(ambiguous.isError).toBe(true);
+    expect(textOf(ambiguous)).toContain("AMBIGUOUS_WORKSPACE");
+
+    // With a selector (the new root's directory name) it resolves again.
+    const name2 = path.basename(root2);
+    const byName = structuredJsonOf<{ workspaceName: string }>(
+      await client.callTool({ name: "workspace_info", arguments: { workspace: name2 } })
+    );
+    expect(byName.workspaceName).toBe(name2);
+
+    // Old root keeps working through its own selector and stays the
+    // execution-record owner it always was.
+    const byId = structuredJsonOf<{ workspaceId: string }>(
+      await client.callTool({ name: "workspace_info", arguments: { workspace: workspaceId } })
+    );
+    expect(byId.workspaceId).toBe(workspaceId);
+    cleanup(root2);
+  });
+
 });

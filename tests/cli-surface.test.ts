@@ -83,15 +83,14 @@ describe("revokeConnectorAccess", () => {
     const previousStateDir = process.env.AWEHITCH_STATE_DIR;
     process.env.AWEHITCH_STATE_DIR = stateDir;
     try {
-      const workspaceId = "cli_surface_ws";
-      const store = new AuthStore(workspaceId);
+      const store = new AuthStore();
       const client = store.registerClient({ redirectUris: ["https://chatgpt.com"] });
       store.issueTokens({ clientId: client.clientId, scopes: ["workspace.read", "offline_access"] });
       expect(store.tokenCount()).toBe(2);
 
-      await revokeConnectorAccess(workspaceId);
+      await revokeConnectorAccess();
 
-      expect(new AuthStore(workspaceId).tokenCount()).toBe(0);
+      expect(new AuthStore().tokenCount()).toBe(0);
     } finally {
       if (previousStateDir === undefined) delete process.env.AWEHITCH_STATE_DIR;
       else process.env.AWEHITCH_STATE_DIR = previousStateDir;
@@ -109,20 +108,18 @@ describe("endpoint change detection", () => {
     const previousStateDir = process.env.AWEHITCH_STATE_DIR;
     process.env.AWEHITCH_STATE_DIR = stateDir;
     try {
-      const workspaceId = "endpoint_ws";
       writeLastEndpoint({
-        workspaceId,
         port: 4100,
         publicUrl: "https://old.example.com",
         mcpUrl: "https://old.example.com/mcp",
       });
-      const snapshot = readLastEndpoint(workspaceId);
+      const snapshot = readLastEndpoint();
       const rotated = "https://new.example.com/mcp";
-      writeLastEndpoint({ workspaceId, port: 4100, publicUrl: "https://new.example.com", mcpUrl: rotated });
+      writeLastEndpoint({ port: 4100, publicUrl: "https://new.example.com", mcpUrl: rotated });
 
       expect(connectorAction(snapshot?.mcpUrl, rotated)).toBe("update");
       // The trap this test pins down: reading after the persist loses the change.
-      expect(connectorAction(readLastEndpoint(workspaceId)?.mcpUrl, rotated)).toBe("none");
+      expect(connectorAction(readLastEndpoint()?.mcpUrl, rotated)).toBe("none");
     } finally {
       if (previousStateDir === undefined) delete process.env.AWEHITCH_STATE_DIR;
       else process.env.AWEHITCH_STATE_DIR = previousStateDir;
@@ -198,7 +195,7 @@ describe("command surface", () => {
   });
 
   it("rejects negative -n for logs", () => {
-    const result = runCli(["logs", "--workspace", projectRoot, "-n", "-5"]);
+    const result = runCli(["logs", "-n", "-5"]);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("lines");
   });
@@ -212,9 +209,9 @@ describe("command surface", () => {
   it("doctor --no-fix does not mutate the endpoint file", () => {
     const stateDir = isolateStateDir();
     try {
-      const endpointFile = path.join(stateDir, "endpoints", "doc-ws.json");
+      const endpointFile = path.join(stateDir, "endpoints", "machine.json");
       fs.mkdirSync(path.dirname(endpointFile), { recursive: true });
-      fs.writeFileSync(endpointFile, JSON.stringify({ workspaceId: "doc-ws", port: 1, publicUrl: null, mcpUrl: null, savedAt: new Date().toISOString() }));
+      fs.writeFileSync(endpointFile, JSON.stringify({ port: 1, publicUrl: null, mcpUrl: null, savedAt: new Date().toISOString() }));
       const before = fs.readFileSync(endpointFile, "utf8");
       const result = runCli(["doctor", "--workspace", projectRoot, "--no-fix", "--json"]);
       expect(result.status).toBe(0);
@@ -233,55 +230,40 @@ describe("status (machine-wide)", () => {
     try {
       const result = runCli(["status", "--json"]);
       expect(result.status).toBe(0);
-      expect(JSON.parse(result.stdout)).toEqual({ ok: true, onePerMachine: true, services: [] });
+      const payload = JSON.parse(result.stdout);
+      expect(payload).toMatchObject({ ok: true, scope: "machine", registryRoots: [], legacyRecords: [] });
+      expect(payload.bridge.state).toBe("stopped");
       const human = runCli(["status"]);
-      expect(human.stdout).toContain("No awehitch service on this machine");
+      expect(human.stdout).toContain("Bridge is not running");
+      expect(human.stdout).toContain("Start it: awehitch up -w <workspace>");
     } finally {
       cleanup(stateDir);
       delete process.env.AWEHITCH_STATE_DIR;
     }
   });
 
-  it("marks a live bridge as running and a leftover record as stopped, running first", async () => {
+  it("shows the running machine bridge and its registered workspaces", async () => {
     const stateDir = isolateStateDir();
     const liveRoot = makeTmpDir("status-live");
     write(liveRoot, "a.txt", "a");
-    const deadRoot = makeTmpDir("status-dead");
-    write(deadRoot, "b.txt", "b");
-    const deadWorkspace = new Workspace(deadRoot);
     // A real serve child (not an in-test listener): the CLI under test runs
     // as a sibling process, and sandbox profiles may forbid a child from
     // connecting back to its own parent's listener.
     const { runtime } = await ensureBridge(liveRoot);
     try {
-      // Dead record: a pid that cannot exist. The live record was written by
-      // the serve child itself; healthy is decided by the /health probe.
-      writeRuntimeState({
-        service: SERVICE_NAME, version: VERSION,
-        workspaceId: deadWorkspace.id, workspaceRoot: deadWorkspace.root,
-        pid: 999_999_999, port: 1, adminToken: "t", publicUrl: null,
-        startedAt: new Date().toISOString(),
-      });
-
       const result = runCli(["status", "--json"]);
       expect(result.status).toBe(0);
       const payload = JSON.parse(result.stdout);
-      expect(payload.services).toHaveLength(2);
-      const live = payload.services.find((s: { workspaceId: string }) => s.workspaceId === runtime.workspaceId);
-      const stale = payload.services.find((s: { workspaceId: string }) => s.workspaceId === deadWorkspace.id);
-      expect(live).toMatchObject({ state: "running", port: runtime.port, workspaceRoot: liveRoot });
-      expect(stale).toMatchObject({ state: "stopped", reason: "pid_missing" });
-      expect(payload.services[0].workspaceId).toBe(runtime.workspaceId);
+      expect(payload.bridge).toMatchObject({ state: "running", port: runtime.port });
+      expect(payload.registryRoots).toEqual([liveRoot]);
 
       const human = runCli(["status"]);
       expect(human.status).toBe(0);
-      expect(human.stdout).toContain(`${liveRoot} — running`);
-      expect(human.stdout).toContain("not running");
-      expect(human.stdout).toContain("leftover record");
+      expect(human.stdout).toContain(`running (pid ${runtime.pid}, port ${runtime.port})`);
+      expect(human.stdout).toContain(liveRoot);
     } finally {
-      await stopBridge(liveRoot);
+      await stopBridge();
       cleanup(liveRoot);
-      cleanup(deadRoot);
       cleanup(stateDir);
       delete process.env.AWEHITCH_STATE_DIR;
     }

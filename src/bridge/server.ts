@@ -1,7 +1,8 @@
 import express, { type Request, type Response, type NextFunction } from "express";
 import type { Server } from "node:http";
 import { randomBytes } from "node:crypto";
-import { Workspace } from "../workspace/manager.js";
+import { Workspace, WorkspaceError } from "../workspace/manager.js";
+import { addWorkspaceRoot, loadRegisteredWorkspaces } from "../workspace/registry.js";
 import { AuthStore } from "../auth/store.js";
 import { createOAuthRouter } from "../auth/oauth.js";
 import { bearerAuth } from "../auth/middleware.js";
@@ -17,8 +18,9 @@ import { DEFAULT_HOST, DEFAULT_PORT } from "../config/paths.js";
 import { SERVICE_NAME, VERSION } from "../version.js";
 import { writeRuntimeState, clearRuntimeState, type RuntimeState } from "./runtime.js";
 
-function tunnelForWorkspace(workspaceId: string, logger: Logger): TunnelProvider {
-  const binding = namedTunnelBinding(readTunnelState(workspaceId));
+/** The one bridge owns one public connection: stable hostname when provisioned, quick tunnel otherwise. */
+function tunnelForMachine(logger: Logger): TunnelProvider {
+  const binding = namedTunnelBinding(readTunnelState());
   if (binding) {
     return new CloudflaredNamedTunnel({
       tunnelName: binding.tunnelName,
@@ -30,7 +32,8 @@ function tunnelForWorkspace(workspaceId: string, logger: Logger): TunnelProvider
 }
 
 export interface BridgeOptions {
-  workspaceRoot: string;
+  /** Seed roots for the served workspaces (tests). Default: the machine registry. */
+  workspaceRoots?: string[];
   port?: number;
   host?: string;
   logger?: Logger;
@@ -43,7 +46,8 @@ export interface BridgeOptions {
 }
 
 export interface Bridge {
-  workspace: Workspace;
+  /** Live snapshot of the served workspaces; mutates via POST /admin/workspaces. */
+  workspaces: Workspace[];
   port: number;
   host: string;
   adminToken: string;
@@ -81,16 +85,28 @@ function listen(app: express.Express, host: string, preferredPort: number): Prom
 
 export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
   const logger = opts.logger ?? nullLogger;
-  const workspace = new Workspace(opts.workspaceRoot);
   const host = opts.host ?? DEFAULT_HOST;
   if (host !== "127.0.0.1" && host !== "::1" && host !== "localhost") {
     throw new Error("The bridge only binds to loopback addresses. Public exposure goes through the tunnel.");
   }
 
-  const authStore = new AuthStore(workspace.id, { file: opts.authStoreFile });
-  const pairing = new PairingManager(workspace.id, { ttlMs: opts.pairingTtlMs });
-  const tunnel = opts.tunnelProvider ?? tunnelForWorkspace(workspace.id, logger);
+  // The served set starts from the machine registry (or explicit seeds) and
+  // grows at runtime via POST /admin/workspaces — a second `up` elsewhere
+  // registers its directory without touching this process.
+  const workspaces: Workspace[] = opts.workspaceRoots
+    ? opts.workspaceRoots.map((root) => new Workspace(root)).sort((a, b) => a.name.localeCompare(b.name))
+    : loadRegisteredWorkspaces();
+  if (workspaces.length === 0) {
+    logger.warn("No workspaces registered yet; ChatGPT tools will say so until `awehitch up -w <dir>` runs.");
+  }
+
+  // Machine-scoped identity (v0.2.6): one store, one pairing flow, one tunnel.
+  const authStore = new AuthStore("machine", { file: opts.authStoreFile });
+  const pairing = new PairingManager("machine", { ttlMs: opts.pairingTtlMs });
+  const tunnel = opts.tunnelProvider ?? tunnelForMachine(logger);
   const adminToken = `awehitch_admin_${randomBytes(24).toString("base64url")}`;
+  const pairingLabel =
+    workspaces.length === 1 ? workspaces[0].name : "this machine's registered workspaces";
 
   let publicBaseUrl: string | null = null;
 
@@ -110,7 +126,13 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
   // ---- Health (public but minimal) ---------------------------------------
 
   app.get("/health", (_req, res) => {
-    res.json({ service: SERVICE_NAME, version: VERSION, workspaceId: workspace.id, status: "ok" });
+    res.json({
+      service: SERVICE_NAME,
+      version: VERSION,
+      scope: "machine",
+      workspaceCount: workspaces.length,
+      status: "ok",
+    });
   });
 
   // ---- OAuth + discovery ---------------------------------------------------
@@ -119,7 +141,7 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
     createOAuthRouter({
       store: authStore,
       pairing,
-      workspaceName: workspace.name,
+      workspaceName: pairingLabel,
       getBaseUrl,
       logger,
     })
@@ -127,17 +149,22 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
 
   // ---- MCP endpoint (bearer-protected) --------------------------------------
 
-  const mcpHandler = createMcpHttpHandler(() => createMcpServer({ workspace, logger }), logger);
+  // A fresh server per request picks up the live workspace list and the
+  // selector hints that depend on it.
+  const mcpHandler = createMcpHttpHandler(() => createMcpServer({ workspaces, logger }), logger);
   app.all(
     "/mcp",
     express.json({ limit: "8mb" }),
-    bearerAuth({ store: authStore, workspaceId: workspace.id, getBaseUrl, logger }),
+    bearerAuth({ store: authStore, getBaseUrl, logger }),
     (req: Request, res: Response) => {
       void mcpHandler(req, res);
     }
   );
 
   // ---- Admin API (loopback + admin token only; used by the CLI/Skill) --------
+
+  // Admin routes may carry JSON bodies (workspace registration).
+  app.use("/admin", express.json({ limit: "1mb" }));
 
   const adminGuard = (req: Request, res: Response, next: NextFunction): void => {
     // Defense in depth: reject anything that arrived through a proxy/tunnel.
@@ -163,9 +190,12 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
     res.json({
       service: SERVICE_NAME,
       version: VERSION,
-      workspaceId: workspace.id,
-      workspaceName: workspace.name,
-      workspaceRoot: workspace.root,
+      scope: "machine",
+      workspaces: workspaces.map((workspace) => ({
+        workspaceId: workspace.id,
+        workspaceName: workspace.name,
+        workspaceRoot: workspace.root,
+      })),
       port,
       publicUrl: publicBaseUrl,
       tunnel: tunnel.status(),
@@ -174,6 +204,34 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
       pid: process.pid,
       startedAt,
     });
+  });
+
+  // Register one more directory with the running bridge (used by a second
+  // `up` while this instance serves). Persists to the machine registry and
+  // makes sure the live tool set sees the root — even when the caller
+  // persisted it already and `added` comes back false.
+  app.post("/admin/workspaces", adminGuard, (req, res) => {
+    const root = typeof req.body?.root === "string" ? req.body.root.trim() : "";
+    if (!root) {
+      res.status(400).json({ error: "invalid_root", message: "Request body must be {\"root\": \"<directory>\"}" });
+      return;
+    }
+    try {
+      const workspace = new Workspace(root);
+      const known = workspaces.some((candidate) => candidate.root.toLowerCase() === workspace.root.toLowerCase());
+      addWorkspaceRoot(root); // idempotent registry write
+      if (!known) {
+        workspaces.push(workspace);
+        workspaces.sort((a, b) => a.name.localeCompare(b.name));
+        logger.info(`Registered workspace ${workspace.name} (${workspace.id})`);
+      }
+      persistRuntime();
+      res.json({ added: !known, workspaceCount: workspaces.length });
+    } catch (error) {
+      const status = error instanceof WorkspaceError ? 400 : 500;
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(status).json({ error: "invalid_root", message });
+    }
   });
 
   app.post("/admin/tunnel/start", adminGuard, (_req, res) => {
@@ -209,8 +267,8 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
     res.json({ shuttingDown: true });
     setTimeout(() => {
       // Spell out the trigger: a foreground watcher seeing "Bridge stopped"
-      // alone cannot tell an intentional takeover from a crash.
-      void shutdown("admin shutdown requested — `awehitch stop/off/restart`, or another workspace's `up` switching the machine to it")
+      // alone cannot tell an intentional stop from a crash.
+      void shutdown("admin shutdown requested — `awehitch stop/off/restart`")
         .then(() => process.exit(0));
     }, 100);
   });
@@ -237,20 +295,20 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
 
   const { server, port } = await listen(app, host, opts.port ?? DEFAULT_PORT);
   const startedAt = new Date().toISOString();
-  logger.info(`Bridge listening on ${host}:${port} for workspace ${workspace.name} (${workspace.id})`);
+  const names = workspaces.map((workspace) => workspace.name).join(", ") || "(none registered)";
+  logger.info(`Bridge listening on ${host}:${port} serving ${workspaces.length} workspace(s): ${names}`);
 
   const persistRuntime = (): void => {
     if (opts.persistRuntime === false) return;
     const state: RuntimeState = {
       service: SERVICE_NAME,
       version: VERSION,
-      workspaceId: workspace.id,
-      workspaceRoot: workspace.root,
       pid: process.pid,
       port,
       adminToken,
       publicUrl: publicBaseUrl,
       startedAt,
+      workspaces: workspaces.map((workspace) => workspace.root),
     };
     writeRuntimeState(state);
   };
@@ -262,12 +320,12 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
     closed = true;
     await tunnel.stop().catch(() => undefined);
     await new Promise<void>((resolve) => server.close(() => resolve()));
-    if (opts.persistRuntime !== false) clearRuntimeState(workspace.id);
+    if (opts.persistRuntime !== false) clearRuntimeState();
     logger.info(reason ? `Bridge stopped (${reason})` : "Bridge stopped");
   };
 
   return {
-    workspace,
+    workspaces,
     port,
     host,
     adminToken,

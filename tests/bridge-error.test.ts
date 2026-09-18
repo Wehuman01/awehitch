@@ -12,7 +12,7 @@ beforeAll(async () => {
   root = makeTmpDir("bridge-err");
   write(root, "a.txt", "a\n");
   bridge = await startBridge({
-    workspaceRoot: root,
+    workspaceRoots: [root],
     port: 0,
     persistRuntime: false,
     authStoreFile: path.join(makeTmpDir("auth-err"), "store.json"),

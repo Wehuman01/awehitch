@@ -82,8 +82,13 @@ export class AuthStore {
   private authCodes = new Map<string, AuthorizationCodeRecord>();
   private readonly file: string;
 
+  /**
+   * v0.2.6: the auth store is machine-scoped (`auth/machine.json`) — one
+   * ChatGPT connector authorizes once for every registered workspace. The
+   * workspaceId stays on records for audit only.
+   */
   constructor(
-    readonly workspaceId: string,
+    readonly workspaceId: string = "machine",
     opts: { file?: string } = {}
   ) {
     this.file =
@@ -252,7 +257,7 @@ export class AuthStore {
     return true;
   }
 
-  /** Used by `c2c unpair`: revoke everything for this workspace. */
+  /** Used by `awehitch unpair`: revoke everything on this machine. */
   revokeAll(): number {
     const count = this.tokens.size;
     this.tokens.clear();

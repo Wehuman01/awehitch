@@ -16,7 +16,7 @@ beforeAll(async () => {
   root = makeTmpDir("oauth-ws");
   write(root, "hello.txt", "hello oauth\n");
   bridge = await startBridge({
-    workspaceRoot: root,
+    workspaceRoots: [root],
     port: 0,
     persistRuntime: false,
     authStoreFile: path.join(makeTmpDir("auth"), "store.json"),
@@ -158,7 +158,7 @@ describe("authorization + token flow", () => {
     const xssWorkspaceRoot = makeTmpDir("oauth-html");
     write(xssWorkspaceRoot, ".c2c.json", JSON.stringify({ name: "<script>alert('xss')</script>" }));
     const xssBridge = await startBridge({
-      workspaceRoot: xssWorkspaceRoot,
+      workspaceRoots: [xssWorkspaceRoot],
       port: 0,
       persistRuntime: false,
       authStoreFile: path.join(makeTmpDir("auth-html"), "store.json"),
@@ -290,14 +290,16 @@ describe("token enforcement on /mcp", () => {
     expect(response.status).toBe(401);
   });
 
-  it("403 with a token bound to another workspace", async () => {
-    const foreign = bridge.authStore.issueTokens({
+  it("accepts any valid token for the machine-scoped store", async () => {
+    // v0.2.6: one store per machine — a token is not bound to a workspace,
+    // so there is no cross-workspace 403 any more.
+    const other = bridge.authStore.issueTokens({
       clientId: "test",
       scopes: ["workspace.read"],
       workspaceId: "deadbeef0000",
     });
-    const response = await mcpCall(foreign.accessToken);
-    expect(response.status).toBe(403);
+    const response = await mcpCall(other.accessToken);
+    expect(response.status).toBe(200);
   });
 
   it("401 after revocation", async () => {
@@ -378,7 +380,7 @@ describe("scope handling", () => {
     const response = await fetch(authorizeUrl, { redirect: "manual" });
     expect(response.status).toBe(200);
     const html = await response.text();
-    expect(html).toContain("Read files in this workspace");
+    expect(html).toContain("Read files in the registered workspaces");
     expect(html).not.toContain("bogus_scope");
   });
 });
@@ -390,7 +392,7 @@ describe("unauthenticated endpoint bounds", () => {
     const root = makeTmpDir("oauth-bounds");
     write(root, "hello.txt", "bounds\n");
     const boundsBridge = await startBridge({
-      workspaceRoot: root,
+      workspaceRoots: [root],
       port: 0,
       persistRuntime: false,
       authStoreFile: path.join(makeTmpDir("auth-bounds"), "store.json"),

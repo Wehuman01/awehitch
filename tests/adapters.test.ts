@@ -68,11 +68,13 @@ describe("skill template", () => {
     expect(skill).not.toContain("{{CONNECTOR_NAME}}");
   });
 
-  it("makes the agent relay stoppedWorkspaces to the user", () => {
-    // One bridge per machine: an `up` that stopped another workspace's
-    // bridge must be reported, or the user just sees their terminal die.
+  it("teaches the machine-wide service model (up registers, never displaces)", () => {
+    // v0.2.6: one bridge serves every registered directory; `up` in another
+    // directory only adds it. The skill must not invent takeover semantics.
     const skill = renderSkill({ harness: "OpenCode", harnessId: "opencode", connectorName: "awehitch · Demo" });
-    expect(skill).toContain("stoppedWorkspaces");
+    expect(skill).toContain("ONE service per machine");
+    expect(skill).toContain("--task {{TASK_ID}}");
+    expect(skill).not.toContain("stoppedWorkspaces");
   });
 });
 

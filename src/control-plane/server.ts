@@ -4,7 +4,7 @@ import { z } from "zod";
 import path from "node:path";
 import { ControlPlaneBrowser, ControlPlaneError, type ReplyView } from "./browser.js";
 import { readControlPlaneState } from "./state.js";
-import { buildHandoffMessage, readSession } from "../session/state.js";
+import { buildHandoffMessage, readSession, readTaskSession } from "../session/state.js";
 import { Logger } from "../logger/index.js";
 import { Workspace } from "../workspace/manager.js";
 import { getStateDir } from "../config/paths.js";
@@ -181,13 +181,26 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
         `state, issues, next step — never files, diffs, or logs) and send it to the CURRENTLY ` +
         `OPEN chat. Use right after the boot prompt on a replacement chat for an EXISTING ` +
         `task (old chat lost / 404 / user asked for a new one). NEVER send HANDOFF for a new ` +
-        `task. Fails with NO_CHECKPOINT when there is nothing to resume. ${UNTRUSTED_NOTE}`,
-      inputSchema: {},
+        `task. Pass task_id to send THAT task's checkpoint (concurrent sessions each keep ` +
+        `their own); without it the workspace-level checkpoint is used. Fails with ` +
+        `NO_CHECKPOINT when there is nothing to resume. ${UNTRUSTED_NOTE}`,
+      inputSchema: {
+        task_id: z.string().optional().describe("Task id whose checkpoint to send"),
+      },
       annotations: { readOnlyHint: false },
     },
-    async () =>
+    async (args) =>
       run(async () => {
-        const checkpoint = readSession(workspaceId, harness)?.checkpoint;
+        const taskId = args.task_id?.trim();
+        let checkpoint = taskId ? readTaskSession(workspaceId, taskId, harness)?.checkpoint : null;
+        if (taskId && !checkpoint) {
+          return fail(
+            "NO_CHECKPOINT",
+            `No checkpoint saved for task ${taskId}. Save one first: ` +
+              `\`awehitch session set --task ${taskId} --checkpoint-state …\`.`
+          );
+        }
+        checkpoint = checkpoint ?? readSession(workspaceId, harness)?.checkpoint;
         if (!checkpoint) {
           return fail(
             "NO_CHECKPOINT",
