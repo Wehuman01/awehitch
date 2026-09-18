@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.2.7 - 2026-09-18
+
+### Fixes
+- v0.2.6 migration adopts the legacy auth store that actually holds
+  credentials (most clients + tokens; mtime only breaks ties). Every 0.2.5
+  bridge start writes an auth store, so workspaces that never paired left
+  empty files newer than the paired store — mtime-based selection then
+  forced a re-pair on upgrade, exactly what migration was meant to avoid.
+- `send_handoff`'s NO_CHECKPOINT hint for a `--task` slot now names the
+  real flag (`awehitch session set --protocol-state …`, not the
+  nonexistent `--checkpoint-state`), so an agent following the hint can
+  actually save the checkpoint.
+
 ## v0.2.6 - 2026-09-18
 
 ### Features
