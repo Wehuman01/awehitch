@@ -208,7 +208,10 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
   app.post("/admin/shutdown", adminGuard, (_req, res) => {
     res.json({ shuttingDown: true });
     setTimeout(() => {
-      void shutdown().then(() => process.exit(0));
+      // Spell out the trigger: a foreground watcher seeing "Bridge stopped"
+      // alone cannot tell an intentional takeover from a crash.
+      void shutdown("admin shutdown requested — `awehitch stop/off/restart`, or another workspace's `up` switching the machine to it")
+        .then(() => process.exit(0));
     }, 100);
   });
 
@@ -254,13 +257,13 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
   persistRuntime();
 
   let closed = false;
-  const shutdown = async (): Promise<void> => {
+  const shutdown = async (reason?: string): Promise<void> => {
     if (closed) return;
     closed = true;
     await tunnel.stop().catch(() => undefined);
     await new Promise<void>((resolve) => server.close(() => resolve()));
     if (opts.persistRuntime !== false) clearRuntimeState(workspace.id);
-    logger.info("Bridge stopped");
+    logger.info(reason ? `Bridge stopped (${reason})` : "Bridge stopped");
   };
 
   return {

@@ -67,6 +67,13 @@ describe("skill template", () => {
     expect(skill).not.toContain("{{HARNESS_ID}}");
     expect(skill).not.toContain("{{CONNECTOR_NAME}}");
   });
+
+  it("makes the agent relay stoppedWorkspaces to the user", () => {
+    // One bridge per machine: an `up` that stopped another workspace's
+    // bridge must be reported, or the user just sees their terminal die.
+    const skill = renderSkill({ harness: "OpenCode", harnessId: "opencode", connectorName: "awehitch · Demo" });
+    expect(skill).toContain("stoppedWorkspaces");
+  });
 });
 
 describe("codex adapter", () => {

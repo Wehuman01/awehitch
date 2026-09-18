@@ -53,6 +53,11 @@ strategy. Two connections make this work:
 
 - CLI: `awehitch <command>` (all commands support `--json`).
 - Always pass `-w <workspace root>` (the project the user is working on).
+- One service per machine: `awehitch up` for a workspace switches the
+  machine to it. When its JSON reports non-empty `stoppedWorkspaces`, the
+  service for those workspaces was just stopped — tell the user that
+  immediately (name the roots), because a human may be watching that other
+  terminal stream its logs.
 
 ## Workflow: first-time setup ("set up awehitch")
 
@@ -63,7 +68,8 @@ strategy. Two connections make this work:
    harness adapter, and creates or repairs the ChatGPT connector itself
    (it opens the control-plane browser when needed). **Run it, do not talk
    the user through the ChatGPT settings.** Handle exactly one of:
-   - `ok: true` → continue at step 3.
+   - `ok: true` → if `stoppedWorkspaces` is non-empty, tell the user first
+     (see Locations), then continue at step 3.
    - `ok: false` with `needsLogin: true` (exit code 0) → the browser is open
      and waiting. ONE action: "Log in to ChatGPT in the opened window, then
      tell me 'done'", then re-run the same command.
@@ -142,7 +148,8 @@ plan/execute loop, no session records. The golden rules still apply.
    pairing survive restarts. `ok: false` with `needsLogin: true` → ONE action:
    "Log in to ChatGPT in the opened window, then tell me 'done'", then re-run.
    Any other failure → `awehitch doctor -w <workspace> --json` and follow its
-   repair guidance.
+   repair guidance. Non-empty `stoppedWorkspaces` in the JSON → tell the
+   user first (see Locations) before proceeding.
 2. `awehitch_open_chat` with `task_id=quick-<short-slug>`. On a new
    conversation send the boot prompt (above) first.
 3. Send the user's question via `awehitch_send_state` as a short note telling

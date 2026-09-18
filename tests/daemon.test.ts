@@ -99,6 +99,12 @@ describe("one bridge per machine", () => {
       // A's runtime file was cleared by its own graceful shutdown.
       const workspaceA = new Workspace(rootA);
       expect(fs.existsSync(path.join(stateDir, "runtime", `${workspaceA.id}.json`))).toBe(false);
+      // A's log says WHY it stopped: a foreground watcher must be able to
+      // tell an intentional takeover from a crash.
+      const logFile = path.join(stateDir, "logs", "bridge.log");
+      await vi.waitFor(() => {
+        expect(fs.readFileSync(logFile, "utf8")).toContain("Bridge stopped (admin shutdown requested");
+      });
     } finally {
       await stopBridge(rootB);
       await stopBridge(rootA);
