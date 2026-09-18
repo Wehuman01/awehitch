@@ -2,10 +2,14 @@
 name: awehitch
 description: >
   Use ChatGPT (web) as the planning and review brain for coding sessions in
-  this harness, while the agent keeps full execution ownership. Use when the
-  user says "use ChatGPT to plan" / "用 ChatGPT 帮我规划" / "awehitch", when they
-  ask to connect ChatGPT to the current workspace, disconnect it, or run a
-  task through the ChatGPT planning loop.
+  this harness, while the agent keeps full execution ownership. Use whenever
+  the user wants anything from ChatGPT: "use ChatGPT to plan" /
+  "用 ChatGPT 帮我规划", a casual "ask ChatGPT" / "问问 ChatGPT" / "问下GPT" /
+  "问问GPT" / "让 ChatGPT 看看", the word "awehitch", connecting or
+  disconnecting ChatGPT for this workspace, or running a task through the
+  ChatGPT planning loop. NEVER satisfy such a request by fetching
+  OpenAI/chatgpt.com/search/weather URLs yourself — route it through this
+  skill; that is the only real ChatGPT access you have.
 ---
 
 # awehitch
@@ -127,6 +131,33 @@ Rules:
     existing task. Trust the handoff brief, re-read code through MCP, and
     resume from NEXT_EXPECTED_STEP.
 ```
+
+## Workflow: quick question ("问问 ChatGPT" / "ask ChatGPT …")
+
+For one-off questions and second opinions that are not a coding task — no
+plan/execute loop, no session records. The golden rules still apply.
+
+1. Run `awehitch up -w <workspace> --json --daemon`. Idempotent: reuses the
+   running service or starts it in the background; the address, connector and
+   pairing survive restarts. `ok: false` with `needsLogin: true` → ONE action:
+   "Log in to ChatGPT in the opened window, then tell me 'done'", then re-run.
+   Any other failure → `awehitch doctor -w <workspace> --json` and follow its
+   repair guidance.
+2. `awehitch_open_chat` with `task_id=quick-<short-slug>`. On a new
+   conversation send the boot prompt (above) first.
+3. Send the user's question via `awehitch_send_state` as a short note telling
+   ChatGPT this is a quick Q&A outside the protocol:
+
+```
+Quick question — answer in plain language; no [C2C] message needed.
+<the user's question, with any context ChatGPT cannot see>
+```
+
+   If the answer needs local facts (files, diff), tell ChatGPT which MCP tool
+   to consult instead of pasting content.
+4. `awehitch_wait_reply`, then relay the answer in plain language. If the
+   question turns into a real coding task, switch to the coding-task workflow
+   below with a proper TASK_ID.
 
 ## Workflow: coding task ("use ChatGPT to plan/implement XXX")
 

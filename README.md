@@ -58,7 +58,7 @@ Please run awehitch and set it up for me automatically.
 
 Pairing and connector creation are fully automatic. The only action that may need you: logging in to ChatGPT in the popped-up window. After setup, everyday use requires zero commands.
 
-Then use your agent normally: "Plan XXX for me using ChatGPT".
+Then use your agent normally: "Plan XXX for me using ChatGPT". Casual asks work too — "ask ChatGPT …" / "问问 ChatGPT …"; the agent starts the service on demand when it is not running.
 
 ## How it works
 
