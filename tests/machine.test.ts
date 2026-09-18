@@ -78,7 +78,7 @@ describe("legacy state migration", () => {
     const stateDir = isolateStateDir();
     dirs.push(stateDir);
 
-    // Legacy auth stores (pre-0.2.6 layout): two of them, the newest wins.
+    // Legacy auth stores (pre-0.2.6 layout): the one holding credentials wins.
     const authDir = path.join(stateDir, "auth");
     fs.mkdirSync(authDir, { recursive: true, mode: 0o700 });
     const oldStore = new AuthStore("oldws00000001", { file: path.join(authDir, "oldws00000001.json") });
@@ -123,6 +123,30 @@ describe("legacy state migration", () => {
     expect(second.adoptedAuth).toBe(false);
     expect(second.adoptedTunnel).toBe(false);
     expect(readTunnelState().hostname).toBe("c2c-old.example.com");
+  });
+
+  it("prefers a credential-holding store over a newer empty one", () => {
+    const stateDir = isolateStateDir();
+    dirs.push(stateDir);
+
+    // The real 0.2.5→0.2.6 trap: every bridge start writes an auth store, so
+    // workspaces that never paired leave empty files newer than the store
+    // that actually holds the ChatGPT connector's credentials.
+    const authDir = path.join(stateDir, "auth");
+    fs.mkdirSync(authDir, { recursive: true, mode: 0o700 });
+    const pairedStore = new AuthStore("pairedws000001", { file: path.join(authDir, "pairedws000001.json") });
+    const client = pairedStore.registerClient({ redirectUris: ["https://chatgpt.com"] });
+    pairedStore.issueTokens({ clientId: client.clientId, scopes: ["workspace.read", "offline_access"] });
+    expect(pairedStore.tokenCount()).toBe(2);
+    fs.utimesSync(path.join(authDir, "pairedws000001.json"), new Date(), new Date(Date.now() - 60_000));
+    fs.writeFileSync(
+      path.join(authDir, "freshws000001.json"),
+      JSON.stringify({ clients: [], tokens: [] })
+    );
+
+    const result = migrateLegacyStateToMachine();
+    expect(result.adoptedAuth).toBe(true);
+    expect(new AuthStore().tokenCount()).toBe(2);
   });
 
   it("does not adopt a tunnel when several legacy workspaces had named bindings", () => {
