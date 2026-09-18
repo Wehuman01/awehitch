@@ -57,7 +57,9 @@ export function harnessHome(harness: HarnessId): string {
     case "opencode":
       return opencodeConfigDir();
     case "zcode":
-      return process.env.ZCODE_HOME?.trim() || path.join(os.homedir(), ".zcode", "cli");
+      // The zcode HOME, not the config dir: config lives at <home>/cli/config.json,
+      // user skills at <home>/skills (per zcode's discovery rules).
+      return process.env.ZCODE_HOME?.trim() || path.join(os.homedir(), ".zcode");
   }
 }
 

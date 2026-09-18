@@ -8,7 +8,7 @@ import { renderSkill } from "../src/adapters/skill-template.js";
 
 /**
  * Adapter tests run against ISOLATED harness homes (CODEX_HOME /
- * OPENCODE_CONFIG_DIR / ~/.zcode/cli override). They never touch the real
+ * OPENCODE_CONFIG_DIR / ZCODE_HOME override). They never touch the real
  * ~/.codex, ~/.config/opencode or ~/.zcode.
  */
 
@@ -239,35 +239,47 @@ describe("opencode adapter", () => {
 });
 
 describe("zcode adapter", () => {
-  it("installs the skill and merges mcpServers into config.json", async () => {
+  it("installs the skill into ~/.zcode/skills and merges mcp.servers into cli/config.json", async () => {
     const { setupZcodeAdapter, zcodeAdapterStatus } = await import("../src/adapters/zcode.js");
-    const configPath = path.join(home, "zcode", "config.json");
+    const configPath = path.join(home, "zcode", "cli", "config.json");
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    // existing config with unrelated keys must survive untouched
-    fs.writeFileSync(configPath, JSON.stringify({ hooks: { enabled: true }, mcpServers: {} }, null, 2));
+    // Legacy layout: our old top-level mcpServers entry (ignored by zcode)
+    // plus unrelated config that must survive untouched.
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify(
+        { hooks: { enabled: true }, mcpServers: { awehitch: { command: "old", args: [] } } },
+        null,
+        2
+      )
+    );
 
     const result = setupZcodeAdapter({
       workspaceRoot: workDir,
       cliEntry,
       connectorName: "awehitch · Demo",
     });
+    expect(result.skillPath).toBe(path.join(home, "zcode", "skills", "awehitch", "SKILL.md"));
     expect(fs.existsSync(result.skillPath)).toBe(true);
     const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
     expect(config.hooks.enabled).toBe(true);
-    expect(config.mcpServers.awehitch.command).toBe(process.execPath);
-    expect(config.mcpServers.awehitch.args).toContain(workDir);
+    expect(config.mcp.servers.awehitch.command).toBe(process.execPath);
+    expect(config.mcp.servers.awehitch.args).toContain(workDir);
+    // The legacy top-level entry is gone (it was ours alone and zcode ignores it).
+    expect(config.mcpServers).toBeUndefined();
 
     const status = zcodeAdapterStatus();
     expect(status.skillInstalled).toBe(true);
     expect(status.mcpRegistered).toBe(true);
+    expect(status.configPath).toBe(configPath);
   });
 
   it("is idempotent (no duplicate awehitch entry)", async () => {
     const { setupZcodeAdapter } = await import("../src/adapters/zcode.js");
     setupZcodeAdapter({ workspaceRoot: workDir, cliEntry, connectorName: "awehitch" });
     setupZcodeAdapter({ workspaceRoot: workDir, cliEntry, connectorName: "awehitch" });
-    const configPath = path.join(home, "zcode", "config.json");
+    const configPath = path.join(home, "zcode", "cli", "config.json");
     const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
-    expect(Object.keys(config.mcpServers).filter((name) => name === "awehitch").length).toBe(1);
+    expect(Object.keys(config.mcp.servers).filter((name) => name === "awehitch").length).toBe(1);
   });
 });

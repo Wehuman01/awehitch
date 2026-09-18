@@ -7,20 +7,13 @@ import { renderSkill } from "./skill-template.js";
 /**
  * zcode adapter.
  *
- * 1. MCP registration: `"mcpServers": { "awehitch": { …stdio… } }` in
- *    ~/.zcode/cli/config.json (idempotent merge that preserves all other keys)
- * 2. Instructions: `~/.zcode/agents/awehitch.md` (agent file with YAML
- *    frontmatter; zcode loads agents from this directory)
+ * 1. MCP registration: `mcp.servers.awehitch` stdio entry in
+ *    <zcode home>/cli/config.json (zcode reads the nested `mcp.servers` key;
+ *    our legacy top-level `mcpServers` entry is ignored and removed on setup)
+ * 2. Instructions: <zcode home>/skills/awehitch/SKILL.md — zcode discovers
+ *    user-scope skills in ~/.zcode/skills, NOT in ~/.zcode/cli/skills
  * 3. Sandbox: none needed (zcode has hooks, no writable_roots equivalent)
  */
-
-const AGENT_BODY = `You can delegate planning and review to ChatGPT with awehitch.
-
-When the user says "use ChatGPT to plan" / "用 ChatGPT 帮我规划", follow the
-awehitch skill (installed at ~/.zcode/skills or referenced by the awehitch CLI):
-exchange [C2C] control messages through the awehitch MCP tools, execute plans
-yourself, and let ChatGPT review the real diff via the read-only connector.
-`;
 
 export function setupZcodeAdapter(opts: {
   workspaceRoot: string;
@@ -29,24 +22,30 @@ export function setupZcodeAdapter(opts: {
 }): { skillPath: string; configPath: string } {
   const home = harnessHome("zcode");
 
-  // 1. Skill (instructions) — zcode plugin-style skills dir
+  // 1. Skill (instructions) — zcode's user-scope skills directory
   const skillDir = path.join(home, "skills", "awehitch");
   fs.mkdirSync(skillDir, { recursive: true });
   const skillPath = path.join(skillDir, "SKILL.md");
-  writeFileAtomic(skillPath, renderSkill({ harness: "ZCode", connectorName: opts.connectorName }), {
+  writeFileAtomic(skillPath, renderSkill({ harness: "ZCode", harnessId: "zcode", connectorName: opts.connectorName }), {
     mode: 0o644,
   });
 
-  // 2. MCP entry — idempotent merge into config.json (preserve every other key)
-  const configPath = path.join(home, "config.json");
+  // 2. MCP entry — nested `mcp.servers` key (idempotent merge that preserves
+  //    every other key); migrate away our ignored top-level `mcpServers` entry.
+  const configPath = path.join(home, "cli", "config.json");
   fs.mkdirSync(path.dirname(configPath), { recursive: true, mode: 0o700 });
   const config = readJson(configPath);
-  config.mcpServers ??= {};
-  config.mcpServers.awehitch = {
+  config.mcp ??= {};
+  config.mcp.servers ??= {};
+  config.mcp.servers.awehitch = {
     command: opts.cliEntry.cmd,
-    args: [...opts.cliEntry.args, "--workspace", opts.workspaceRoot],
+    args: [...opts.cliEntry.args, "--workspace", opts.workspaceRoot, "--harness", "zcode"],
     env: { AWEHITCH_CONTROL_PLANE: "1" },
   };
+  if (config.mcpServers && typeof config.mcpServers === "object" && !Array.isArray(config.mcpServers)) {
+    delete config.mcpServers.awehitch;
+    if (Object.keys(config.mcpServers).length === 0) delete config.mcpServers;
+  }
   writeJson(configPath, config);
 
   return { skillPath, configPath };
@@ -59,11 +58,11 @@ export function zcodeAdapterStatus(): {
 } {
   const home = harnessHome("zcode");
   const skillPath = path.join(home, "skills", "awehitch", "SKILL.md");
-  const configPath = path.join(home, "config.json");
+  const configPath = path.join(home, "cli", "config.json");
   let mcpRegistered = false;
   try {
     const config = readJson(configPath);
-    mcpRegistered = Boolean(config.mcpServers?.awehitch);
+    mcpRegistered = Boolean(config.mcp?.servers?.awehitch);
   } catch {
     // missing or unparsable -> false
   }
