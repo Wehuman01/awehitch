@@ -109,6 +109,24 @@ describe("codex adapter", () => {
     expect(config).toContain("[mcp_servers.fetch]");
     expect(config).toContain("[mcp_servers.awehitch]");
   });
+
+  it("keeps the next table on its own line when replacing the MCP entry", async () => {
+    // Regression: the replace path once glued the following header onto our
+    // env line (env = {...}[mcp_servers.x]) and codex refused to boot.
+    const configPath = path.join(home, "codex", "config.toml");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      `[mcp_servers.awehitch]\ntype = "stdio"\ncommand = "node"\nargs = ["old"]\nenv = { AWEHITCH_CONTROL_PLANE = "1" }\n[mcp_servers.other]\ncommand = "other"\n`
+    );
+    const { setupCodexAdapter } = await import("../src/adapters/codex.js");
+    setupCodexAdapter({ workspaceRoot: workDir, cliEntry, connectorName: "awehitch" });
+    const config = fs.readFileSync(configPath, "utf8");
+    expect(config).toMatch(/env = \{ AWEHITCH_CONTROL_PLANE = "1" \}\n\[mcp_servers\.other\]/);
+    expect(config).not.toMatch(/\}[ \t]*\[mcp_servers/);
+    expect(config.match(/\[mcp_servers\.other\]/g)?.length).toBe(1);
+    expect(config).toContain('command = "other"');
+  });
 });
 
 describe("opencode config home", () => {

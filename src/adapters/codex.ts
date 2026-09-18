@@ -89,8 +89,13 @@ function upsertCodexMcpEntry(
 
   const existing = findTableToml(content, TABLE);
   if (existing) {
-    // Replace only OUR table's block; never touch unrelated config.
-    return content.slice(0, existing.start) + body + content.slice(existing.end);
+    // Replace only OUR table's block; never touch unrelated config. The span
+    // ends where the next header line begins, and body has no trailing
+    // newline — keep one between them or the following table gets glued onto
+    // our env line and the whole file stops parsing (this broke a real setup).
+    const after = content.slice(existing.end);
+    const glue = after.startsWith("\n") ? "" : "\n";
+    return content.slice(0, existing.start) + body + glue + after;
   }
   // Append under the [mcp_servers] section if present, else at the end.
   const parent = findTableToml(content, "mcp_servers");
