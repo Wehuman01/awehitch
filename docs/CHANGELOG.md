@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.2.5 - 2026-09-18
+
+### Features
+- True parallel C2C: per-harness browser profile, chat bindings, and session checkpoints — multiple agents drive ChatGPT truly in parallel in one workspace
+- `awehitch up` runs in the foreground by default with logs streaming to the terminal; `-d/--daemon` opts into detached background mode, and `--json` implies daemon
+- One bridge per machine: running `up` from a different workspace directory gracefully stops the foreign bridge before starting a new one
+- Scoped git tools (`git_status`, `git_diff`) now resolve the enclosing repo from the scoped path, so a project subdirectory with its own `.git` is diffed correctly
+- Skill triggers on casual asks ("问问 ChatGPT", "ask ChatGPT", "问下 GPT"…); quick-question workflow starts the service on demand without the planning loop
+
+### Fixes
+- Chat binding is now persisted at every observable interaction point, preventing orphaned conversations when the SPA URL updates slower than the capture window
+- zcode adapter writes the skill to `~/.zcode/skills` (not `~/.zcode/cli/skills`) and MCP servers to the nested `mcp.servers` key of `config.json` — zcode sessions now see the control-plane tools
+- Codex TOML adapter separates the replaced MCP entry from the next table header with a trailing newline, fixing unparseable TOML that prevented codex from booting
+
+### Documentation
+- README troubleshooting documents the manual connector-setup fallback when a ChatGPT DOM change breaks automation
+- Ecosystem section adds awefork, awecontrib, and AgentX to the recommended tooling list
+
 ## v0.2.3
 
 Command surface: four user-facing verbs (up / off / doctor / tunnel), one diagnostic authority.

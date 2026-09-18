@@ -7,7 +7,7 @@
     <a href="./README_cn.md">简体中文</a>
   </p>
   <p>
-    <img src="https://img.shields.io/badge/version-0.2.2-7C3AED?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-0.2.5-7C3AED?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/node-%E2%89%A520-0EA5E9?style=flat-square" alt="Node">
   </p>
   <p>
