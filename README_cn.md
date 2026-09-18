@@ -96,6 +96,7 @@ awehitch Bridge（本地，工作区只读网关 + OAuth + 隧道）
 awehitch up [-w <路径>]    # 幂等的"确保已连接"（裸 `awehitch` 也可以）
                            # 默认前台（Ctrl+C 停止）；-d/--daemon 转后台
 awehitch off               # 断开（吊销访问并停掉本地服务；ChatGPT 里的连接器按需手动删）
+awehitch status            # 看本机挂着哪个 awehitch 服务、是否存活
 awehitch doctor            # 诊断并自动修复（--no-fix 只读检查）
 awehitch tunnel            # 查看或选择公网连接（临时地址 / 稳定域名）
 ```

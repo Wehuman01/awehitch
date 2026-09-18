@@ -96,6 +96,7 @@ Per-workspace `.c2c.json`:
 awehitch up [-w <path>]    # idempotent "make sure I'm connected" (bare `awehitch` works too)
                            # foreground by default (Ctrl+C stops it); -d/--daemon for background
 awehitch off               # disconnect (revoke access + stop local service; delete the ChatGPT plugin manually if desired)
+awehitch status            # which awehitch service is mounted on this machine, and whether it is alive
 awehitch doctor            # diagnose and auto-repair (--no-fix for a strictly read-only check)
 awehitch tunnel            # inspect or choose the public connection (temporary / stable hostname)
 ```

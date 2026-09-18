@@ -41,6 +41,25 @@ export function clearRuntimeState(workspaceId: string): void {
   }
 }
 
+/**
+ * Workspace ids of all persisted runtime records on this machine (ensure-*
+ * lock files excluded). A record may be stale — the bridge self-deletes it
+ * on graceful shutdown, so a leftover file means a crash or a kill.
+ */
+export function listRuntimeWorkspaceIds(): string[] {
+  const dir = path.join(getStateDir(), "runtime");
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+  return names
+    .filter((name) => name.endsWith(".json") && !name.startsWith("ensure-"))
+    .map((name) => name.slice(0, -".json".length))
+    .sort();
+}
+
 export interface HealthPayload {
   service: string;
   version: string;

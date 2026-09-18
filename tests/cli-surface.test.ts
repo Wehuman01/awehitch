@@ -7,7 +7,11 @@ import { detectHarnesses } from "../src/adapters/detect.js";
 import { AuthStore } from "../src/auth/store.js";
 import { connectorAction, readLastEndpoint, writeLastEndpoint } from "../src/config/endpoint.js";
 import { revokeConnectorAccess } from "../src/cli/index.js";
-import { cleanup, makeTmpDir, isolateStateDir } from "./helpers.js";
+import { ensureBridge, stopBridge } from "../src/process/daemon.js";
+import { Workspace } from "../src/workspace/manager.js";
+import { writeRuntimeState } from "../src/bridge/runtime.js";
+import { SERVICE_NAME, VERSION } from "../src/version.js";
+import { cleanup, makeTmpDir, isolateStateDir, write } from "./helpers.js";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliEntry = path.join(projectRoot, "src/cli/index.ts");
@@ -128,11 +132,11 @@ describe("endpoint change detection", () => {
 });
 
 describe("command surface", () => {
-  it("lists exactly up, off, doctor, tunnel as user-facing commands", () => {
+  it("lists exactly up, off, doctor, tunnel, status as user-facing commands", () => {
     const result = runCli(["--help"]);
     expect(result.status).toBe(0);
     const help = result.stdout;
-    for (const visible of ["up", "off", "doctor", "tunnel"]) {
+    for (const visible of ["up", "off", "doctor", "tunnel", "status"]) {
       expect(help).toMatch(new RegExp(`^\\s{2}${visible} `, "m"));
     }
     for (const hidden of [
@@ -150,9 +154,9 @@ describe("command surface", () => {
       "sandbox-allow",
       "serve",
       "control-plane",
-      // removed commands must not come back
+      // removed commands must not come back (status returned with a new,
+      // machine-wide meaning; the old per-workspace one stays dead)
       "start",
-      "status",
       "workspace",
       "update-check",
     ]) {
@@ -217,6 +221,67 @@ describe("command surface", () => {
       const after = fs.readFileSync(endpointFile, "utf8");
       expect(after).toBe(before);
     } finally {
+      cleanup(stateDir);
+      delete process.env.AWEHITCH_STATE_DIR;
+    }
+  });
+});
+
+describe("status (machine-wide)", () => {
+  it("reports an empty machine honestly", () => {
+    const stateDir = isolateStateDir();
+    try {
+      const result = runCli(["status", "--json"]);
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ ok: true, onePerMachine: true, services: [] });
+      const human = runCli(["status"]);
+      expect(human.stdout).toContain("No awehitch service on this machine");
+    } finally {
+      cleanup(stateDir);
+      delete process.env.AWEHITCH_STATE_DIR;
+    }
+  });
+
+  it("marks a live bridge as running and a leftover record as stopped, running first", async () => {
+    const stateDir = isolateStateDir();
+    const liveRoot = makeTmpDir("status-live");
+    write(liveRoot, "a.txt", "a");
+    const deadRoot = makeTmpDir("status-dead");
+    write(deadRoot, "b.txt", "b");
+    const deadWorkspace = new Workspace(deadRoot);
+    // A real serve child (not an in-test listener): the CLI under test runs
+    // as a sibling process, and sandbox profiles may forbid a child from
+    // connecting back to its own parent's listener.
+    const { runtime } = await ensureBridge(liveRoot);
+    try {
+      // Dead record: a pid that cannot exist. The live record was written by
+      // the serve child itself; healthy is decided by the /health probe.
+      writeRuntimeState({
+        service: SERVICE_NAME, version: VERSION,
+        workspaceId: deadWorkspace.id, workspaceRoot: deadWorkspace.root,
+        pid: 999_999_999, port: 1, adminToken: "t", publicUrl: null,
+        startedAt: new Date().toISOString(),
+      });
+
+      const result = runCli(["status", "--json"]);
+      expect(result.status).toBe(0);
+      const payload = JSON.parse(result.stdout);
+      expect(payload.services).toHaveLength(2);
+      const live = payload.services.find((s: { workspaceId: string }) => s.workspaceId === runtime.workspaceId);
+      const stale = payload.services.find((s: { workspaceId: string }) => s.workspaceId === deadWorkspace.id);
+      expect(live).toMatchObject({ state: "running", port: runtime.port, workspaceRoot: liveRoot });
+      expect(stale).toMatchObject({ state: "stopped", reason: "pid_missing" });
+      expect(payload.services[0].workspaceId).toBe(runtime.workspaceId);
+
+      const human = runCli(["status"]);
+      expect(human.status).toBe(0);
+      expect(human.stdout).toContain(`${liveRoot} — running`);
+      expect(human.stdout).toContain("not running");
+      expect(human.stdout).toContain("leftover record");
+    } finally {
+      await stopBridge(liveRoot);
+      cleanup(liveRoot);
+      cleanup(deadRoot);
       cleanup(stateDir);
       delete process.env.AWEHITCH_STATE_DIR;
     }

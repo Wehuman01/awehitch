@@ -5,7 +5,7 @@ import readline from "node:readline";
 import type { ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { startBridge } from "../bridge/server.js";
-import { findBridgeObservation, findLiveBridge, type RuntimeState } from "../bridge/runtime.js";
+import { findBridgeObservation, findLiveBridge, listRuntimeWorkspaceIds, type RuntimeState } from "../bridge/runtime.js";
 import {
   adminFetch,
   bridgeLogPath,
@@ -1014,7 +1014,90 @@ program
     }
   });
 
-// ---------------------------------------------------------------- status (removed: `doctor --no-fix` is the read-only check, a strict superset)
+// ---------------------------------------------------------------- status (machine-wide service listing)
+
+/**
+ * Machine-level view, not a per-workspace one: `doctor --no-fix` remains the
+ * read-only deep check for ONE workspace, while `status` answers "what is
+ * (or was) mounted on this machine" across workspaces — the first thing a
+ * human needs after the one-bridge-per-machine rule switched something.
+ */
+const STATUS_REASON_TEXT: Record<string, string> = {
+  pid_missing: "process exited (crash or kill)",
+  stale_pid: "its pid now belongs to another process",
+  probe_failed: "not answering on its port",
+  pid_unknown: "process state unreadable",
+  workspace_mismatch: "a different service answered on its port",
+};
+
+program
+  .command("status")
+  .description("Show the awehitch service(s) registered on this machine and whether each is alive")
+  .option("--json", "machine-readable output", false)
+  .action(async (opts: { json: boolean }) => {
+    const services: {
+      workspaceId: string;
+      workspaceRoot: string;
+      name: string;
+      pid: number;
+      port: number;
+      publicUrl: string | null;
+      startedAt: string;
+      state: "running" | "stopped" | "unknown";
+      reason?: string;
+      reasonText?: string;
+    }[] = [];
+    for (const id of listRuntimeWorkspaceIds()) {
+      const observation = await findBridgeObservation(id);
+      const runtime = observation.runtime;
+      if (!runtime) continue; // unreadable record: nothing honest to report
+      const state = observation.state === "healthy" ? "running" : observation.state;
+      services.push({
+        workspaceId: runtime.workspaceId,
+        workspaceRoot: runtime.workspaceRoot,
+        name: path.basename(runtime.workspaceRoot),
+        pid: runtime.pid,
+        port: runtime.port,
+        publicUrl: runtime.publicUrl,
+        startedAt: runtime.startedAt,
+        state,
+        reason: observation.state === "healthy" ? undefined : observation.reason,
+        reasonText:
+          observation.state === "healthy" ? undefined : STATUS_REASON_TEXT[observation.reason] ?? observation.reason,
+      });
+    }
+    // Running first, then the rest: on this machine at most one can run.
+    // sort is stable, so records keep their id order within each group.
+    services.sort((a, b) => Number(b.state === "running") - Number(a.state === "running"));
+
+    if (opts.json) {
+      say(JSON.stringify({ ok: true, onePerMachine: true, services }));
+      return;
+    }
+    if (services.length === 0) {
+      say("No awehitch service on this machine.");
+      say("Connect one: awehitch up -w <workspace>");
+      return;
+    }
+    for (const service of services) {
+      if (service.state === "running") {
+        check(`${service.workspaceRoot} — running (pid ${service.pid}, port ${service.port})`);
+        if (service.publicUrl) say(`  Public: ${service.publicUrl}`);
+        say(`  Since: ${new Date(service.startedAt).toLocaleString()}`);
+      } else if (service.state === "stopped") {
+        cross(`${service.workspaceRoot} — not running (${service.reasonText}; leftover record)`);
+      } else {
+        say(`! ${service.workspaceRoot} — state uncertain (${service.reasonText})`);
+        say(`  Check: awehitch doctor -w ${service.workspaceRoot}`);
+      }
+    }
+    if (services.some((service) => service.state === "stopped")) {
+      say("");
+      say("Leftover records clear themselves on the next `awehitch up -w <workspace>`.");
+    }
+  });
+
+// ---------------------------------------------------------------- doctor
 
 // ---------------------------------------------------------------- doctor
 
