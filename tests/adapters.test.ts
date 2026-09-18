@@ -58,11 +58,13 @@ afterEach(() => {
 const cliEntry = { cmd: process.execPath, args: ["/opt/awehitch/dist/cli/index.js", "control-plane"] };
 
 describe("skill template", () => {
-  it("fills harness and connector name", () => {
-    const skill = renderSkill({ harness: "ZCode", connectorName: "awehitch · Demo" });
+  it("fills harness, harness id and connector name", () => {
+    const skill = renderSkill({ harness: "ZCode", harnessId: "zcode", connectorName: "awehitch · Demo" });
     expect(skill).toContain("ZCode works.");
     expect(skill).toContain('named "awehitch · Demo" in ChatGPT');
+    expect(skill).toContain("-H zcode");
     expect(skill).not.toContain("{{HARNESS}}");
+    expect(skill).not.toContain("{{HARNESS_ID}}");
     expect(skill).not.toContain("{{CONNECTOR_NAME}}");
   });
 });

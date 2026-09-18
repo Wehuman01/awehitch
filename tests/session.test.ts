@@ -232,6 +232,50 @@ describe("clearChatPointer", () => {
     expect(clearChatPointer("def456def456")).toEqual({ cleared: true, keptProject: false });
     expect(readSession("def456def456")).toBeNull();
   });
+
+  it("isolates checkpoints per harness", () => {
+    const dir = makeTmpDir("session-harness");
+    dirs.push(dir);
+    process.env.AWEHITCH_STATE_DIR = dir;
+    writeSession(
+      "abc123abc123",
+      {
+        taskId: "task_codex",
+        savedAt: "2026-01-01T00:00:00.000Z",
+        checkpoint: {
+          taskId: "task_codex",
+          iteration: 1,
+          protocolState: "EXECUTED_SENT",
+          waitingFor: "GPT_REVIEW",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      },
+      "codex"
+    );
+    writeSession(
+      "abc123abc123",
+      {
+        taskId: "task_zcode",
+        savedAt: "2026-01-01T00:00:00.000Z",
+        checkpoint: {
+          taskId: "task_zcode",
+          iteration: 2,
+          protocolState: "PLAN_RECEIVED",
+          waitingFor: "none",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      },
+      "zcode"
+    );
+    // Two harnesses never see each other's loop state.
+    expect(readSession("abc123abc123", "codex")?.checkpoint?.taskId).toBe("task_codex");
+    expect(readSession("abc123abc123", "zcode")?.checkpoint?.taskId).toBe("task_zcode");
+    expect(readSession("abc123abc123")).toBeNull();
+    // Clearing one slice leaves the other intact.
+    clearChatPointer("abc123abc123", "codex");
+    expect(readSession("abc123abc123", "codex")).toBeNull();
+    expect(readSession("abc123abc123", "zcode")?.checkpoint?.taskId).toBe("task_zcode");
+  });
 });
 
 describe("buildHandoffMessage", () => {

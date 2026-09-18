@@ -26,7 +26,7 @@ export function setupCodexAdapter(opts: {
   const skillDir = path.join(home, "skills", "awehitch");
   fs.mkdirSync(skillDir, { recursive: true });
   const skillPath = path.join(skillDir, "SKILL.md");
-  writeFileAtomic(skillPath, renderSkill({ harness: "Codex", connectorName: opts.connectorName }), {
+  writeFileAtomic(skillPath, renderSkill({ harness: "Codex", harnessId: "codex", connectorName: opts.connectorName }), {
     mode: 0o644,
   });
 
@@ -83,7 +83,7 @@ function upsertCodexMcpEntry(
     `[${TABLE}]`,
     `type = "stdio"`,
     `command = ${tomlString(cliEntry.cmd)}`,
-    `args = ${tomlArray([...cliEntry.args, "--workspace", workspaceRoot])}`,
+    `args = ${tomlArray([...cliEntry.args, "--workspace", workspaceRoot, "--harness", "codex"])}`,
     `env = { AWEHITCH_CONTROL_PLANE = "1" }`,
   ].join("\n");
 

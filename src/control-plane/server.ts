@@ -61,6 +61,11 @@ export interface ControlPlaneServerOptions {
   driver?: ControlPlaneBrowser;
   /** Test seam: workspace id override. */
   workspaceId?: string;
+  /**
+   * Harness slice: gives this server its own browser profile, chat bindings
+   * and C2C checkpoint, so different harnesses run C2C in parallel.
+   */
+  harness?: string;
   /** Test seam: how long the browser may sit idle before it is closed. */
   idleCloseMs?: number;
 }
@@ -72,7 +77,8 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
   const logger = opts.logger ?? new Logger({ name: "control-plane", console: false });
   const workspace = new Workspace(opts.workspaceRoot);
   const workspaceId = opts.workspaceId ?? workspace.id;
-  const driver = opts.driver ?? new ControlPlaneBrowser(workspaceId, {}, logger);
+  const harness = opts.harness;
+  const driver = opts.driver ?? new ControlPlaneBrowser(workspaceId, {}, logger, harness);
 
   // The control-plane browser is a machine-global resource (one profile, one
   // ChatGPT login). A session must not hold it while the harness is quietly
@@ -181,7 +187,7 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
     },
     async () =>
       run(async () => {
-        const checkpoint = readSession(workspaceId)?.checkpoint;
+        const checkpoint = readSession(workspaceId, harness)?.checkpoint;
         if (!checkpoint) {
           return fail(
             "NO_CHECKPOINT",
@@ -272,7 +278,7 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
     },
     async (args) =>
       run(async () => {
-        const saved = readControlPlaneState(workspaceId);
+        const saved = readControlPlaneState(workspaceId, harness);
         const taskId = args.task_id?.trim();
         return ok({
           chatUrl: saved?.chatUrl ?? null,
@@ -285,18 +291,18 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
   return server;
 }
 
-/** Entry point for `awehitch control-plane --workspace <root>` (stdio MCP). */
-export async function runStdioServer(workspaceRoot: string): Promise<void> {
+/** Entry point for `awehitch control-plane --workspace <root> [--harness <id>]` (stdio MCP). */
+export async function runStdioServer(workspaceRoot: string, harness?: string): Promise<void> {
   const logger = new Logger({ name: "control-plane", console: false });
   const workspace = new Workspace(workspaceRoot);
   logger.info(
-    `Control-plane proxy serving workspace ${workspaceRoot} (log: ${path.join(
+    `Control-plane proxy serving workspace ${workspaceRoot}${harness ? ` (harness ${harness})` : ""} (log: ${path.join(
       getStateDir(),
       "logs",
-      `control-plane-${workspace.id}.log`
+      `control-plane-${workspace.id}${harness ? `__${harness}` : ""}.log`
     )})`
   );
-  const server = await createControlPlaneServer({ workspaceRoot, logger });
+  const server = await createControlPlaneServer({ workspaceRoot, logger, harness });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 

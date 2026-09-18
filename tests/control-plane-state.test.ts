@@ -5,7 +5,9 @@ import {
   applyChatBinding,
   browserProfileDir,
   controlPlaneStateFile,
+  ensureBrowserProfile,
   mergeControlPlaneState,
+  migrateLegacyBrowserProfile,
   normalizeChatUrl,
   readControlPlaneState,
   resolveChatTarget,
@@ -62,11 +64,43 @@ describe("control-plane state", () => {
     expect(readControlPlaneState("ws-b")?.chatUrl).toBe("https://chatgpt.com/c/b");
   });
 
-  it("shares one browser profile across workspaces (one login per machine)", () => {
-    const a = browserProfileDir();
-    const b = browserProfileDir();
-    expect(a).toBe(b);
-    expect(a).toContain(path.join(stateDir, "control-plane", "browser-profile"));
+  it("isolates state per harness so parallel C2C does not collide", () => {
+    writeControlPlaneState("ws-a", { chatUrl: "https://chatgpt.com/c/shared", savedAt: "" }, "codex");
+    writeControlPlaneState("ws-a", { chatUrl: "https://chatgpt.com/c/zed", savedAt: "" }, "zcode");
+    expect(readControlPlaneState("ws-a", "codex")?.chatUrl).toBe("https://chatgpt.com/c/shared");
+    expect(readControlPlaneState("ws-a", "zcode")?.chatUrl).toBe("https://chatgpt.com/c/zed");
+    // The harness-less file stays untouched by harness slices.
+    expect(readControlPlaneState("ws-a")).toBeNull();
+  });
+
+  it("names one browser profile per harness", () => {
+    expect(browserProfileDir()).toContain(path.join(stateDir, "control-plane", "profiles", "default"));
+    expect(browserProfileDir("codex")).toContain(path.join(stateDir, "control-plane", "profiles", "codex"));
+    expect(browserProfileDir("codex")).not.toBe(browserProfileDir("opencode"));
+  });
+
+  it("seeds a harness profile from the master and migrates the legacy profile", () => {
+    // Simulate an upgraded machine: the old shared profile exists with a
+    // login marker, no profiles/ dir yet.
+    const legacy = path.join(stateDir, "control-plane", "browser-profile", "shared");
+    fs.mkdirSync(legacy, { recursive: true });
+    fs.writeFileSync(path.join(legacy, "Cookies"), "seed");
+
+    migrateLegacyBrowserProfile();
+    // First launch without a harness adopts the legacy profile as master.
+    const master = ensureBrowserProfile();
+    expect(master).toContain(path.join(stateDir, "control-plane", "profiles", "default"));
+    expect(fs.readFileSync(path.join(master, "Cookies"), "utf8")).toBe("seed");
+    // Migration moved (not copied): the legacy dir is gone.
+    expect(fs.existsSync(legacy)).toBe(false);
+
+    // A harness profile is seeded from the master — no second login needed.
+    const codex = ensureBrowserProfile("codex");
+    expect(fs.readFileSync(path.join(codex, "Cookies"), "utf8")).toBe("seed");
+
+    // Nothing to seed from: fresh empty profile, no error.
+    const bare = ensureBrowserProfile("opencode");
+    expect(fs.existsSync(bare)).toBe(true);
   });
 });
 

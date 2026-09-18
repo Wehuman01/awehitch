@@ -46,5 +46,26 @@ export function readJsonIfExists<T>(file: string): T | null {
   }
 }
 
+/**
+ * Per-harness state key. Workspace state (session checkpoint, control-plane
+ * chat bindings) is shared across harnesses unless a harness id is given;
+ * with one, every harness gets its own slice — its own C2C checkpoint, chat
+ * bindings and browser profile — so two agents can run C2C in parallel.
+ * Harness ids are validated at the CLI/adapter boundary; this helper only
+ * composes the key.
+ */
+export function sessionKey(workspaceId: string, harness?: string): string {
+  return harness ? `${workspaceId}__${harness}` : workspaceId;
+}
+
+/** Validate a harness id coming from CLI/adapter input before it hits a path. */
+export function parseHarnessKey(value: string): string {
+  const id = value.trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(id)) {
+    throw new Error(`Invalid harness id: ${value} (use lowercase letters, digits, - or _)`);
+  }
+  return id;
+}
+
 export const DEFAULT_PORT = 48765;
 export const DEFAULT_HOST = "127.0.0.1";

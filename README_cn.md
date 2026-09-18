@@ -73,6 +73,7 @@ awehitch Bridge（本地，工作区只读网关 + OAuth + 隧道）
 ```
 
 - **控制面** — agent 与 ChatGPT 交换极小的结构化 `[C2C]` 消息（`INIT → PLAN → EXECUTED → REVIEW → DONE`）。本地**控制面代理**用 Playwright（独立浏览器配置目录）把 ChatGPT 会话封装成五个语义化工具：`awehitch_open_chat`、`awehitch_send_state`、`awehitch_send_handoff`、`awehitch_wait_reply`、`awehitch_read_reply`。一个任务一条聊天：新 TASK_ID 自动开新聊天，同一任务的恢复与多轮审查始终复用它绑定的聊天；原聊天丢失时 `awehitch_send_handoff` 从本地检查点自动生成交接简报（绝不包含文件、diff 或日志）。轮询是 20–30 秒的廉价 DOM 检查；超时不等于失败；只用一个标签页；绝不因超时重发。原方案里绑死 Codex 内置浏览器的控制面被彻底解耦——任何 agent 只要"能调工具"就能接入。
+- **按 harness 并行** — 每个 harness 拥有独立的 ChatGPT 浏览器 profile（从首个登录的 profile 播种，全程只需登录一次）、独立的聊天绑定和独立的 C2C 检查点。codex / opencode / zcode 可以同时跑规划循环；只有同一 harness 的两个会话才需要排队。
 - **数据面** — ChatGPT 通过 9 个只读工具自行拉取文件、diff、搜索结果、测试记录，走 OAuth 2.1 + PKCE + 动态客户端注册的隧道。独立审查：EXECUTED 之后 ChatGPT 亲自看真实 git diff，绝不轻信"测试全过"。
 - **Adapter** — codex（`~/.codex/skills` + `config.toml` MCP + 沙箱 writable_roots）、opencode（`~/.config/opencode` skill + `opencode.json` MCP）、zcode（`~/.zcode/cli/config.json` mcpServers + skill）。每个 adapter 都很薄，互不 import。
 

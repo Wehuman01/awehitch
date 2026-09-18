@@ -3,15 +3,16 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import {
-  browserProfileDir,
-  resolveChatTarget,
   applyChatBinding,
+  ensureBrowserProfile,
+  migrateLegacyBrowserProfile,
   normalizeChatUrl,
+  resolveChatTarget,
 } from "./state.js";
 import { typeMultiline, normalizeForCompare, lastUserText } from "./composer.js";
 import { loadSiteSelectors, type SiteSelectors } from "./selectors.js";
 import { acquireBrowserLock, type BrowserLock } from "./browser-lock.js";
-import { ensureDir, getStateDir } from "../config/paths.js";
+import { ensureDir, getStateDir, sessionKey } from "../config/paths.js";
 import { Logger, nullLogger } from "../logger/index.js";
 
 /**
@@ -102,11 +103,14 @@ export class ControlPlaneError extends Error {
 }
 
 /**
- * The control-plane browser is machine-global: one Chromium on one shared
- * profile (one ChatGPT login for every workspace), guarded by a cross-process
- * lock while it runs. Every `ControlPlaneBrowser` instance drives its OWN tab
- * inside that context, so workspaces sharing a process never fight over
- * `goto`. Per-instance rule 1 below still applies to each tab.
+ * The control-plane browser is per harness: one Chromium per profile (one
+ * ChatGPT login per profile, seeded from the master profile so later
+ * harnesses never log in again), guarded by a cross-process lock per
+ * profile while it runs. Different harnesses therefore drive ChatGPT truly
+ * in parallel; contention only remains within one harness. Every
+ * `ControlPlaneBrowser` instance drives its OWN tab inside its context, so
+ * workspaces sharing a process never fight over `goto`. Per-instance rule 1
+ * below still applies to each tab.
  */
 interface SharedBrowser {
   context: BrowserContext;
@@ -117,19 +121,21 @@ interface SharedBrowser {
   initialPageClaimed: boolean;
 }
 
-let shared: SharedBrowser | null = null;
+const sharedByProfile = new Map<string, SharedBrowser>();
 
-async function launchSharedContext(workspaceId: string): Promise<SharedBrowser> {
-  const acquired = acquireBrowserLock(workspaceId);
+async function launchSharedContext(harness?: string): Promise<SharedBrowser> {
+  const profile = harness ?? "default";
+  const acquired = acquireBrowserLock(profile);
   if ("heldBy" in acquired) {
     throw new ControlPlaneError(
       "BROWSER_LAUNCH_FAILED",
-      `The ChatGPT control-plane browser is in use by another process (pid ${acquired.heldBy.pid}, workspace ${acquired.heldBy.workspaceId}).` +
+      `The ChatGPT control-plane browser (profile ${profile}) is in use by another process ` +
+        `(pid ${acquired.heldBy.pid}).` +
         "Idle sessions release the browser after a few minutes; stop that session and retry."
     );
   }
-  const profile = browserProfileDir();
-  fs.mkdirSync(profile, { recursive: true });
+  migrateLegacyBrowserProfile();
+  const dir = ensureBrowserProfile(harness);
   const launchOptions = {
     headless: false,
     args: ["--disable-blink-features=AutomationControlled"],
@@ -138,13 +144,13 @@ async function launchSharedContext(workspaceId: string): Promise<SharedBrowser> 
   try {
     // Prefer the system Chrome binary (no extra download). The profile is a
     // dedicated directory — the user's daily Chrome login state is NOT reused.
-    context = await chromium.launchPersistentContext(profile, {
+    context = await chromium.launchPersistentContext(dir, {
       ...launchOptions,
       channel: "chrome",
     });
   } catch (firstError) {
     try {
-      context = await chromium.launchPersistentContext(profile, launchOptions);
+      context = await chromium.launchPersistentContext(dir, launchOptions);
     } catch {
       // Never leave the lock held by a failed launch.
       acquired.lock.release();
@@ -155,7 +161,7 @@ async function launchSharedContext(workspaceId: string): Promise<SharedBrowser> 
   // The user can close the window, or Chrome can crash: drop the shared
   // handle and free the profile lock so the next driver call relaunches.
   s.context.once("close", () => {
-    if (shared === s) shared = null;
+    if (sharedByProfile.get(profile) === s) sharedByProfile.delete(profile);
     s.lock.release();
   });
   return s;
@@ -171,17 +177,21 @@ export class ControlPlaneBrowser {
   /** Active selector pack (external override over compiled defaults). */
   private readonly site: SiteSelectors;
   private readonly logger: Logger;
+  /** Harness slice this driver works in (profile, bindings, checkpoint). */
+  private readonly harness?: string;
 
   constructor(
     private readonly workspaceId: string,
     private readonly events: DriverEvents = {},
-    logger?: Logger
+    logger?: Logger,
+    harness?: string
   ) {
     this.logger = logger ?? nullLogger;
+    this.harness = harness;
     this.site = loadSiteSelectors().site;
   }
 
-  /** Lazy-launch (or attach a tab to) the shared Chromium. */
+  /** Lazy-launch (or attach a tab to) this profile's Chromium. */
   private async ensurePage(): Promise<Page> {
     if (this.page && this.page.isClosed()) {
       this.page = null;
@@ -189,11 +199,16 @@ export class ControlPlaneBrowser {
     }
     if (this.page) return this.page;
 
+    const profile = this.harness ?? "default";
     // One relaunch allowed per call: a context may die under us (the user
     // closed the window, Chrome crashed); anything beyond that is a real
     // failure and must surface.
     for (let attempt = 0; ; attempt++) {
-      if (!shared) shared = await launchSharedContext(this.workspaceId);
+      let shared = sharedByProfile.get(profile);
+      if (!shared) {
+        shared = await launchSharedContext(this.harness);
+        sharedByProfile.set(profile, shared);
+      }
       const s = shared;
       try {
         const initial = s.context.pages()[0];
@@ -214,9 +229,9 @@ export class ControlPlaneBrowser {
       } catch (error) {
         if (attempt > 0 || !s.context.isClosed()) throw error;
         // The context died before/while we used it. Its 'close' listener
-        // clears `shared` and the lock; do it here too in case the event has
-        // not been delivered yet. Both are idempotent.
-        if (shared === s) shared = null;
+        // clears the map entry and the lock; do it here too in case the
+        // event has not been delivered yet. Both are idempotent.
+        if (sharedByProfile.get(profile) === s) sharedByProfile.delete(profile);
         s.lock.release();
       }
     }
@@ -228,7 +243,9 @@ export class ControlPlaneBrowser {
     this.sharedRef = null;
     if (!s) return;
     if (--s.refs > 0) return;
-    if (shared === s) shared = null;
+    for (const [profile, shared] of sharedByProfile) {
+      if (shared === s) sharedByProfile.delete(profile);
+    }
     void s.context.close().catch(() => undefined);
     s.lock.release();
   }
@@ -278,10 +295,14 @@ export class ControlPlaneBrowser {
       target = normalizeChatUrl(chatUrl);
       if (!target) throw new ControlPlaneError("INVALID_URL", `Not a ChatGPT URL: ${chatUrl}`);
     } else {
-      const bound = resolveChatTarget(this.workspaceId, {
-        taskId: taskId ?? undefined,
-        fresh: opts.fresh,
-      });
+      const bound = resolveChatTarget(
+        this.workspaceId,
+        {
+          taskId: taskId ?? undefined,
+          fresh: opts.fresh,
+        },
+        this.harness
+      );
       target = bound ? normalizeChatUrl(bound) : null;
     }
     if (!target) target = CHATGPT_HOME;
@@ -313,7 +334,7 @@ export class ControlPlaneBrowser {
   private bindConversationUrl(rawUrl: string): void {
     const url = normalizeChatUrl(rawUrl);
     if (!url) return;
-    applyChatBinding(this.workspaceId, url, this.activeTaskId);
+    applyChatBinding(this.workspaceId, url, this.activeTaskId, this.harness);
   }
 
   /**

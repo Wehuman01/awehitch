@@ -33,7 +33,7 @@ import {
   TUNNEL_CHOICE_PROMPT,
 } from "../tunnel/state.js";
 import { Logger } from "../logger/index.js";
-import { getStateDir } from "../config/paths.js";
+import { getStateDir, parseHarnessKey } from "../config/paths.js";
 import { ensureSandboxAllowlist, getCodexConfigPath, isStateDirAllowlisted } from "../config/sandbox-allow.js";
 import { mergeUiPrefs, readUiPrefs, SETUP_MODES, type SetupMode } from "../config/ui-prefs.js";
 import {
@@ -727,8 +727,9 @@ program
   .command("control-plane", { hidden: true })
   .description("Run the control-plane proxy as a stdio MCP server (spawned by harnesses)")
   .requiredOption("--workspace <path>")
-  .action(async (opts: { workspace: string }) => {
-    await runStdioServer(resolveWorkspace(opts.workspace));
+  .option("--harness <id>", "harness slice: own browser profile, chat bindings and C2C checkpoint", parseHarnessKey)
+  .action(async (opts: { workspace: string; harness?: string }) => {
+    await runStdioServer(resolveWorkspace(opts.workspace), opts.harness);
   });
 
 // ---------------------------------------------------------------- setup
@@ -1514,11 +1515,12 @@ session
   .command("get", { isDefault: true })
   .description("Show the saved ChatGPT conversation / Project for this workspace")
   .option("-w, --workspace <path>")
+  .option("-H, --harness <id>", "harness slice (must match the control-plane's --harness)", parseHarnessKey)
   .option("--json", "machine-readable output", false)
-  .action((opts: { workspace?: string; json: boolean }) => {
+  .action((opts: { workspace?: string; harness?: string; json: boolean }) => {
     try {
       const workspace = new Workspace(resolveWorkspace(opts.workspace));
-      const saved = readSession(workspace.id);
+      const saved = readSession(workspace.id, opts.harness);
       const conversation = resolveConversation(saved);
       if (opts.json) say(JSON.stringify({ ok: true, session: saved, conversation }));
       else if (!saved) {
@@ -1545,6 +1547,7 @@ session
   .command("set")
   .description("Save the ChatGPT Project and/or conversation for this workspace")
   .option("-w, --workspace <path>")
+  .option("-H, --harness <id>", "harness slice (must match the control-plane's --harness)", parseHarnessKey)
   .option("--url <url>", "ChatGPT conversation URL from the address bar")
   .option("--title <title>")
   .option("--task <id>")
@@ -1563,6 +1566,7 @@ session
   .action(
     (opts: {
       workspace?: string;
+      harness?: string;
       url?: string;
       title?: string;
       task?: string;
@@ -1598,7 +1602,7 @@ session
         if (waitingNorm && !WAITING_FOR.includes(waitingNorm as WaitingFor)) {
           throw new Error(`waiting-for must be one of ${WAITING_FOR.join(", ")}`);
         }
-        const saved = mergeSession(readSession(workspace.id), {
+        const saved = mergeSession(readSession(workspace.id, opts.harness), {
           url: opts.url,
           title: opts.title,
           taskId: opts.task,
@@ -1619,7 +1623,7 @@ session
               }
             : undefined,
         });
-        writeSession(workspace.id, saved);
+        writeSession(workspace.id, saved, opts.harness);
         if (saved.projectUrl && saved.conversationMode === "project") {
           check("Recorded the ChatGPT collection; later chats open or reuse from the collection page");
         } else {
@@ -1635,11 +1639,12 @@ session
   .command("clear")
   .description("Forget the current ChatGPT chat (Project binding is kept)")
   .option("-w, --workspace <path>")
+  .option("-H, --harness <id>", "harness slice (must match the control-plane's --harness)", parseHarnessKey)
   .option("--json", "machine-readable output", false)
-  .action((opts: { workspace?: string; json: boolean }) => {
+  .action((opts: { workspace?: string; harness?: string; json: boolean }) => {
     try {
       const workspace = new Workspace(resolveWorkspace(opts.workspace));
-      const result = clearChatPointer(workspace.id);
+      const result = clearChatPointer(workspace.id, opts.harness);
       if (!result.cleared) say("No ChatGPT conversation recorded yet.");
       else if (result.keptProject) check("Cleared the current chat; the collection binding is kept");
       else check("Cleared the conversation record; the next task opens a new ChatGPT chat");

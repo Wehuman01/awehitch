@@ -11,9 +11,15 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const templatePath = path.resolve(here, "..", "..", "skill", "SKILL.md.template");
 
-export function renderSkill(opts: { harness: string; connectorName: string }): string {
+export function renderSkill(opts: {
+  harness: string;
+  /** Lowercase harness id (codex / opencode / zcode), baked into CLI examples. */
+  harnessId: string;
+  connectorName: string;
+}): string {
   const template = fs.readFileSync(templatePath, "utf8");
   return template
     .replaceAll("{{HARNESS}}", opts.harness)
+    .replaceAll("{{HARNESS_ID}}", opts.harnessId)
     .replaceAll("{{CONNECTOR_NAME}}", opts.connectorName);
 }

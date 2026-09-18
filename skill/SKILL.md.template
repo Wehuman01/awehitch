@@ -164,13 +164,13 @@ Quick question — answer in plain language; no [C2C] message needed.
 Protocol states exchanged with ChatGPT:
 `INIT → PLAN → EXECUTING → EXECUTED → REVIEW → (PLAN | DONE | BLOCKED)`.
 All control messages start with `[C2C]`, keep them under 1 KB.
-Store progress in the session checkpoint via `awehitch session set`.
+Store progress in the session checkpoint via `awehitch session set` (always with `-H {{HARNESS_ID}}`: each harness keeps its own checkpoint and ChatGPT browser, so several agents can run C2C in parallel).
 
 0. `awehitch doctor -w <workspace> --json` (auto-repairs). Doctor gate: if
    local is not green, do not open ChatGPT and do not send INIT. Follow its
    `chatgptRepair` / `namedRepair` guidance first.
-1. `awehitch session -w <workspace> --json` → resume from `session.checkpoint`
-   before any INIT (details in `awehitch session get --json`). Never re-pair or
+1. `awehitch session -w <workspace> -H {{HARNESS_ID}} --json` → resume from `session.checkpoint`
+   before any INIT (details in `awehitch session get -H {{HARNESS_ID}} --json`). Never re-pair or
    recreate the connector just to resume.
 2. `awehitch_open_chat` with `task_id={{TASK_ID}}`. A NEW task automatically
    gets a fresh chat; a task with an existing binding reopens ITS chat —
@@ -203,12 +203,12 @@ Inspect the connected workspace through the {{CONNECTOR_NAME}} MCP connector.
 Produce a C2C PLAN message.
 ```
 
-   Then `awehitch session set -w <ws> --task {{TASK_ID}} --iteration 0 --state INIT --protocol-state INIT --waiting-for GPT_PLAN --goal "<short goal>" --next-step "wait for PLAN"`.
+   Then `awehitch session set -w <ws> -H {{HARNESS_ID}} --task {{TASK_ID}} --iteration 0 --state INIT --protocol-state INIT --waiting-for GPT_PLAN --goal "<short goal>" --next-step "wait for PLAN"`.
 4. `awehitch_wait_reply` (expect_state=PLAN). Read GOAL/ACTIONS/TESTS/
    SUCCESS_CRITERIA. If the PLAN is a bare one-liner, ask once for rationale
-   and per-file suggestions. Then `awehitch session set --protocol-state PLAN_RECEIVED --waiting-for none --next-step "execute PLAN"`.
+   and per-file suggestions. Then `awehitch session set -H {{HARNESS_ID}} --protocol-state PLAN_RECEIVED --waiting-for none --next-step "execute PLAN"`.
 5. Execute the plan yourself with your own tools. Before starting:
-   `awehitch session set --protocol-state EXECUTING --waiting-for none --next-step "finish PLAN then record"`.
+   `awehitch session set -H {{HARNESS_ID}} --protocol-state EXECUTING --waiting-for none --next-step "finish PLAN then record"`.
 6. Record the execution (metadata always; command output when a test/build/
    lint ran):
 
@@ -245,12 +245,12 @@ If status is restricted, ignore it and review from git_diff.
    workspace root itself is not a repo (home-rooted workspaces), `.`
    otherwise.
 
-   Then `awehitch session set --protocol-state EXECUTED_SENT --waiting-for GPT_REVIEW --next-step "wait for PLAN or DONE"`.
+   Then `awehitch session set -H {{HARNESS_ID}} --protocol-state EXECUTED_SENT --waiting-for GPT_REVIEW --next-step "wait for PLAN or DONE"`.
 8. `awehitch_wait_reply`. ChatGPT reviews via MCP and replies DONE / PLAN
    (next iteration) / BLOCKED. Loop; respect maxIterations (`.c2c.json`,
    default 12) — at the limit ask the user whether to continue.
 9. On DONE: summarize in plain language and
-   `awehitch session set --state DONE --clear-checkpoint`.
+   `awehitch session set -H {{HARNESS_ID}} --state DONE --clear-checkpoint`.
 10. On BLOCKED: surface the reason or the single decision the user must make.
 
 ## Workflow: reconnect after address reclaim

@@ -1,11 +1,17 @@
+import fs from "node:fs";
 import path from "node:path";
-import { getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
+import { getStateDir, readJsonIfExists, sessionKey, writeSecureJson } from "../config/paths.js";
+import { isBrowserLockHeld } from "./browser-lock.js";
 import { readSession } from "../session/state.js";
 
 /**
  * Control-plane proxy state: which ChatGPT conversation is bound to which
- * workspace, and the Playwright profile directory (login state lives there).
- * All of it stays in the OS state dir, never in the project.
+ * workspace, and the Playwright profile directories (login state lives
+ * there). All of it stays in the OS state dir, never in the project.
+ *
+ * Every piece is keyed by the session key (workspace + optional harness):
+ * each harness gets its own chat bindings, checkpoint and browser profile,
+ * which is what makes parallel C2C across harnesses safe.
  */
 
 export interface ControlPlaneState {
@@ -20,47 +26,98 @@ export interface ControlPlaneState {
   savedAt: string;
 }
 
-export function controlPlaneStateFile(workspaceId: string): string {
-  return path.join(getStateDir(), "control-plane", `${workspaceId}.json`);
+export function controlPlaneStateFile(workspaceId: string, harness?: string): string {
+  return path.join(getStateDir(), "control-plane", `${sessionKey(workspaceId, harness)}.json`);
 }
 
-export function readControlPlaneState(workspaceId: string): ControlPlaneState | null {
-  return readJsonIfExists<ControlPlaneState>(controlPlaneStateFile(workspaceId));
+export function readControlPlaneState(workspaceId: string, harness?: string): ControlPlaneState | null {
+  return readJsonIfExists<ControlPlaneState>(controlPlaneStateFile(workspaceId, harness));
 }
 
 export function writeControlPlaneState(
   workspaceId: string,
-  state: ControlPlaneState
+  state: ControlPlaneState,
+  harness?: string
 ): ControlPlaneState {
-  writeSecureJson(controlPlaneStateFile(workspaceId), state);
+  writeSecureJson(controlPlaneStateFile(workspaceId, harness), state);
   return state;
 }
 
 export function mergeControlPlaneState(
   workspaceId: string,
-  patch: Partial<Omit<ControlPlaneState, "savedAt">>
+  patch: Partial<Omit<ControlPlaneState, "savedAt">>,
+  harness?: string
 ): ControlPlaneState {
-  const previous = readControlPlaneState(workspaceId);
+  const previous = readControlPlaneState(workspaceId, harness);
   const next: ControlPlaneState = {
     ...previous,
     ...patch,
     savedAt: new Date().toISOString(),
   };
-  writeControlPlaneState(workspaceId, next);
+  writeControlPlaneState(workspaceId, next, harness);
   return next;
 }
 
-/**
- * Persistent browser profile for the control plane. A dedicated profile keeps
- * the ChatGPT login isolated from the user's daily Chrome profile.
- *
- * The profile is SHARED by every workspace on the machine: one ChatGPT login
- * instead of one per project. Only one process may hold it at a time (see
- * `control-plane/browser-lock.ts`); sessions release the browser after a few
- * idle minutes so a parked workspace never blocks another.
- */
-export function browserProfileDir(): string {
+// ---------------------------------------------------------------- browser profiles
+
+/** Layout before per-harness profiles: the one shared profile directory. */
+function legacyBrowserProfileDir(): string {
   return path.join(getStateDir(), "control-plane", "browser-profile", "shared");
+}
+
+/** Persistent Chromium profile for a session key (login state lives here). */
+export function browserProfileDir(harness?: string): string {
+  return path.join(getStateDir(), "control-plane", "profiles", harness ?? "default");
+}
+
+/**
+ * Seed a per-harness profile from the logged-in master so a second harness
+ * never needs its own ChatGPT login. Copying a live Chromium profile can
+ * corrupt the seed, so a source holding its browser lock is not copied —
+ * the harness then starts with an empty profile and logs in itself.
+ */
+export function ensureBrowserProfile(harness?: string): string {
+  const dir = browserProfileDir(harness);
+  if (fs.existsSync(dir)) return dir;
+
+  const legacy = legacyBrowserProfileDir();
+  let source: string | null = null;
+  if (harness) {
+    if (fs.existsSync(browserProfileDir()) && !isBrowserLockHeld("default")) {
+      source = browserProfileDir();
+    } else if (fs.existsSync(legacy) && !isBrowserLockHeld()) {
+      source = legacy;
+    }
+  }
+  fs.mkdirSync(path.dirname(dir), { recursive: true, mode: 0o700 });
+  if (source) {
+    try {
+      fs.cpSync(source, dir, { recursive: true });
+    } catch {
+      // A broken seed is worse than none: fall back to an empty profile.
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}
+
+/**
+ * One-time migration: adopt the pre-existing shared profile as the default
+ * (master) profile so the existing ChatGPT login survives the upgrade.
+ * Cheap rename, done before any profile is seeded.
+ */
+export function migrateLegacyBrowserProfile(): void {
+  const legacy = legacyBrowserProfileDir();
+  const master = browserProfileDir();
+  if (!fs.existsSync(legacy) || fs.existsSync(master)) return;
+  fs.mkdirSync(path.dirname(master), { recursive: true, mode: 0o700 });
+  try {
+    fs.renameSync(legacy, master);
+  } catch {
+    // Cross-device or locked: leave it; the master profile will be created
+    // fresh and the user logs in once more.
+  }
 }
 
 export function normalizeChatUrl(url: string): string | null {
@@ -79,8 +136,8 @@ export function normalizeChatUrl(url: string): string | null {
  * per workspace. It still identifies the chat of the checkpoint's task, so
  * only that task may claim it.
  */
-function legacyTaskChatUrl(workspaceId: string, taskId: string): string | null {
-  const session = readSession(workspaceId);
+function legacyTaskChatUrl(workspaceId: string, taskId: string, harness?: string): string | null {
+  const session = readSession(workspaceId, harness);
   const checkpoint = session?.checkpoint;
   if (!checkpoint || checkpoint.taskId !== taskId) return null;
   const url = checkpoint.chatUrl ?? session?.url;
@@ -96,17 +153,18 @@ function legacyTaskChatUrl(workspaceId: string, taskId: string): string | null {
  */
 export function resolveChatTarget(
   workspaceId: string,
-  input: { taskId?: string; fresh?: boolean } = {}
+  input: { taskId?: string; fresh?: boolean } = {},
+  harness?: string
 ): string | null {
   const taskId = input.taskId?.trim() || null;
   if (taskId) {
     if (input.fresh) return null;
-    const bound = readControlPlaneState(workspaceId)?.taskChats?.[taskId];
+    const bound = readControlPlaneState(workspaceId, harness)?.taskChats?.[taskId];
     if (bound) return bound;
-    return legacyTaskChatUrl(workspaceId, taskId);
+    return legacyTaskChatUrl(workspaceId, taskId, harness);
   }
   if (input.fresh) return null;
-  return readControlPlaneState(workspaceId)?.chatUrl ?? null;
+  return readControlPlaneState(workspaceId, harness)?.chatUrl ?? null;
 }
 
 /**
@@ -118,10 +176,11 @@ export function resolveChatTarget(
 export function applyChatBinding(
   workspaceId: string,
   url: string,
-  taskId: string | null
+  taskId: string | null,
+  harness?: string
 ): ControlPlaneState | null {
   if (!url.startsWith("https://chatgpt.com/c/")) return null;
-  const saved = readControlPlaneState(workspaceId);
+  const saved = readControlPlaneState(workspaceId, harness);
   const taskChats = { ...(saved?.taskChats ?? {}) };
   let changed = saved?.chatUrl !== url;
   if (taskId && taskChats[taskId] !== url) {
@@ -135,5 +194,5 @@ export function applyChatBinding(
     savedAt: new Date().toISOString(),
   };
   if (taskId) next.taskChats = taskChats;
-  return writeControlPlaneState(workspaceId, next);
+  return writeControlPlaneState(workspaceId, next, harness);
 }

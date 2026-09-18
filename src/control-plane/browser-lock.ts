@@ -14,7 +14,7 @@ import { getStateDir } from "../config/paths.js";
 
 export interface BrowserLockInfo {
   pid: number;
-  workspaceId: string;
+  profile: string;
   acquiredAt: string;
 }
 
@@ -27,14 +27,20 @@ export type BrowserLockAcquire =
   | { lock: BrowserLock }
   | { heldBy: BrowserLockInfo };
 
-export function browserProfileLockFile(): string {
-  return path.join(getStateDir(), "control-plane", "browser-profile.lock");
+/**
+ * One lock per browser profile. Profiles are named by harness ("default"
+ * for harness-less callers), so different harnesses hold different browsers
+ * and can drive ChatGPT truly in parallel.
+ */
+export function browserProfileLockFile(profile?: string): string {
+  if (!profile) return path.join(getStateDir(), "control-plane", "browser-profile.lock");
+  return path.join(getStateDir(), "control-plane", "profiles", `${profile}.lock`);
 }
 
 function readLock(file: string): BrowserLockInfo | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<BrowserLockInfo> | null;
-    if (parsed && typeof parsed.pid === "number" && typeof parsed.workspaceId === "string") {
+    if (parsed && typeof parsed.pid === "number" && typeof parsed.profile === "string") {
       return parsed as BrowserLockInfo;
     }
     return null;
@@ -53,16 +59,22 @@ function isAlive(pid: number): boolean {
   }
 }
 
+/** True when a live process currently holds the named profile's browser. */
+export function isBrowserLockHeld(profile?: string): boolean {
+  const holder = readLock(browserProfileLockFile(profile));
+  return holder !== null && isAlive(holder.pid);
+}
+
 /**
- * Acquire the profile lock. Returns `heldBy` when a live process owns the
- * browser; a lock from a dead process is stolen (crash leftover).
+ * Acquire the named profile's lock. Returns `heldBy` when a live process
+ * owns the browser; a lock from a dead process is stolen (crash leftover).
  */
-export function acquireBrowserLock(workspaceId: string): BrowserLockAcquire {
-  const file = browserProfileLockFile();
+export function acquireBrowserLock(profile: string): BrowserLockAcquire {
+  const file = browserProfileLockFile(profile);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const info: BrowserLockInfo = {
     pid: process.pid,
-    workspaceId,
+    profile,
     acquiredAt: new Date().toISOString(),
   };
   for (;;) {

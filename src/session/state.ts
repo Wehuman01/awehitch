@@ -1,6 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
-import { getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
+import { getStateDir, readJsonIfExists, sessionKey, writeSecureJson } from "../config/paths.js";
 
 export type ConversationMode = "long-chat" | "project";
 
@@ -80,16 +80,22 @@ export interface ConversationView {
   reuseSavedChat: boolean;
 }
 
-export function sessionFile(workspaceId: string): string {
-  return path.join(getStateDir(), "sessions", `${workspaceId}.json`);
+/**
+ * Session storage. Without a harness id this is the shared workspace state
+ * (legacy layout); with one, each harness keeps its own checkpoint so two
+ * agents running C2C in the same workspace never overwrite each other's
+ * loop state.
+ */
+export function sessionFile(workspaceId: string, harness?: string): string {
+  return path.join(getStateDir(), "sessions", `${sessionKey(workspaceId, harness)}.json`);
 }
 
-export function readSession(workspaceId: string): SavedSession | null {
-  return readJsonIfExists<SavedSession>(sessionFile(workspaceId));
+export function readSession(workspaceId: string, harness?: string): SavedSession | null {
+  return readJsonIfExists<SavedSession>(sessionFile(workspaceId, harness));
 }
 
-export function writeSession(workspaceId: string, session: SavedSession): SavedSession {
-  writeSecureJson(sessionFile(workspaceId), session);
+export function writeSession(workspaceId: string, session: SavedSession, harness?: string): SavedSession {
+  writeSecureJson(sessionFile(workspaceId, harness), session);
   return session;
 }
 
@@ -265,21 +271,28 @@ export function mergeSession(previous: SavedSession | null, patch: SessionPatch)
 }
 
 /** Drop the current chat pointer. Keep Project binding so the collection stays. */
-export function clearChatPointer(workspaceId: string): { cleared: boolean; keptProject: boolean } {
-  const previous = readSession(workspaceId);
+export function clearChatPointer(
+  workspaceId: string,
+  harness?: string
+): { cleared: boolean; keptProject: boolean } {
+  const previous = readSession(workspaceId, harness);
   if (!previous) return { cleared: false, keptProject: false };
   const view = resolveConversation(previous);
   if (view.mode === "project" && view.projectUrl) {
-    writeSession(workspaceId, {
-      conversationMode: "project",
-      projectUrl: view.projectUrl,
-      connectorName: previous.connectorName,
-      checkpoint: previous.checkpoint,
-      savedAt: new Date().toISOString(),
-    });
+    writeSession(
+      workspaceId,
+      {
+        conversationMode: "project",
+        projectUrl: view.projectUrl,
+        connectorName: previous.connectorName,
+        checkpoint: previous.checkpoint,
+        savedAt: new Date().toISOString(),
+      },
+      harness
+    );
     return { cleared: true, keptProject: true };
   }
-  fs.rmSync(sessionFile(workspaceId), { force: true });
+  fs.rmSync(sessionFile(workspaceId, harness), { force: true });
   return { cleared: true, keptProject: false };
 }
 

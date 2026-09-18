@@ -31,7 +31,7 @@ export function setupOpencodeAdapter(opts: {
   const skillDir = path.join(home, "skills", "awehitch");
   fs.mkdirSync(skillDir, { recursive: true });
   const skillPath = path.join(skillDir, "SKILL.md");
-  writeFileAtomic(skillPath, renderSkill({ harness: "opencode", connectorName: opts.connectorName }), {
+  writeFileAtomic(skillPath, renderSkill({ harness: "opencode", harnessId: "opencode", connectorName: opts.connectorName }), {
     mode: 0o644,
   });
 
@@ -41,7 +41,14 @@ export function setupOpencodeAdapter(opts: {
   const raw = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8") : "";
   const entry = {
     type: "local",
-    command: [opts.cliEntry.cmd, ...opts.cliEntry.args, "--workspace", opts.workspaceRoot],
+    command: [
+      opts.cliEntry.cmd,
+      ...opts.cliEntry.args,
+      "--workspace",
+      opts.workspaceRoot,
+      "--harness",
+      "opencode",
+    ],
     enabled: true,
   };
   let next: string;
