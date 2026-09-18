@@ -122,7 +122,7 @@ Agent/高级命令（session / record / login / connector-setup / stop / pair / 
 
 - **Bridge 没在跑** — 跑 `awehitch up` 即可，doctor 也会自动起；日志看 `awehitch logs --verbose`。doctor 说状态*不确定*时等一等再跑——不要起第二个 bridge。
 - **地址过期 / 连接器坏了** — doctor 会标记 `chatgptRepair.needed`：**删除**本工作区的连接器、用新地址重建。绝不点 Reconnect——旧 URL 已死。
-- **连接器自动配置失败（`CONNECTOR_DOM_CHANGED`）** — ChatGPT 页面结构变了。此时 `awehitch up` 会打印确切的手动步骤（开发者模式、删除旧连接器、创建表单的名称和服务器地址、配对码）：在浏览器里照做，然后重跑 `awehitch up`。想每次都走引导：`awehitch prefs set --setup-mode manual`。先看哪一步定位失效：`awehitch connector-setup --dry-run`。
+- **连接器自动配置失败（`CONNECTOR_DOM_CHANGED`）** — ChatGPT 页面结构变了。此时 `awehitch up` 会打印确切的手动步骤（开发者模式、删除旧连接器、创建表单的名称和服务器地址、配对码）：在浏览器里照做，然后重跑 `awehitch up`。想彻底不弹配置浏览器：`awehitch prefs set --setup-mode manual`，之后 `up` 和 `connector-setup` 只打印引导步骤（在你自己已登录的浏览器里完成），不再启动浏览器。先看哪一步定位失效：`awehitch connector-setup --dry-run`。
 - **connector-setup 时 `plugins/list` 返回 5xx** — ChatGPT 后端偶发抖动；清理步骤会自动重试，仍失败就跳过清理继续创建。若之后残留了同名旧连接器，重跑一次即可清掉。
 - **配对码无效** — 一次性、约 5 分钟过期：`awehitch pair` 换新码。
 - **每次工具调用都 401** — 令牌过期且刷新失败：在 ChatGPT 里用新配对码重新授权。

@@ -755,3 +755,29 @@ describe.skipIf(!browser)("runConnectorSetupFlow", () => {
     expect(stepOf(result, "authorize")?.status).toBe("skipped");
   });
 });
+
+// The guided-manual plan is pure data: no browser, no page, no fixtures —
+// it must carry everything a human needs in their OWN browser.
+describe("manualConnectorFallback", () => {
+  it("builds the full manual plan from the spec alone", async () => {
+    const { manualConnectorFallback, DEFAULT_CONNECTOR_DESCRIPTION } = await import(
+      "../src/control-plane/connector.js"
+    );
+    const plan = manualConnectorFallback(SPEC);
+
+    expect(plan.connectorName).toBe(CONNECTOR_NAME);
+    expect(plan.mcpUrl).toBe(SPEC.mcpUrl);
+    expect(plan.pairingCode).toBe(CORRECT_CODE);
+    expect(plan.description).toBe(DEFAULT_CONNECTOR_DESCRIPTION);
+    expect(plan.steps).toHaveLength(4);
+    // Every step names its page URL and the plan is self-contained: the
+    // user never needs a value that is not printed here.
+    const joined = plan.steps.join("\n");
+    expect(joined).toContain(plan.pages.developerMode);
+    expect(joined).toContain(plan.pages.connectors);
+    expect(joined).toContain(plan.pages.createConnector);
+    expect(joined).toContain(CONNECTOR_NAME);
+    expect(joined).toContain(SPEC.mcpUrl);
+    expect(joined).toContain(CORRECT_CODE);
+  });
+});

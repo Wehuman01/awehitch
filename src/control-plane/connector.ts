@@ -807,6 +807,24 @@ function manualSteps(
 }
 
 /**
+ * The guided-manual plan: what a human needs in their OWN browser (already
+ * logged in) to create the connector — no control-plane browser involved.
+ * Built from the same step list the automated flow degrades to on failure,
+ * so the two paths can never drift apart.
+ */
+export function manualConnectorFallback(spec: ConnectorSetupSpec): ConnectorManualFallback {
+  const description = spec.description ?? DEFAULT_CONNECTOR_DESCRIPTION;
+  return {
+    connectorName: spec.connectorName,
+    mcpUrl: spec.mcpUrl,
+    pairingCode: spec.pairingCode,
+    description,
+    pages: CONNECTOR_PAGE_URLS,
+    steps: manualSteps(spec.connectorName, spec, CONNECTOR_PAGE_URLS, description),
+  };
+}
+
+/**
  * Run the whole connector setup against an already-open page.
  *
  * Split out from browser launching so it can be driven by an offline fixture
@@ -825,14 +843,8 @@ export async function runConnectorSetupFlow(
   // later step (authorize lookup, manual fallback) must follow it.
   let currentName = spec.connectorName;
 
-  const fallback = (): ConnectorManualFallback => ({
-    connectorName: currentName,
-    mcpUrl: spec.mcpUrl,
-    pairingCode: spec.pairingCode,
-    description,
-    pages: ctx.urls,
-    steps: manualSteps(currentName, spec, ctx.urls, description),
-  });
+  const fallback = (): ConnectorManualFallback =>
+    manualConnectorFallback({ ...spec, connectorName: currentName });
 
   const dryProbe = async (stepId: ConnectorStepId): Promise<void> => {
     for (const target of STEP_TARGETS[stepId]) {

@@ -74,7 +74,9 @@ import { saveExecutionOutput } from "../execution/output.js";
 import { runStdioServer } from "../control-plane/server.js";
 import { ControlPlaneBrowser, interactiveLogin } from "../control-plane/browser.js";
 import {
+  manualConnectorFallback,
   runConnectorSetup,
+  type ConnectorManualFallback,
   type ConnectorSetupResult,
   type ConnectorStep,
 } from "../control-plane/connector.js";
@@ -503,10 +505,17 @@ program
     const action = mcpUrl ? connectorAction(previousEndpoint?.mcpUrl, mcpUrl) : "none";
     const addressChanged = action === "update";
     let connectorUpdated = false;
+    // Guided-manual mode (`prefs setup-mode manual`): print the steps for the
+    // user's own browser instead of opening the control-plane browser.
+    let manualSetup: ConnectorManualFallback | null = null;
     // Holder object: assignments happen inside the closure below; a bare `let`
     // would be narrowed back to `null` at the use site.
     const connector: { outcome: ConnectorOutcome | null } = { outcome: null };
     if (mcpUrl && !(action === "none" && info.tokenCount > 0)) {
+      if (readUiPrefs().setupMode === "manual") {
+        const pairing = await adminFetch<PairingResponse>(runtime, "POST", "/admin/pairing");
+        manualSetup = manualConnectorFallback({ connectorName, mcpUrl, pairingCode: pairing.code });
+      } else {
       const attempt = async (): Promise<"ok" | "failed" | "paused"> => {
         const outcome = await runConnectorFor(workspace.id, runtime, info, mcpUrl, connectorName, opts.timeout, onNotice);
         if (outcome.result.ok) {
@@ -576,6 +585,7 @@ program
           return;
         }
       }
+      }
     }
 
     // 3. Harness adapters (idempotent; a wiring failure must not abort the
@@ -620,17 +630,37 @@ program
         harnesses,
         needsLogin: false,
         connectorUpdated,
+        // Present only in guided-manual mode: the agent relays these steps
+        // to the user instead of awehitch opening a browser.
+        ...(manualSetup ? { manualSetup } : {}),
       }));
       return;
     }
 
     say(PRODUCT_NAME);
     say("");
-    if (mcpUrl) check(`ChatGPT is connected to this machine's workspaces`);
+    if (manualSetup) say("· Local side ready; the ChatGPT connector needs the guided manual steps below");
+    else if (mcpUrl) check(`ChatGPT is connected to this machine's workspaces`);
     else say("· Local mode started (no public connection; ChatGPT cannot reach this machine yet)");
     say(`· Serving ${info.workspaces.length} workspace(s): ${served}`);
     if (requested.length === 0) say("· No coding agent detected (codex / opencode / zcode); pass --harness to pick one");
     else say(`· Wired ${requested.map((h) => harnessLabel(h)).join(", ")}`);
+    if (manualSetup) {
+      say("");
+      say("Guided manual setup — complete these in your own browser (already logged in to ChatGPT):");
+      for (const step of manualSetup.steps) say("· " + step);
+      say("");
+      say("The pairing code expires in ~5 minutes; re-run `awehitch up` for a fresh one.");
+      say("Done? Re-run `awehitch up` to verify the connection.");
+      if (fg) {
+        say("");
+        say(fgChild
+          ? "Foreground mode: service logs stream below. Press Ctrl+C to stop awehitch."
+          : "Bridge already running: streaming its log below. Press Ctrl+C to stop awehitch.");
+        await attachForeground(fgChild, fgExit);
+      }
+      return;
+    }
     say("");
     say('From now on, ask your agent to "use ChatGPT to plan XXX".');
     say("After a reboot it usually self-heals; if not, re-run awehitch.");
@@ -928,6 +958,30 @@ program
         : nameFor();
       const resolvedMcpUrl = mcpUrl ?? `http://127.0.0.1:${runtime.port}/mcp`;
       const pairing = await adminFetch<PairingResponse>(runtime, "POST", "/admin/pairing");
+
+      // Guided-manual mode: print the steps for the user's own browser;
+      // the control-plane browser is never opened.
+      if (readUiPrefs().setupMode === "manual") {
+        const plan = manualConnectorFallback({ connectorName, mcpUrl: resolvedMcpUrl, pairingCode: pairing.code });
+        if (opts.json) {
+          say(JSON.stringify({
+            ok: true,
+            dryRun: false,
+            guided: true,
+            steps: [],
+            connectorName,
+            mcpUrl: resolvedMcpUrl,
+            manualFallback: plan,
+          }));
+        } else {
+          check("Guided manual setup (setup mode: manual) — no browser will open");
+          say("");
+          for (const step of plan.steps) say("· " + step);
+          say("");
+          say("The pairing code expires in ~5 minutes; re-run this command for a fresh one.");
+        }
+        return;
+      }
 
       // Baseline BEFORE the run: a token left over from an earlier pairing
       // must never be mistaken for this run's success.
@@ -1459,7 +1513,11 @@ program
       say("");
     }
     if (chatgptSetup.needed) {
-      say(`Can finish automatically (opens the control-plane browser): ${chatgptSetup.command}`);
+      if (readUiPrefs().setupMode === "manual") {
+        say(`Guided manual steps, no browser (setup mode: manual): ${chatgptSetup.command}`);
+      } else {
+        say(`Can finish automatically (opens the control-plane browser): ${chatgptSetup.command}`);
+      }
       say(`Just probe page elements: ${chatgptSetup.dryRunCommand}`);
       say("");
     }
