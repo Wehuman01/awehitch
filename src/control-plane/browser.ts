@@ -564,6 +564,12 @@ export class ControlPlaneBrowser {
   async readLatestUserMessage(): Promise<{ text: string | null; count: number }> {
     const page = await this.ensurePage();
     await this.ensureConversationOpen(page);
+    // Same client-rendering story as the sidebar scan: the turns hydrate
+    // seconds after domcontentloaded, so an immediate count sees zero. Wait
+    // bounded for the first user turn, then read.
+    await page
+      .waitForSelector(this.site.selectors.userTurn, { timeout: 10_000 })
+      .catch(() => undefined);
     const count = await page.locator(this.site.selectors.userTurn).count().catch(() => 0);
     const text = count > 0 ? await lastUserText(page, this.site.selectors.userTurn) : null;
     return { text, count };
@@ -579,6 +585,13 @@ export class ControlPlaneBrowser {
   async listRecentConversations(limit = 3): Promise<string[]> {
     const page = await this.ensurePage();
     await this.openConversation(CHATGPT_HOME);
+    // The sidebar is client-rendered: domcontentloaded fires well before the
+    // conversation list hydrates (seconds later on a fresh load), so an
+    // immediate scrape sees an empty sidebar every time. Wait bounded for
+    // the first link, then scrape.
+    await page
+      .waitForSelector(this.site.selectors.sidebarLink, { timeout: 15_000 })
+      .catch(() => undefined);
     const handles = await page
       .locator(this.site.selectors.sidebarLink)
       .elementHandles()

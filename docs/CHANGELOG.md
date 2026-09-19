@@ -16,6 +16,12 @@
   binding a conversation is the only trigger for the dispatch loop.
 
 ### Changes
+- The dispatch auto-watch now actually sees conversations: the ChatGPT
+  sidebar and conversation turns are client-rendered, and the scan used
+  to scrape right after domcontentloaded — zero candidates and zero user
+  turns every cycle, silently. Both reads now wait (bounded) for their
+  selector, and an empty sidebar scan logs a warning once per streak
+  instead of staying silent.
 - Default dispatch marker changed from `@opencode` (a specific harness's
   name) to the neutral `@agent`. Existing configs that set a marker keep it;
   users relying on the old default type `@agent` from now on.

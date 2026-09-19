@@ -109,6 +109,7 @@ export class DispatchWatcher {
   private readonly installedFn: () => HarnessId[];
   private readonly registeredRoots: () => string[];
   private autoWorkspaceWarned = false;
+  private autoScanWarned = false;
 
   constructor(opts: DispatchWatcherOptions = {}) {
     this.pollMs = opts.pollMs ?? POLL_MS;
@@ -253,6 +254,19 @@ export class DispatchWatcher {
     this.autoWorkspaceWarned = false;
     const driver = this.driverFor(root);
     const candidates = await driver.listRecentConversations(AUTO_SCAN_LIMIT);
+    if (candidates.length === 0) {
+      // Silence here is what made a broken scan undiagnosable: say it once
+      // per streak, then keep retrying quietly.
+      if (!this.autoScanWarned) {
+        this.autoScanWarned = true;
+        this.logger.warn(
+          "auto dispatch: the ChatGPT sidebar showed no recent conversations " +
+            "(bot-check page? ChatGPT DOM changed?); retrying next cycle."
+        );
+      }
+      return;
+    }
+    this.autoScanWarned = false;
     const scanned = { ...(watch.scanned ?? {}) };
     const markers = autoMarkers(resolveDispatchMarker(new Workspace(root).projectConfig.dispatchMarker));
 

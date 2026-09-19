@@ -148,3 +148,44 @@ describe("readReply persists the conversation URL on every poll", () => {
     expect(saved?.taskChats?.weather).toBe("https://chatgpt.com/c/poll-1");
   });
 });
+
+describe("listRecentConversations waits for the client-rendered sidebar", () => {
+  it("scrapes after the sidebar link appears, not at domcontentloaded", async () => {
+    const handle = { getAttribute: async (name: string) => (name === "href" ? "/c/abc-123" : null) };
+    let hydrated = false;
+    const page = {
+      url: () => "https://chatgpt.com/",
+      isClosed: () => false,
+      close: async () => undefined,
+      goto: vi.fn(),
+      locator: vi.fn(() => ({
+        count: async () => 0,
+        elementHandles: async () => (hydrated ? [handle] : []),
+      })),
+      waitForSelector: vi.fn(async () => {
+        hydrated = true; // the wait is what makes the links appear
+        return handle;
+      }),
+    } as unknown as Page;
+    const d = driverFor(page);
+
+    await expect(d.listRecentConversations(3)).resolves.toEqual(["https://chatgpt.com/c/abc-123"]);
+    expect((page as unknown as { waitForSelector: ReturnType<typeof vi.fn> }).waitForSelector).toHaveBeenCalled();
+  });
+
+  it("returns an honest empty list when the sidebar never renders", async () => {
+    const page = {
+      url: () => "https://chatgpt.com/",
+      isClosed: () => false,
+      close: async () => undefined,
+      goto: vi.fn(),
+      locator: vi.fn(() => ({ count: async () => 0, elementHandles: async () => [] })),
+      waitForSelector: vi.fn(async () => {
+        throw new Error("Timeout 15000ms exceeded");
+      }),
+    } as unknown as Page;
+    const d = driverFor(page);
+
+    await expect(d.listRecentConversations(3)).resolves.toEqual([]);
+  });
+});

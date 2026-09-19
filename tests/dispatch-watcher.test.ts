@@ -77,7 +77,7 @@ function stubDriver(
 function watcherOpts(
   driver: unknown,
   spawns: unknown[],
-  opts: { exitCode?: number; installed?: HarnessId[]; registered?: string[] } = {}
+  opts: { exitCode?: number; installed?: HarnessId[]; registered?: string[]; logger?: unknown } = {}
 ) {
   return {
     driver: driver as never,
@@ -87,6 +87,7 @@ function watcherOpts(
     },
     installedFn: () => opts.installed ?? (["codex", "opencode"] as HarnessId[]),
     registeredRoots: () => opts.registered ?? [],
+    ...(opts.logger ? { logger: opts.logger } : {}),
     pollMs: 5,
   };
 }
@@ -420,6 +421,35 @@ describe("DispatchWatcher auto mode", () => {
       expect(spawns).toHaveLength(0);
     } finally {
       await watcher3.stop();
+    }
+    cleanup(root);
+  });
+
+  it("warns once per empty-scan streak, then recovers silently", async () => {
+    const root = makeTmpDir("dispatch-root");
+    const { driver, calls } = stubDriver([{ status: "timeout", directive: null }], null);
+    calls.recent = []; // the broken-scan case: zero candidates every cycle
+    const spawns: unknown[] = [];
+    const warnings: string[] = [];
+    const logger = { warn: (msg: string) => warnings.push(msg), info: () => undefined, error: () => undefined };
+    const watcher = new DispatchWatcher(watcherOpts(driver, spawns, { registered: [root], logger }));
+    watcher.start();
+    try {
+      await vi.waitFor(() => expect(warnings).toHaveLength(1));
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(warnings).toHaveLength(1); // once per streak, not once per cycle
+
+      calls.recent = [CHAT_URL]; // sidebar recovers; latest message carries no marker
+      calls.latestUser = "hello there";
+      await vi.waitFor(() => expect(calls.opened.length).toBeGreaterThan(0));
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(warnings).toHaveLength(1);
+      expect(spawns).toHaveLength(0);
+
+      calls.recent = []; // a new empty streak warns again
+      await vi.waitFor(() => expect(warnings).toHaveLength(2));
+    } finally {
+      await watcher.stop();
     }
     cleanup(root);
   });
