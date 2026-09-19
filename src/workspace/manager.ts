@@ -6,6 +6,7 @@ import { IgnoreRules } from "./ignore.js";
 import { readJsonIfExists } from "../config/paths.js";
 
 export type WorkspaceErrorCode =
+  | "INVALID_CONFIG"
   | "INVALID_PATH"
   | "PATH_OUTSIDE_WORKSPACE"
   | "ACCESS_DENIED_SENSITIVE_FILE"
@@ -148,6 +149,37 @@ export class Workspace {
     this.ignoreRules = new IgnoreRules(real);
     this.projectConfig = parseProjectConfig(readJsonIfExists<unknown>(path.join(real, ".c2c.json")));
     this.name = this.projectConfig.name ?? path.basename(real);
+  }
+
+  /**
+   * Persist the C2C mode to .c2c.json, preserving every other field. Mode is
+   * a workspace property; an explicit `awehitch up --mode …` is exactly the
+   * user intent this file exists to hold.
+   */
+  setMode(mode: C2CMode): void {
+    const file = path.join(this.root, ".c2c.json");
+    let raw: Record<string, unknown> = {};
+    if (fs.existsSync(file)) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+      } catch {
+        throw new WorkspaceError(
+          "INVALID_CONFIG",
+          `${file} is not valid JSON; fix or remove it before switching modes.`
+        );
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new WorkspaceError(
+          "INVALID_CONFIG",
+          `${file} is not a JSON object; fix or remove it before switching modes.`
+        );
+      }
+      raw = parsed as Record<string, unknown>;
+    }
+    raw.mode = mode;
+    fs.writeFileSync(file, JSON.stringify(raw, null, 2) + "\n");
+    this.projectConfig.mode = mode;
   }
 
   private contains(candidate: string): boolean {

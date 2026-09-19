@@ -281,12 +281,14 @@ follower. Do NOT run the lead-mode coding-task workflow here.
 
 Setup (once):
 
-1. `awehitch up -w <workspace> --json` — identical machinery to lead mode
+1. `awehitch up -w <workspace> --mode follow` switches the workspace to
+   follow mode (persisted to .c2c.json; `--mode lead` switches back).
+2. `awehitch up -w <workspace> --json` — identical machinery to lead mode
    (bridge, tunnel, connector: that connector IS ChatGPT's read access in
    the user's conversation). It wires your harness and reports the dispatch
    marker. If it flags `chatWrite`, relay that verbatim: the connector is
    read-only in this version.
-2. `awehitch_open_chat` with the user's conversation `url`. On first bind,
+3. `awehitch_open_chat` with the user's conversation `url`. On first bind,
    send the follow-mode protocol note once via `awehitch_send_state`:
 
 ```
@@ -304,20 +306,20 @@ reads this chat. Rules:
 
 The follow loop (stay in it; this replaces INIT/PLAN — the user initiates):
 
-3. `awehitch_wait_directive` (timeout is NOT a failure — call it again, never
+4. `awehitch_wait_directive` (timeout is NOT a failure — call it again, never
    resend anything). `status=directive` means: the USER's own message carries
    the dispatch marker AND ChatGPT replied with a `[C2C]` `DIRECTIVE:`. Only
    then do you work. `status=timeout` with `authorized=false` just means the
    conversation moved on without dispatching — keep waiting.
-4. Execute with your own tools. Checkpoints still apply:
+5. Execute with your own tools. Checkpoints still apply:
    `awehitch session set -H {{HARNESS_ID}} --task follow --protocol-state EXECUTING …`
-5. Report with `awehitch_send_state` (`[C2C]` / `STATE: EXECUTED` / one-line
+6. Report with `awehitch_send_state` (`[C2C]` / `STATE: EXECUTED` / one-line
    RESULT + CHANGED_FILES + TESTS, no diffs, no logs), then
    `awehitch_wait_reply` — ChatGPT reviews through the connector and replies
    (DONE, a correction, or the user redirects). Corrections arrive as new
-   directives: return to step 3.
-6. If the agent session restarts: `awehitch_open_chat` with the same `url`
-   (the binding persists), then step 3 — `wait_directive` returns an
+   directives: return to step 4.
+7. If the agent session restarts: `awehitch_open_chat` with the same `url`
+   (the binding persists), then step 4 — `wait_directive` returns an
    already-present authorized directive once, and the session checkpoint
    tells you whether you already executed it.
 

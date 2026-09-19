@@ -63,6 +63,37 @@ describe("follow config parsing", () => {
   });
 });
 
+describe("setMode", () => {
+  it("creates .c2c.json when absent and updates the live config", () => {
+    const ws = new Workspace(dir);
+    ws.setMode("follow");
+    expect(JSON.parse(fs.readFileSync(path.join(dir, ".c2c.json"), "utf8"))).toEqual({ mode: "follow" });
+    expect(effectiveMode(ws.projectConfig)).toBe("follow");
+    expect(effectiveMode(new Workspace(dir).projectConfig)).toBe("follow");
+  });
+
+  it("preserves every other field when switching", () => {
+    write(
+      dir,
+      ".c2c.json",
+      JSON.stringify({ name: "keep", maxIterations: 3, mode: "follow", follow: { dispatchMarker: "@x" } })
+    );
+    new Workspace(dir).setMode("lead");
+    expect(JSON.parse(fs.readFileSync(path.join(dir, ".c2c.json"), "utf8"))).toEqual({
+      name: "keep",
+      maxIterations: 3,
+      mode: "lead",
+      follow: { dispatchMarker: "@x" },
+    });
+  });
+
+  it("refuses to clobber a broken .c2c.json", () => {
+    write(dir, ".c2c.json", "{ not json");
+    expect(() => new Workspace(dir).setMode("follow")).toThrow(/not valid JSON/);
+    expect(fs.readFileSync(path.join(dir, ".c2c.json"), "utf8")).toBe("{ not json");
+  });
+});
+
 afterEach(() => {
   cleanup(dir);
 });

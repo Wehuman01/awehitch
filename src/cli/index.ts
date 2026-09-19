@@ -449,7 +449,7 @@ program
   .option("-d, --daemon", "run the service in the background and exit (implied by --json); logs under the state dir's logs/", false)
   .option("--json", "machine-readable output", false)
   .option("--timeout <minutes>", "how long to wait for the ChatGPT login", parsePositiveInteger, 5)
-  .option("--mode <mode>", "C2C direction for this run: lead (default) or follow; overrides .c2c.json mode without writing it", (value: string) => {
+  .option("--mode <mode>", "set this workspace's C2C direction (lead or follow); persisted to .c2c.json", (value: string) => {
     const mode = value.trim().toLowerCase();
     if (mode !== "lead" && mode !== "follow") throw new InvalidArgumentError("must be lead or follow");
     return mode as "lead" | "follow";
@@ -477,9 +477,22 @@ program
     }
 
     // Mode decides who drives the conversation; the machinery below (bridge,
-    // tunnel, connector) is the data plane in BOTH modes. The one-shot
-    // --mode override wins over .c2c.json for this run only.
-    const mode = opts.mode ?? effectiveMode(workspace.projectConfig);
+    // tunnel, connector) is the data plane in BOTH modes. An explicit --mode
+    // is user intent for this workspace: it is persisted to .c2c.json so the
+    // agent-side skill workflow sees the same mode.
+    let mode: "lead" | "follow";
+    if (opts.mode) {
+      try {
+        workspace.setMode(opts.mode);
+        mode = opts.mode;
+        if (!json) say(`· Mode set to ${mode} (written to ${path.join(root, ".c2c.json")})`);
+      } catch (error) {
+        handleCliError(error, json);
+        return;
+      }
+    } else {
+      mode = effectiveMode(workspace.projectConfig);
+    }
     const followSummary = mode === "follow" ? followUpSummary(workspace) : null;
 
     if (!json) {
