@@ -34,9 +34,12 @@
   sends) never count as authorization, even when they echo a marker.
   `awehitch dispatch watch <url>` pins one conversation with the full
   marker + DIRECTIVE protocol loop (protocol note sent on first sight);
-  `dispatch stop` turns watching off, `dispatch auto` resumes it. One
-  executor per conversation: an attached agent session and the watcher
-  must not share a conversation.
+  `dispatch stop` turns watching off, `dispatch auto` resumes it. The two
+  watching styles coexist: auto mode defers to conversations where
+  ChatGPT answers a marker message with a `[C2C] DIRECTIVE` (the
+  signature of a manually bound agent session). One executor per
+  conversation remains the safe rule: an attached agent session and the
+  watcher must not serve the same conversation.
 - Named-tunnel startup is more honest about why it failed: the start
   timeout is raised from 45 s to 90 s (matching the quick tunnel) because
   on networks that block QUIC cloudflared's pre-check-and-fall-back-to-

@@ -33,10 +33,15 @@ interface Calls {
   closed: boolean;
   latestUser: string | null;
   recent: string[];
+  reply: { status: string; text: string | null };
 }
 
-function stubDriver(waitResults: { status: string; directive: string | null }[], latestUser: string | null = null) {
-  const calls: Calls = { opened: [], sent: [], waits: 0, closed: false, latestUser, recent: [] };
+function stubDriver(
+  waitResults: { status: string; directive: string | null }[],
+  latestUser: string | null = null,
+  reply: { status: string; text: string | null } = { status: "replied", text: "Plain prose answer." }
+) {
+  const calls: Calls = { opened: [], sent: [], waits: 0, closed: false, latestUser, recent: [], reply };
   let i = 0;
   const driver = {
     async openConversation(url?: string) {
@@ -55,6 +60,9 @@ function stubDriver(waitResults: { status: string; directive: string | null }[],
     },
     async readLatestUserMessage() {
       return { text: calls.latestUser, count: calls.latestUser === null ? 0 : 1 };
+    },
+    async readReply() {
+      return calls.reply;
     },
     async listRecentConversations(limit = 3) {
       return calls.recent.slice(0, limit);
@@ -313,6 +321,49 @@ describe("DispatchWatcher auto mode", () => {
       await vi.waitFor(() => expect(spawns).toHaveLength(1));
       const plan = spawns[0] as { cmd: string; args: string[] };
       expect(plan.cmd).toBe("codex"); // first installed
+    } finally {
+      await watcher.stop();
+    }
+    cleanup(root);
+  });
+
+  it("defers to a protocol-aware executor: DIRECTIVE reply means owned", async () => {
+    const root = makeTmpDir("dispatch-root");
+    const { driver, calls } = stubDriver(
+      [{ status: "timeout", directive: null }],
+      MARKER_MESSAGE,
+      { status: "replied", text: "[C2C]\nDIRECTIVE: fix the login validation" }
+    );
+    calls.recent = [CHAT_URL];
+    const spawns: unknown[] = [];
+    const watcher = new DispatchWatcher(watcherOpts(driver, spawns, { registered: [root] }));
+    watcher.start();
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(spawns).toHaveLength(0); // a manually bound agent owns this conversation
+    } finally {
+      await watcher.stop();
+    }
+    cleanup(root);
+  });
+
+  it("waits out a generating reply instead of spawning mid-answer", async () => {
+    const root = makeTmpDir("dispatch-root");
+    const { driver, calls } = stubDriver(
+      [{ status: "timeout", directive: null }],
+      MARKER_MESSAGE,
+      { status: "generating", text: "[C2C]\nDIRECTIVE: fix the…" }
+    );
+    calls.recent = [CHAT_URL];
+    const spawns: unknown[] = [];
+    const watcher = new DispatchWatcher(watcherOpts(driver, spawns, { registered: [root] }));
+    watcher.start();
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(spawns).toHaveLength(0);
+      // Once the answer renders as plain prose, the dispatch fires.
+      calls.reply = { status: "replied", text: "Sure, on it." };
+      await vi.waitFor(() => expect(spawns).toHaveLength(1));
     } finally {
       await watcher.stop();
     }

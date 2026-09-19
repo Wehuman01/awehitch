@@ -86,7 +86,7 @@ awehitch Bridge（本地，工作区只读网关 + OAuth + 隧道）
 
 绑定你的对话就够了——不需要任何模式切换。`awehitch doctor` 会报告当前的派发标记。
 
-连 agent 会话都不用挂着也行——`awehitch up` 之后自动派发默认开启。在你**任意**一条 ChatGPT 对话里，用自己的消息带标记加任务（`@agent 修一下登录页`，或点名执行者：`@opencode …`、`@codex …`、`@zcode …`）；bridge 会盯着你最近的对话列表，在注册的工作区里拉起对应 agent（要求恰好一个工作区根，即 `up -w ~` 的用法；用 `awehitch dispatch auto -w <根目录>` 钉死别的）。拉起的执行跑完回报进同一条对话，交给 ChatGPT 审查。想把范围钉死在某一条对话、走完整的标记 + DIRECTIVE 协议循环？`awehitch dispatch watch <对话URL>` 仍然保留。`awehitch dispatch stop` 全部关掉，`awehitch dispatch auto` 重新开启。一条对话只留一个执行者：如果你同时在上面绑了 agent 会话，先 stop 监听。（自动监听是用你自己的登录 profile 在本地读最近对话的侧边栏，除了 ChatGPT 本身没有第三方参与。）
+连 agent 会话都不用挂着也行——`awehitch up` 之后自动派发默认开启。在你**任意**一条 ChatGPT 对话里，用自己的消息带标记加任务（`@agent 修一下登录页`，或点名执行者：`@opencode …`、`@codex …`、`@zcode …`）；bridge 会盯着你最近的对话列表，在注册的工作区里拉起对应 agent（要求恰好一个工作区根，即 `up -w ~` 的用法；用 `awehitch dispatch auto -w <根目录>` 钉死别的）。拉起的执行跑完回报进同一条对话，交给 ChatGPT 审查。想把范围钉死在某一条对话、走完整的标记 + DIRECTIVE 协议循环？`awehitch dispatch watch <对话URL>` 仍然保留。`awehitch dispatch stop` 全部关掉，`awehitch dispatch auto` 重新开启。两种监听方式可以共存：自动模式下，若 ChatGPT 对标记消息回的是 `[C2C] DIRECTIVE`（这是"该对话已绑定了 agent 会话"的签名），watcher 会自动让位给绑定的 agent；但安全规则不变——一条对话只留一个执行者，绑了 agent 会话的地方不要同时 @ 派发，或者先 stop 监听。（自动监听是用你自己的登录 profile 在本地读最近对话的侧边栏，除了 ChatGPT 本身没有第三方参与。）
 
 ## 配置
 

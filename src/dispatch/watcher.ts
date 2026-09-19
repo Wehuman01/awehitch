@@ -41,7 +41,7 @@ import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { ControlPlaneBrowser } from "../control-plane/browser.js";
-import { isAgentInjected, isDispatchAuthorized, resolveDispatchMarker } from "../control-plane/dispatch.js";
+import { isAgentInjected, isDispatchAuthorized, parseDirective, resolveDispatchMarker } from "../control-plane/dispatch.js";
 import { detectHarnesses } from "../adapters/detect.js";
 import type { HarnessId } from "../adapters/paths.js";
 import { Logger } from "../logger/index.js";
@@ -74,6 +74,7 @@ export interface DispatchDriver {
   }>;
   openConversation(chatUrl?: string): Promise<string>;
   readLatestUserMessage(): Promise<{ text: string | null; count: number }>;
+  readReply(): Promise<{ status: string; text: string | null }>;
   listRecentConversations(limit?: number): Promise<string[]>;
   sendMessage(text: string): Promise<unknown>;
   close(): Promise<void>;
@@ -261,6 +262,13 @@ export class DispatchWatcher {
       if (!text || isAgentInjected(text)) continue; // agent-sent turns never authorize
       const matched = markers.find((marker) => isDispatchAuthorized(text, marker));
       if (!matched) continue;
+      // Ownership signal: a [C2C] DIRECTIVE reply means a protocol-aware
+      // executor already serves this conversation (a manually bound agent
+      // session) — defer to it instead of double-spawning. While ChatGPT
+      // is still generating, wait for the reply to render first.
+      const reply = await driver.readReply();
+      if (reply.status === "generating") continue;
+      if (reply.status !== "error" && parseDirective(reply.text).isDirective) continue;
       const task = stripMarker(text, matched);
       if (!task) continue; // a bare "@opencode" carries no task yet
       if (scanned[url]?.lastDispatched === task) continue; // already executed
