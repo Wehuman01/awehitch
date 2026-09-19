@@ -14,7 +14,7 @@ import {
   stopBridge,
   stopBridgeAndWait,
 } from "../process/daemon.js";
-import { Workspace, effectiveMode } from "../workspace/manager.js";
+import { Workspace } from "../workspace/manager.js";
 import { readRegistryRoots } from "../workspace/registry.js";
 import { AuthStore } from "../auth/store.js";
 import { detectTunnelBinaries } from "../tunnel/detect.js";
@@ -73,7 +73,7 @@ import { appendExecutionRecord } from "../execution/records.js";
 import { saveExecutionOutput } from "../execution/output.js";
 import { runStdioServer } from "../control-plane/server.js";
 import { ControlPlaneBrowser, interactiveLogin } from "../control-plane/browser.js";
-import { DEFAULT_DISPATCH_MARKER } from "../control-plane/dispatch.js";
+import { resolveDispatchMarker } from "../control-plane/dispatch.js";
 import {
   manualConnectorFallback,
   runConnectorSetup,
@@ -410,20 +410,6 @@ interface UpOptions {
   json: boolean;
   daemon: boolean;
   timeout: number;
-  mode?: "lead" | "follow";
-}
-
-/**
- * Follow-mode summary lines for `up`. The machinery is identical to lead mode
- * (bridge + tunnel + connector are the data plane in both); only who drives
- * the conversation differs, so only the closing output does.
- */
-function followUpSummary(workspace: Workspace): { chatWriteDeclared: boolean; dispatchMarker: string } {
-  const follow = workspace.projectConfig.follow ?? {};
-  return {
-    chatWriteDeclared: follow.chatWrite === true,
-    dispatchMarker: follow.dispatchMarker ?? DEFAULT_DISPATCH_MARKER,
-  };
 }
 
 function parseHarnessOption(value: string, acc: HarnessId[]): HarnessId[] {
@@ -450,11 +436,6 @@ program
   .option("-d, --daemon", "run the service in the background and exit (implied by --json); logs under the state dir's logs/", false)
   .option("--json", "machine-readable output", false)
   .option("--timeout <minutes>", "how long to wait for the ChatGPT login", parsePositiveInteger, 5)
-  .option("--mode <mode>", "set this workspace's C2C direction (lead or follow); persisted to .c2c.json", (value: string) => {
-    const mode = value.trim().toLowerCase();
-    if (mode !== "lead" && mode !== "follow") throw new InvalidArgumentError("must be lead or follow");
-    return mode as "lead" | "follow";
-  })
   .action(async (opts: UpOptions) => {
     const root = resolveWorkspace(opts.workspace);
     const json = opts.json;
@@ -477,29 +458,16 @@ program
       return;
     }
 
-    // Mode decides who drives the conversation; the machinery below (bridge,
-    // tunnel, connector) is the data plane in BOTH modes. An explicit --mode
-    // is user intent for this workspace: it is persisted to .c2c.json so the
-    // agent-side skill workflow sees the same mode.
-    let mode: "lead" | "follow";
-    if (opts.mode) {
-      try {
-        workspace.setMode(opts.mode);
-        mode = opts.mode;
-        if (!json) say(`· Mode set to ${mode} (written to ${path.join(root, ".c2c.json")})`);
-      } catch (error) {
-        handleCliError(error, json);
-        return;
-      }
-    } else {
-      mode = effectiveMode(workspace.projectConfig);
-    }
-    const followSummary = mode === "follow" ? followUpSummary(workspace) : null;
+    // There is no mode switch: the same machinery (bridge, tunnel, connector)
+    // serves both ways of working — the agent driving per-task chats from the
+    // terminal, and the user dispatching from their own bound conversation.
+    // The dispatch marker is the user-authorization knob for the latter.
+    const dispatchMarker = resolveDispatchMarker(workspace.projectConfig.dispatchMarker);
 
     if (!json) {
       say(PRODUCT_NAME);
       say("");
-      say(mode === "follow" ? "Connecting to ChatGPT (follow mode)…" : "Connecting to ChatGPT…");
+      say("Connecting to ChatGPT…");
       say("");
     }
 
@@ -655,7 +623,6 @@ program
     if (json) {
       say(JSON.stringify({
         ok: true,
-        mode,
         scope: "machine",
         workspaceId: workspace.id,
         workspaceName: workspace.name,
@@ -670,15 +637,9 @@ program
         harnesses,
         needsLogin: false,
         connectorUpdated,
-        // Follow mode: the dispatch marker the user will type, and whether
-        // the config declares a write capability this version does not offer.
-        ...(mode === "follow" && followSummary
-          ? {
-              dispatchMarker: followSummary.dispatchMarker,
-              chatWrite: followSummary.chatWriteDeclared,
-              chatWriteSupported: false,
-            }
-          : {}),
+        // The marker the user types in their own ChatGPT conversation to
+        // authorize a dispatch (the agent-bound conversation workflow).
+        dispatchMarker,
         // Present only in guided-manual mode: the agent relays these steps
         // to the user instead of awehitch opening a browser.
         ...(manualSetup ? { manualSetup } : {}),
@@ -711,15 +672,8 @@ program
       return;
     }
     say("");
-    if (mode === "follow") {
-      say("Follow mode — you drive ChatGPT; the agent follows.");
-      if (followSummary?.chatWriteDeclared) {
-        cross("follow.chatWrite is true, but the ChatGPT connector is read-only in this version");
-      }
-      say("Bind your conversation with awehitch_open_chat (url=…), then follow the skill's follow-mode workflow.");
-    } else {
-      say('From now on, ask your agent to "use ChatGPT to plan XXX".');
-    }
+    say('From now on, ask your agent to "use ChatGPT to plan XXX".');
+    say(`To work from your own ChatGPT conversation instead, bind it with awehitch_open_chat (url=…) and dispatch work by typing ${dispatchMarker} there.`);
     say("After a reboot it usually self-heals; if not, re-run awehitch.");
     if (addressChanged) {
       say("");
@@ -1246,10 +1200,8 @@ program
       report.workspace = { ok: false, detail: (error as Error).message };
     }
 
-    // Mode is informational for the machinery below: the bridge/tunnel/
-    // connector are the data plane in BOTH modes, so they are checked and
-    // auto-repaired identically. Follow mode only adds its config check.
-    const followMode = workspace !== null && effectiveMode(workspace.projectConfig) === "follow";
+    // The dispatch marker is informational: the bridge/tunnel/connector
+    // machinery is the data plane however the user drives the conversation.
 
     // Bridge
     let runtime: RuntimeState | null = null;
@@ -1273,22 +1225,13 @@ program
       else report.bridge = report.bridge ?? { ok: false, detail: "not running" };
     }
 
-    // Follow config: the dispatch marker is echoed, and a declared write
-    // capability this version does not offer is an honest failure, not a
-    // silent no-op.
-    if (followMode && workspace) {
-      const follow = workspace.projectConfig.follow ?? {};
-      if (follow.chatWrite === true) {
-        report.follow = {
-          ok: false,
-          detail: "chatWrite is true, but the ChatGPT connector is read-only in this version",
-        };
-      } else {
-        report.follow = {
-          ok: true,
-          detail: `dispatch marker ${follow.dispatchMarker ?? DEFAULT_DISPATCH_MARKER}`,
-        };
-      }
+    // Dispatch config: echo the marker the user types to authorize work from
+    // their own ChatGPT conversation.
+    if (workspace) {
+      report.dispatch = {
+        ok: true,
+        detail: `dispatch marker ${resolveDispatchMarker(workspace.projectConfig.dispatchMarker)}`,
+      };
     }
 
     // MCP local reachability (401 without token means MCP + auth both work)
@@ -1540,7 +1483,6 @@ program
     if (opts.json) {
       say(
         JSON.stringify({
-          mode: followMode ? "follow" : "lead",
           report,
           repairs: results,
           chatgptRepair,
@@ -1557,7 +1499,7 @@ program
       );
       return;
     }
-    say(`${PRODUCT_NAME} Doctor${followMode ? " (follow mode)" : ""}`);
+    say(`${PRODUCT_NAME} Doctor`);
     say("");
     const labels: Record<string, string> = {
       node: "Node.js",
@@ -1567,7 +1509,7 @@ program
       mcp: "MCP",
       oauth: "OAuth",
       tunnel: "Tunnel",
-      follow: "Follow config",
+      dispatch: "Dispatch",
       selectors: "Selectors",
       controlPlane: "Control-plane DOM",
     };

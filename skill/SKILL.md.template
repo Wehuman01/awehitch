@@ -26,7 +26,7 @@ strategy. Two connections make this work:
 2. **Control-plane tools** (local MCP, `awehitch_*`) — you exchange tiny
    structured `[C2C]` state messages with the ChatGPT conversation:
    `awehitch_open_chat`, `awehitch_send_state`, `awehitch_send_handoff`,
-   `awehitch_wait_reply`, `awehitch_read_reply`, plus follow-mode tools
+   `awehitch_wait_reply`, `awehitch_read_reply`, plus dispatch tools
    `awehitch_wait_directive` / `awehitch_check_dispatch` (below).
 
 **Golden rules**
@@ -272,24 +272,25 @@ If status is restricted, ignore it and review from git_diff.
    `awehitch session set -H {{HARNESS_ID}} --task {{TASK_ID}} --state DONE --clear-checkpoint`.
 10. On BLOCKED: surface the reason or the single decision the user must make.
 
-## Workflow: follow mode (".c2c.json" has "mode": "follow")
+## Workflow: dispatched from the user's own ChatGPT conversation
 
-Only when the workspace config says `"mode": "follow"`. In follow mode the
-USER drives a ChatGPT conversation of their own (ChatGPT reaches the
-workspace through the same awehitch connector as in lead mode); you are the
-follower. Do NOT run the lead-mode coding-task workflow here.
+There is no mode switch: the user may work through you in the terminal
+(coding-task workflow above) AND through their own ChatGPT conversation at
+the same time. This workflow runs when the user binds their own conversation
+(gives you its `chatgpt.com/c/<id>` URL, or asks you to watch the one
+already bound). That conversation is theirs — ChatGPT reaches the workspace
+through the same awehitch connector as in every other workflow, and you are
+the follower there. Do NOT run the coding-task workflow inside the user's
+conversation; its per-task chats are separate conversations.
 
 Setup (once):
 
-1. `awehitch up -w <workspace> --mode follow` switches the workspace to
-   follow mode (persisted to .c2c.json; `--mode lead` switches back).
-2. `awehitch up -w <workspace> --json` — identical machinery to lead mode
-   (bridge, tunnel, connector: that connector IS ChatGPT's read access in
-   the user's conversation). It wires your harness and reports the dispatch
-   marker. If it flags `chatWrite`, relay that verbatim: the connector is
-   read-only in this version.
-3. `awehitch_open_chat` with the user's conversation `url`. On first bind,
-   send the follow-mode protocol note once via `awehitch_send_state`:
+1. `awehitch up -w <workspace> --json` — the usual machinery (bridge,
+   tunnel, connector: that connector IS ChatGPT's read access in the
+   user's conversation). It reports the dispatch marker the user will
+   type. The connector is read-only, including here.
+2. `awehitch_open_chat` with the user's conversation `url`. On first bind,
+   send the dispatch protocol note once via `awehitch_send_state`:
 
 ```
 [C2C]
@@ -304,32 +305,35 @@ reads this chat. Rules:
    and after execution reports.
 ```
 
-The follow loop (stay in it; this replaces INIT/PLAN — the user initiates):
+The dispatch loop (stay in it while you have no terminal task; the user
+initiates — this replaces INIT/PLAN):
 
-4. `awehitch_wait_directive` (timeout is NOT a failure — call it again, never
+3. `awehitch_wait_directive` (timeout is NOT a failure — call it again, never
    resend anything). `status=directive` means: the USER's own message carries
    the dispatch marker AND ChatGPT replied with a `[C2C]` `DIRECTIVE:`. Only
    then do you work. `status=timeout` with `authorized=false` just means the
    conversation moved on without dispatching — keep waiting.
-5. Execute with your own tools. Checkpoints still apply:
+4. Execute with your own tools. Checkpoints still apply:
    `awehitch session set -H {{HARNESS_ID}} --task follow --protocol-state EXECUTING …`
-6. Report with `awehitch_send_state` (`[C2C]` / `STATE: EXECUTED` / one-line
+5. Report with `awehitch_send_state` (`[C2C]` / `STATE: EXECUTED` / one-line
    RESULT + CHANGED_FILES + TESTS, no diffs, no logs), then
    `awehitch_wait_reply` — ChatGPT reviews through the connector and replies
    (DONE, a correction, or the user redirects). A correction is a new
    DIRECTIVE, but it is not yet executable: your EXECUTED message is now the
    latest user turn, so the dispatch marker no longer passes. Relay the
-   correction to the user, return to step 4, and act only when they re-send
+   correction to the user, return to step 3, and act only when they re-send
    the marker.
-7. If the agent session restarts: `awehitch_open_chat` with the same `url`
-   (the binding persists), then step 4 — `wait_directive` returns an
+6. If the agent session restarts: `awehitch_open_chat` with the same `url`
+   (the binding persists), then step 3 — `wait_directive` returns an
    already-present authorized directive once, and the session checkpoint
    tells you whether you already executed it.
+7. A terminal request arriving mid-loop takes priority: serve it with the
+   coding-task workflow (its own task chat), then return to waiting here.
 
-Stopping to follow does not need a command (the conversation binding can
-stay). `awehitch off` is machine-wide: it stops the bridge for every
-workspace and disconnects ChatGPT. `awehitch session clear -w <workspace>`
-forgets only this workspace's conversation binding.
+Stopping does not need a command (the conversation binding can stay).
+`awehitch off` is machine-wide: it stops the bridge for every workspace and
+disconnects ChatGPT. `awehitch session clear -w <workspace>` forgets only
+this workspace's conversation binding.
 
 ## Workflow: reconnect after address reclaim
 

@@ -65,17 +65,26 @@ awehitch up
 ```
 远端大脑（ChatGPT 网页）
       ↕  控制面：[C2C] 状态消息（<1 KB）
-控制面代理（本地，Playwright → 5 个语义化 MCP 工具）
+控制面代理（本地，Playwright → 8 个语义化 MCP 工具）
       ↕  工具调用（stdio MCP）
 本地 Agent（codex / opencode / zcode）
       ↕  数据面：只读 MCP
 awehitch Bridge（本地，工作区只读网关 + OAuth + 隧道）
 ```
 
-- **控制面** — agent 与 ChatGPT 交换极小的结构化 `[C2C]` 消息（`INIT → PLAN → EXECUTED → REVIEW → DONE`）。本地**控制面代理**用 Playwright（独立浏览器配置目录）把 ChatGPT 会话封装成五个语义化工具：`awehitch_open_chat`、`awehitch_send_state`、`awehitch_send_handoff`、`awehitch_wait_reply`、`awehitch_read_reply`。一个任务一条聊天：新 TASK_ID 自动开新聊天，同一任务的恢复与多轮审查始终复用它绑定的聊天；原聊天丢失时 `awehitch_send_handoff` 从本地检查点自动生成交接简报（绝不包含文件、diff 或日志）。轮询是 20–30 秒的廉价 DOM 检查；超时不等于失败；只用一个标签页；绝不因超时重发。原方案里绑死 Codex 内置浏览器的控制面被彻底解耦——任何 agent 只要"能调工具"就能接入。
+- **控制面** — agent 与 ChatGPT 交换极小的结构化 `[C2C]` 消息（`INIT → PLAN → EXECUTED → REVIEW → DONE`）。本地**控制面代理**用 Playwright（独立浏览器配置目录）把 ChatGPT 会话封装成八个语义化工具：`awehitch_open_chat`、`awehitch_send_state`、`awehitch_send_handoff`、`awehitch_wait_reply`、`awehitch_read_reply`、`awehitch_chat_info`，以及派发工具 `awehitch_check_dispatch` / `awehitch_wait_directive`。一个任务一条聊天：新 TASK_ID 自动开新聊天，同一任务的恢复与多轮审查始终复用它绑定的聊天；原聊天丢失时 `awehitch_send_handoff` 从本地检查点自动生成交接简报（绝不包含文件、diff 或日志）。轮询是 20–30 秒的廉价 DOM 检查；超时不等于失败；只用一个标签页；绝不因超时重发。原方案里绑死 Codex 内置浏览器的控制面被彻底解耦——任何 agent 只要"能调工具"就能接入。
 - **按会话并行** — 每个编码会话拥有自己的 ChatGPT 对话。每个 harness 维护一个小型浏览器 profile 池（从首个登录的 profile 播种，全程只需登录一次）；会话在首次使用时领取空闲槽位 —— 槽位 0 就是该 harness 自己的 profile，同 harness 的额外并发会话（比如同时开两个 opencode 窗口）依次拿到 `<harness>-s1`、`-s2`…… 任务→对话的绑定通过短跨进程锁合并写入，任务总能重开自己的对话，而每个会话"当前所在对话"的指针是私有的。codex / opencode / zcode —— 以及它们的多个实例 —— 都能同时跑规划循环。可用 `AWEHITCH_MAX_PARALLEL_SESSIONS` 调大池子（默认每个 harness 2 个，上限 16；每个额外槽位对应多开一个 Chromium 窗口）。
-- **数据面** — ChatGPT 通过 9 个只读工具自行拉取文件、diff、搜索结果、测试记录，走 OAuth 2.1 + PKCE + 动态客户端注册的隧道。独立审查：EXECUTED 之后 ChatGPT 亲自看真实 git diff，绝不轻信"测试全过"。
+- **数据面** — ChatGPT 通过 10 个只读工具自行拉取文件、diff、搜索结果、测试记录，走 OAuth 2.1 + PKCE + 动态客户端注册的隧道。独立审查：EXECUTED 之后 ChatGPT 亲自看真实 git diff，绝不轻信"测试全过"。
 - **Adapter** — codex（`~/.codex/skills` + `config.toml` MCP + 沙箱 writable_roots）、opencode（`~/.config/opencode` skill + `opencode.json` MCP）、zcode（`~/.zcode/cli/config.json` mcpServers + skill）。每个 adapter 都很薄，互不 import。
+
+### 两种用法——没有模式开关
+
+同一套机器——bridge、隧道、只读 ChatGPT 连接器——同时服务两种用法。不变量只有一条：**执行授权永远在你手里**。想从哪边干活都行，两边同时用也可以：
+
+- **走 agent（终端）** — 你对 coding agent 说"用 ChatGPT 规划 X"；agent 开一条按任务隔离的聊天，与 ChatGPT 交换 `[C2C]` INIT → PLAN → EXECUTED → REVIEW → DONE，你在终端里看全程。
+- **走 ChatGPT（你自己的对话）** — 你在自己的对话里直接聊（浏览器、桌面端——账号登录过的任何地方；对话是账号级的）。agent 通过该对话的 `chatgpt.com/c/<id>` URL 绑定它，然后用 `awehitch_wait_directive` 挂着等。只有当**你自己的消息**带派发标记（默认 `@agent`）且 ChatGPT 回了 `[C2C] DIRECTIVE:` 它才动手——ChatGPT 的文字本身永远不能授权执行。
+
+绑定你的对话就够了——不需要任何模式切换。`awehitch doctor` 会报告当前的派发标记。
 
 ## 配置
 
@@ -85,7 +94,9 @@ awehitch Bridge（本地，工作区只读网关 + OAuth + 隧道）
 {
   "name": "my-project",            // 工作区显示名（连接器标题）
   "maxIterations": 12,             // 循环上限，达到后询问用户是否继续
-  "browserIdleMinutes": 10         // 控制面浏览器空闲多少分钟后自动关闭（默认 10）
+  "browserIdleMinutes": 10,        // 控制面浏览器空闲多少分钟后自动关闭（默认 10）
+  "dispatchMarker": "@agent"       // 你在自己的 ChatGPT 对话里输入的派发标记——
+                                   //   agent 盯着该对话时，带标记才授权它执行
 }
 ```
 

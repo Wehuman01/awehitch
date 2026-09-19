@@ -72,7 +72,7 @@ function driverFor(page: Page): ControlPlaneBrowser {
 describe("waitDirective", () => {
   it("returns an already-present authorized directive once (restart recovery)", async () => {
     const dom: DomState = {
-      userText: "@opencode fix the login validation",
+      userText: "@agent fix the login validation",
       assistantText: "[C2C]\nDIRECTIVE: fix the login validation\nmigrate the checks",
       generating: false,
     };
@@ -97,7 +97,7 @@ describe("waitDirective", () => {
 
     expect(view.status).toBe("timeout");
     expect(view.authorized).toBe(false);
-    expect(view.note).toContain("@opencode");
+    expect(view.note).toContain("@agent");
   });
 
   it("ignores an unauthorized directive and keeps waiting", async () => {
@@ -122,7 +122,7 @@ describe("waitDirective", () => {
     const pending = driver.waitDirective({ timeoutMs: 120_000 });
     await vi.advanceTimersByTimeAsync(0); // first poll: nothing yet
 
-    dom.userText = "@opencode fix it";
+    dom.userText = "@agent fix it";
     dom.assistantText = "[C2C]\nDIRECTIVE: fix it";
     await vi.advanceTimersByTimeAsync(25_000); // second poll sees the change
 
@@ -134,7 +134,7 @@ describe("waitDirective", () => {
   it("consumes plain replies so old conversation never triggers later", async () => {
     vi.useFakeTimers();
     const dom: DomState = {
-      userText: "@opencode fix it",
+      userText: "@agent fix it",
       assistantText: "Let me look at the code first.",
       generating: false,
     };
@@ -159,7 +159,7 @@ describe("waitDirective", () => {
     // count and text — the directive must still fire, not be swallowed as
     // an already-consumed state.
     const dom: DomState = {
-      userText: "@opencode fix it",
+      userText: "@agent fix it",
       assistantText: "[C2C]\nDIRECTIVE: fix it",
       generating: true,
     };
@@ -178,12 +178,12 @@ describe("waitDirective", () => {
 
 describe("readLatestUserMessage", () => {
   it("returns the latest user message text", async () => {
-    const dom: DomState = { userText: "@opencode hello", assistantText: "hi", generating: false };
+    const dom: DomState = { userText: "@agent hello", assistantText: "hi", generating: false };
     const driver = driverFor(fakePage(dom));
 
     const { text, count } = await driver.readLatestUserMessage();
 
-    expect(text).toBe("@opencode hello");
+    expect(text).toBe("@agent hello");
     expect(count).toBe(1);
   });
 

@@ -16,23 +16,23 @@ describe("resolveDispatchMarker", () => {
 
 describe("isDispatchAuthorized", () => {
   it("authorizes a message that carries the marker as a token", () => {
-    expect(isDispatchAuthorized("@opencode fix the login page", "@opencode")).toBe(true);
-    expect(isDispatchAuthorized("please @opencode, fix it", "@opencode")).toBe(true);
-    expect(isDispatchAuthorized("@opencode", "@opencode")).toBe(true);
+    expect(isDispatchAuthorized("@agent fix the login page", "@agent")).toBe(true);
+    expect(isDispatchAuthorized("please @agent, fix it", "@agent")).toBe(true);
+    expect(isDispatchAuthorized("@agent", "@agent")).toBe(true);
   });
 
   it("rejects markers embedded in longer tokens", () => {
-    expect(isDispatchAuthorized("not@opencode", "@opencode")).toBe(false);
-    expect(isDispatchAuthorized("@opencode-x", "@opencode")).toBe(false);
-    expect(isDispatchAuthorized("email@opencode.com", "@opencode")).toBe(false);
-    expect(isDispatchAuthorized("@opencode_zzz", "@opencode")).toBe(false);
+    expect(isDispatchAuthorized("not@agent", "@agent")).toBe(false);
+    expect(isDispatchAuthorized("@agent-x", "@agent")).toBe(false);
+    expect(isDispatchAuthorized("email@agent.com", "@agent")).toBe(false);
+    expect(isDispatchAuthorized("@agent_zzz", "@agent")).toBe(false);
   });
 
   it("rejects missing or marker-less messages", () => {
-    expect(isDispatchAuthorized(null, "@opencode")).toBe(false);
-    expect(isDispatchAuthorized(undefined, "@opencode")).toBe(false);
-    expect(isDispatchAuthorized("", "@opencode")).toBe(false);
-    expect(isDispatchAuthorized("just chatting about @openai models", "@opencode")).toBe(false);
+    expect(isDispatchAuthorized(null, "@agent")).toBe(false);
+    expect(isDispatchAuthorized(undefined, "@agent")).toBe(false);
+    expect(isDispatchAuthorized("", "@agent")).toBe(false);
+    expect(isDispatchAuthorized("just chatting about @openai models", "@agent")).toBe(false);
   });
 
   it("supports custom markers, CJK text around them", () => {

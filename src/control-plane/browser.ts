@@ -557,9 +557,9 @@ export class ControlPlaneBrowser {
   }
 
   /**
-   * Read the latest USER (human) message on the page. Follow mode only, and
-   * the dispatch-authority signal: ChatGPT text never authorizes execution,
-   * the user's own message does.
+   * Read the latest USER (human) message on the page. For a user-owned
+   * conversation, this is the dispatch-authority signal: ChatGPT text never
+   * authorizes execution, the user's own message does.
    */
   async readLatestUserMessage(): Promise<{ text: string | null; count: number }> {
     const page = await this.ensurePage();
@@ -570,10 +570,10 @@ export class ControlPlaneBrowser {
   }
 
   /**
-   * Follow mode: wait for an actionable dispatch. A dispatch is actionable
-   * only when BOTH hold: (a) the user's own latest message carries the
-   * dispatch marker, and (b) the latest assistant message is a [C2C]
-   * DIRECTIVE. Anchoring: the first call returns an already-present
+   * Wait for an actionable dispatch in a user-owned conversation. A dispatch
+   * is actionable only when BOTH hold: (a) the user's own latest message
+   * carries the dispatch marker, and (b) the latest assistant message is a
+   * [C2C] DIRECTIVE. Anchoring: the first call returns an already-present
    * authorized directive once (restart recovery); afterwards only NEW
    * assistant output counts, and replies that are not authorized directives
    * are consumed, so the user's plain conversation with ChatGPT (and GPT's

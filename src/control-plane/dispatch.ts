@@ -1,5 +1,6 @@
 /**
- * Follow-mode dispatch authority (mode "follow" in .c2c.json).
+ * Dispatch authority for a user-owned ChatGPT conversation (the one the
+ * agent binds via `awehitch_open_chat` with the user's URL).
  *
  * The invariant this module enforces: the agent acts on a ChatGPT
  * conversation only when the dispatch was authorized by the USER — proven by
@@ -11,7 +12,7 @@
  */
 
 /** Default marker the user types in the ChatGPT conversation. */
-export const DEFAULT_DISPATCH_MARKER = "@opencode";
+export const DEFAULT_DISPATCH_MARKER = "@agent";
 
 export function resolveDispatchMarker(marker?: string): string {
   const trimmed = marker?.trim();
@@ -21,9 +22,9 @@ export function resolveDispatchMarker(marker?: string): string {
 /**
  * True when the user's own message authorizes a dispatch. The marker must
  * appear as a standalone token: not glued to Latin letters, digits, "@",
- * "_" or "-" on either side — so "not@opencode", "@opencode-x" or
- * "email@opencode.com" do not authorize anything, while natural CJK typing
- * around the marker ("来吧@opencode 修一下") still counts.
+ * "_" or "-" on either side — so "not@agent", "@agent-x" or
+ * "email@agent.com" do not authorize anything, while natural CJK typing
+ * around the marker ("来吧@agent 修一下") still counts.
  */
 export function isDispatchAuthorized(userText: string | null | undefined, marker: string): boolean {
   if (!userText) return false;
@@ -32,8 +33,8 @@ export function isDispatchAuthorized(userText: string | null | undefined, marker
 }
 
 /**
- * Parse a follow-mode directive from an assistant reply: a `[C2C]` control
- * message whose first header is `DIRECTIVE:`. Mirrors the STATE: parsing in
+ * Parse a directive from an assistant reply in the user's conversation: a
+ * `[C2C]` control message whose first header is `DIRECTIVE:`. Mirrors the STATE: parsing in
  * browser.ts — anything the page renders without that exact shape is just
  * conversation, not an actionable message.
  */

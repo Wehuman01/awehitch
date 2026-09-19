@@ -56,45 +56,15 @@ export interface ListDirectoryResult {
   hasMore: boolean;
 }
 
-/**
- * C2C direction. "lead" (default): the local agent initiates, ChatGPT plans
- * and reviews. "follow": the USER drives in a ChatGPT conversation of their
- * own and the agent only acts on user-marked dispatches (see
- * control-plane/dispatch.ts). Both modes share the same machinery — bridge,
- * tunnel, connector — and differ only in who drives the conversation.
- */
-export type C2CMode = "lead" | "follow";
-
-export interface FollowConfig {
-  /** Declared write capability for ChatGPT in the user's conversation. The
-   * connector is read-only in this version; a true value is reported as a
-   * config problem by `up`/`doctor` instead of being silently ignored. */
-  chatWrite?: boolean;
-  /** Marker the USER types in the ChatGPT conversation that authorizes the
-   * agent to act. Dispatch authority is the user's, never ChatGPT's. */
-  dispatchMarker?: string;
-}
-
 export interface ProjectConfig {
   name?: string;
   maxIterations?: number;
   /** Minutes the control-plane browser may sit idle before it is closed. */
   browserIdleMinutes?: number;
-  /** C2C direction for this workspace; omit for "lead" (unchanged behavior). */
-  mode?: C2CMode;
-  /** Settings for mode "follow"; ignored in "lead". */
-  follow?: FollowConfig;
-}
-
-function parseFollowConfig(value: unknown): FollowConfig {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const raw = value as Record<string, unknown>;
-  const config: FollowConfig = {};
-  if (typeof raw.chatWrite === "boolean") config.chatWrite = raw.chatWrite;
-  if (typeof raw.dispatchMarker === "string" && raw.dispatchMarker.trim()) {
-    config.dispatchMarker = raw.dispatchMarker.trim();
-  }
-  return config;
+  /** Marker the USER types in a ChatGPT conversation they own that
+   * authorizes the agent to act on a dispatch. Dispatch authority is the
+   * user's, never ChatGPT's — see control-plane/dispatch.ts. */
+  dispatchMarker?: string;
 }
 
 function parseProjectConfig(value: unknown): ProjectConfig {
@@ -104,14 +74,16 @@ function parseProjectConfig(value: unknown): ProjectConfig {
   if (typeof raw.name === "string") config.name = raw.name;
   if (typeof raw.maxIterations === "number") config.maxIterations = raw.maxIterations;
   if (typeof raw.browserIdleMinutes === "number") config.browserIdleMinutes = raw.browserIdleMinutes;
-  if (raw.mode === "follow" || raw.mode === "lead") config.mode = raw.mode;
-  if (raw.follow !== undefined) config.follow = parseFollowConfig(raw.follow);
+  const marker = raw.dispatchMarker;
+  if (typeof marker === "string" && marker.trim()) config.dispatchMarker = marker.trim();
+  // Legacy (v0.2.7 "follow" mode config): the marker lived under
+  // `follow.dispatchMarker`. The `mode` and `follow.chatWrite` keys are dead
+  // now — there is no mode switch, and the connector is read-only.
+  if (!config.dispatchMarker && raw.follow && typeof raw.follow === "object" && !Array.isArray(raw.follow)) {
+    const legacy = (raw.follow as Record<string, unknown>).dispatchMarker;
+    if (typeof legacy === "string" && legacy.trim()) config.dispatchMarker = legacy.trim();
+  }
   return config;
-}
-
-/** Resolve the effective C2C mode; anything unrecognised behaves as "lead". */
-export function effectiveMode(config: ProjectConfig): C2CMode {
-  return config.mode === "follow" ? "follow" : "lead";
 }
 
 function stringRecord(value: unknown): Record<string, string> {
@@ -149,37 +121,6 @@ export class Workspace {
     this.ignoreRules = new IgnoreRules(real);
     this.projectConfig = parseProjectConfig(readJsonIfExists<unknown>(path.join(real, ".c2c.json")));
     this.name = this.projectConfig.name ?? path.basename(real);
-  }
-
-  /**
-   * Persist the C2C mode to .c2c.json, preserving every other field. Mode is
-   * a workspace property; an explicit `awehitch up --mode …` is exactly the
-   * user intent this file exists to hold.
-   */
-  setMode(mode: C2CMode): void {
-    const file = path.join(this.root, ".c2c.json");
-    let raw: Record<string, unknown> = {};
-    if (fs.existsSync(file)) {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-      } catch {
-        throw new WorkspaceError(
-          "INVALID_CONFIG",
-          `${file} is not valid JSON; fix or remove it before switching modes.`
-        );
-      }
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new WorkspaceError(
-          "INVALID_CONFIG",
-          `${file} is not a JSON object; fix or remove it before switching modes.`
-        );
-      }
-      raw = parsed as Record<string, unknown>;
-    }
-    raw.mode = mode;
-    fs.writeFileSync(file, JSON.stringify(raw, null, 2) + "\n");
-    this.projectConfig.mode = mode;
   }
 
   private contains(candidate: string): boolean {

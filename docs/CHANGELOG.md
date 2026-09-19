@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Breaking
+- The lead/follow mode switch is gone. There is one way to run awehitch:
+  the same bridge, tunnel and read-only connector serve both entry points —
+  the agent driving per-task chats from your terminal, and you dispatching
+  from your own ChatGPT conversation (bound via `awehitch_open_chat` with
+  its URL). `awehitch up --mode` is removed; `.c2c.json` `mode` and
+  `follow.chatWrite` are dead keys (ignored); `follow.dispatchMarker` is
+  still honored as a legacy fallback, with the new top-level
+  `dispatchMarker` winning. `doctor`'s `follow` report key is now `dispatch`,
+  and `up --json` reports `dispatchMarker` unconditionally instead of
+  `mode`/`chatWrite`. The skill template's mode-gated workflows are merged:
+  binding a conversation is the only trigger for the dispatch loop.
+
+### Changes
+- Default dispatch marker changed from `@opencode` (a specific harness's
+  name) to the neutral `@agent`. Existing configs that set a marker keep it;
+  users relying on the old default type `@agent` from now on.
+
 ### Features
 - Parallel C2C per session, not just per harness: a second (third, …)
   instance of the same harness — two opencode windows, say — now runs its
