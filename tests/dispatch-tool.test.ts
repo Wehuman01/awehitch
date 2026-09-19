@@ -27,6 +27,8 @@ function deps(opts: {
   installed?: HarnessId[];
   watched?: string[];
   resolve?: string | null;
+  launchStyle?: "headless" | "interactive";
+  openInteractive?: (launch: { harness: HarnessId; workspaceRoot: string; prompt: string }) => Promise<boolean>;
 } = {}): { deps: DispatchToolDeps; plans: SpawnPlan[]; logger: Logger } {
   const plans: SpawnPlan[] = [];
   const logger = {
@@ -44,6 +46,8 @@ function deps(opts: {
         return { exitCode: 0 };
       },
       watchedConversations: () => opts.watched ?? [],
+      launchStyle: () => opts.launchStyle ?? "headless",
+      openInteractive: opts.openInteractive ?? (async () => true),
       logger,
     },
   };
@@ -152,5 +156,41 @@ describe("dispatch_agent tool", () => {
     const result = await call(d, "   ");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe("INVALID_TASK");
+  });
+});
+
+describe("dispatch tool (interactive launch)", () => {
+  it("opens the TUI instead of a background run, without claiming the conversation", async () => {
+    const launches: { harness: HarnessId; prompt: string }[] = [];
+    const { deps: d, plans } = deps({
+      launchStyle: "interactive",
+      openInteractive: async (launch) => {
+        launches.push({ harness: launch.harness, prompt: launch.prompt });
+        return true;
+      },
+    });
+    const result = await call(d, "@opencode 在桌面建一个名叫 demo 的文件夹");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.message).toContain("interactive opencode terminal");
+      expect(result.harness).toBe("opencode");
+    }
+    expect(plans).toHaveLength(0);
+    expect(launches).toHaveLength(1);
+    expect(launches[0].harness).toBe("opencode");
+    expect(launches[0].prompt).not.toContain("@opencode");
+    expect(activeSession(CHAT_URL)).toBeNull();
+  });
+
+  it("reports an honest failure when the terminal cannot open", async () => {
+    const { deps: d, plans } = deps({
+      launchStyle: "interactive",
+      openInteractive: async () => false,
+    });
+    const result = await call(d, "@opencode do X");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("INTERACTIVE_LAUNCH_FAILED");
+    expect(plans).toHaveLength(0);
+    expect(activeSession(CHAT_URL)).toBeNull();
   });
 });

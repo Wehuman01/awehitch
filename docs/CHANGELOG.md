@@ -44,6 +44,17 @@
   non-zero exit surfaces as `[C2C] BLOCKED` with the log path. The tool
   defers to conversations pinned by `awehitch dispatch watch` and enforces
   one agent session per conversation.
+- Dispatch can open the agent in front of you: `awehitch dispatch launch
+  interactive` switches the `dispatch_agent` tool from a background
+  `opencode run` to the harness's own TUI in a new Terminal window (macOS).
+  The full dispatch prompt — conversation URL plus TASK — is printed in the
+  window and copied to the clipboard, so you can switch profiles first, steer
+  the run, or keep talking to the agent there; nothing reports [C2C]
+  automatically (you report from that session). The prompt body only travels
+  through a file, never as shell syntax. `dispatch launch headless` (the
+  default) restores the background run that reports EXECUTED back into the
+  conversation; the choice is machine-level state in dispatch.json and
+  survives watch rewrites.
 - Named-tunnel startup is more honest about why it failed: the start
   timeout is raised from 45 s to 90 s (matching the quick tunnel) because
   on networks that block QUIC cloudflared's pre-check-and-fall-back-to-

@@ -16,6 +16,8 @@ import { HARNESS_IDS, type HarnessId } from "../adapters/paths.js";
 import type { Logger } from "../logger/index.js";
 import type { Workspace } from "../workspace/manager.js";
 import { planSpawn } from "./harness.js";
+import { openInteractiveTerminal, type InteractiveLaunch } from "./interactive.js";
+import { readLaunchStyle, type DispatchLaunchStyle } from "./state.js";
 import {
   activeSession,
   buildDispatchPrompt,
@@ -32,6 +34,10 @@ export interface DispatchToolDeps {
   spawn(plan: SpawnPlan): Promise<SpawnResult>;
   /** Conversations served by the explicitly pinned watcher; dispatch refuses those. */
   watchedConversations(): string[];
+  /** How a dispatch starts the agent (visible TUI vs background run). */
+  launchStyle(): DispatchLaunchStyle;
+  /** Open the harness TUI in a visible terminal; false means it failed. */
+  openInteractive(launch: InteractiveLaunch): Promise<boolean>;
   logger: Logger;
 }
 
@@ -114,6 +120,28 @@ export function createDispatchToolHandler(deps: DispatchToolDeps) {
           "This conversation is served by an explicitly pinned watcher (`awehitch dispatch watch`); it already spawns agents for marker messages here.",
       };
     }
+    if (deps.launchStyle() === "interactive") {
+      const opened = await deps.openInteractive({
+        harness,
+        workspaceRoot: opts.workspace.root,
+        prompt: buildDispatchPrompt(stripMention(task, harness), chatUrl, { protocolNote: true }),
+      });
+      if (!opened) {
+        return {
+          ok: false,
+          code: "INTERACTIVE_LAUNCH_FAILED",
+          message: `Could not open an interactive ${harness} terminal for this workspace. Tell the user to run \`awehitch dispatch launch headless\` or open it manually.`,
+        };
+      }
+      deps.logger.info(`dispatch_agent: interactive ${harness} terminal opened for ${chatUrl} in ${opts.workspace.root}`);
+      return {
+        ok: true,
+        harness,
+        chatUrl,
+        message: `Opened an interactive ${harness} terminal for this conversation (workspace ${opts.workspace.root}). The task is printed there and copied to the clipboard; the user runs it in that window (and can switch profile first). No automatic [C2C] report will be posted — the user reports back from that session.`,
+      };
+    }
+
     const busy = activeSession(chatUrl);
     if (busy || !claimConversation(chatUrl, harness)) {
       return {
@@ -176,6 +204,8 @@ export function defaultDispatchToolDeps(logger: Logger, watchedConversations: ()
     installedHarnesses: detectHarnesses,
     spawn: defaultSpawnFn,
     watchedConversations,
+    launchStyle: readLaunchStyle,
+    openInteractive: async (launch) => (await openInteractiveTerminal(launch)).ok,
     logger,
   };
 }

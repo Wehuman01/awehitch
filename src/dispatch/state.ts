@@ -78,5 +78,44 @@ export function writeDispatchWatch(watch: DispatchWatch | null): void {
     fs.rmSync(file, { force: true });
     return;
   }
-  fs.writeFileSync(file, JSON.stringify({ ...watch, updatedAt: new Date().toISOString() }, null, 2) + "\n");
+  const launchStyle = readLaunchStyle();
+  fs.writeFileSync(
+    file,
+    JSON.stringify({ ...watch, ...(launchStyle === "interactive" ? { launchStyle } : {}), updatedAt: new Date().toISOString() }, null, 2) + "\n"
+  );
+}
+
+// ------------------------------------------------------- launch style
+
+/**
+ * How a dispatch starts the agent: "headless" runs it in the background and
+ * reports back into the conversation; "interactive" opens the harness's TUI
+ * in a visible terminal window for the user to supervise and steer. Machine
+ * level, kept in dispatch.json alongside the watch (and surviving watch
+ * rewrites).
+ */
+export type DispatchLaunchStyle = "headless" | "interactive";
+
+export function readLaunchStyle(): DispatchLaunchStyle {
+  try {
+    const raw = JSON.parse(fs.readFileSync(dispatchStateFile(), "utf8"));
+    return raw?.launchStyle === "interactive" ? "interactive" : "headless";
+  } catch {
+    return "headless";
+  }
+}
+
+export function writeLaunchStyle(style: DispatchLaunchStyle): void {
+  const file = dispatchStateFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  let raw: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) raw = parsed;
+  } catch {
+    // no state yet — start fresh
+  }
+  delete raw.launchStyle;
+  const next = style === "headless" ? raw : { ...raw, launchStyle: style };
+  fs.writeFileSync(file, JSON.stringify(next, null, 2) + "\n");
 }

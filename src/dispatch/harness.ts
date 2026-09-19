@@ -79,6 +79,32 @@ export function planSpawn(
   }
 }
 
+/**
+ * The command behind an interactive dispatch: the harness's own TUI in the
+ * workspace, started by a visible terminal window the user can type into
+ * (switch profile, steer, continue the conversation).
+ */
+export function resolveInteractiveCommand(
+  harness: HarnessId,
+  workspaceRoot: string,
+  commandOverride?: string
+): { cmd: string; args: string[] } {
+  switch (harness) {
+    case "codex":
+      return { cmd: commandOverride ?? "codex", args: ["--cd", workspaceRoot] };
+    case "opencode":
+      return { cmd: commandOverride ?? "opencode", args: [] };
+    case "zcode": {
+      if (commandOverride) return { cmd: commandOverride, args: [] };
+      if (!onPath("zcode") && process.platform === "darwin") {
+        const bundled = "/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs";
+        if (fs.existsSync(bundled)) return { cmd: process.execPath, args: [bundled] };
+      }
+      return { cmd: "zcode", args: [] };
+    }
+  }
+}
+
 function onPath(cmd: string): boolean {
   const dirs = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
   return dirs.some((dir) => {

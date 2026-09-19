@@ -77,7 +77,7 @@ import { runStdioServer } from "../control-plane/server.js";
 import { ControlPlaneBrowser, interactiveLogin } from "../control-plane/browser.js";
 import { resolveDispatchMarker } from "../control-plane/dispatch.js";
 import { normalizeChatUrl } from "../control-plane/state.js";
-import { readDispatchWatch, writeDispatchWatch } from "../dispatch/state.js";
+import { readDispatchWatch, writeDispatchWatch, readLaunchStyle, writeLaunchStyle, type DispatchLaunchStyle } from "../dispatch/state.js";
 import { DispatchWatcher } from "../dispatch/watcher.js";
 import { createDispatchToolHandler, defaultDispatchToolDeps } from "../dispatch/tool.js";
 import {
@@ -850,6 +850,27 @@ dispatchCmd
     if (watch?.mode === "chat" && watch.chatUrl) check(`Stopped watching ${watch.chatUrl}`);
     else check("No conversation is watched");
     say("The bridge releases its dispatch browser within a minute (or immediately on restart). Watching one again: `awehitch dispatch watch <url>`.");
+  });
+
+dispatchCmd
+  .command("launch <style>")
+  .description("How a dispatch starts the agent: headless (background run, reports [C2C] back into the conversation) or interactive (the harness's TUI opens in a terminal window — switch profile, steer, keep talking there)")
+  .argument("<style>", "headless | interactive", (value: string) => {
+    if (value !== "headless" && value !== "interactive") {
+      throw new InvalidArgumentError("must be headless or interactive");
+    }
+    return value as DispatchLaunchStyle;
+  })
+  .option("--json", "machine-readable output", false)
+  .action((style: DispatchLaunchStyle, opts: { json: boolean }) => {
+    writeLaunchStyle(style);
+    if (opts.json) {
+      say(JSON.stringify({ ok: true, launchStyle: readLaunchStyle() }));
+      return;
+    }
+    check(style === "interactive"
+      ? "Dispatches now open the agent's TUI in a Terminal window (task printed + copied to the clipboard; no automatic [C2C] report)"
+      : "Dispatches now run in the background and report [C2C] back into the conversation");
   });
 
 // ---------------------------------------------------------------- control-plane (stdio MCP)
