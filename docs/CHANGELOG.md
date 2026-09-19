@@ -62,6 +62,10 @@
   default) restores the background run that reports EXECUTED back into the
   conversation; the choice is machine-level state in dispatch.json and
   survives watch rewrites.
+- `awehitch up` asks before gluing onto a running bridge: an interactive
+  terminal now offers reuse (the default — new workspaces still register
+  into the live process), restart, or quit, instead of silently streaming
+  the old instance's logs. Scripts and `--json` keep the silent reuse.
 - Named-tunnel startup is more honest about why it failed: the start
   timeout is raised from 45 s to 90 s (matching the quick tunnel) because
   on networks that block QUIC cloudflared's pre-check-and-fall-back-to-

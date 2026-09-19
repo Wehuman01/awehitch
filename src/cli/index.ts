@@ -296,6 +296,24 @@ function waitForEnter(): Promise<void> {
 }
 
 /**
+ * What `up` should do about a bridge that is already running. TTY callers
+ * choose; scripts and --json keep the silent reuse.
+ */
+function askBridgeReuse(port: number): Promise<"reuse" | "restart" | "quit"> {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(`A bridge is already running (port ${port}). [R]euse it (default) / re[S]tart / [Q]uit? `, (raw) => {
+      rl.close();
+      const answer = raw.trim().toLowerCase();
+      if (answer.startsWith("s")) resolve("restart");
+      else if (answer.startsWith("q")) resolve("quit");
+      else resolve("reuse");
+    });
+    rl.once("close", () => resolve("reuse"));
+  });
+}
+
+/**
  * Foreground tail: stay attached until the service goes away, then exit.
  * - child (spawned attached): Ctrl+C reaches it directly (same process group)
  *   and its own SIGINT handler shuts bridge + tunnel down; we outlive it and
@@ -474,6 +492,17 @@ program
     if (!json) {
       say(PRODUCT_NAME);
       say("");
+      // An interactive caller gets to decide what a running bridge means:
+      // keep it (the default — reusing also picks up newly registered
+      // workspaces), restart it (e.g. after a build), or back off.
+      if (fg && process.stdin.isTTY && process.stdout.isTTY) {
+        const live = await findLiveBridge();
+        if (live) {
+          const choice = await askBridgeReuse(live.port);
+          if (choice === "quit") return;
+          if (choice === "restart") await stopBridge();
+        }
+      }
       say("Connecting to ChatGPT…");
       say("");
     }

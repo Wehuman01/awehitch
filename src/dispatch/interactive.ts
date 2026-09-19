@@ -91,6 +91,9 @@ export function buildCommandScript(launch: InteractiveLaunch, id: string): { scr
   const tuiLine = `${shellQuote(tui.cmd)}${tui.args.length ? " " + tui.args.map(shellQuote).join(" ") : ""}`;
   const profiles =
     launch.aweswitchProfiles === undefined ? detectAweswitchProfiles(launch.harness) : launch.aweswitchProfiles;
+  // aweswitch launch mode takes the profile name only — its positional args
+  // select a model, they are NOT passed through to the agent. The script
+  // already cd'd into the workspace, which the launched TUI inherits.
   const profileMenu = profiles.length
     ? [
         'PROFILE=""',
@@ -102,7 +105,7 @@ export function buildCommandScript(launch: InteractiveLaunch, id: string): { scr
         '  PROFILE=${profiles[reply]}',
         '  print -- "launching with aweswitch profile: $PROFILE"',
         "fi",
-        `if [[ -n "$PROFILE" ]]; then exec aweswitch "$PROFILE" ${tuiLine}; else exec ${tuiLine}; fi`,
+        'if [[ -n "$PROFILE" ]]; then exec aweswitch "$PROFILE"; else exec ' + tuiLine + "; fi",
       ]
     : [`exec ${tuiLine}`];
 

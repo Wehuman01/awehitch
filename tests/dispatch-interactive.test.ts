@@ -48,7 +48,7 @@ describe("interactive dispatch script", () => {
     expect(script).toContain("profiles=('oc-glm' 'oc-deepseek')");
     expect(script).toContain('printf "  %2d) %s\\n" "$i" "$p"');
     expect(script).toContain("aweswitch");
-    expect(script).toMatch(/exec aweswitch "\$PROFILE" 'opencode'/);
+    expect(script).toMatch(/exec aweswitch "\$PROFILE"; else exec 'opencode'/);
   });
 
   it("refuses non-macOS honestly", async () => {
