@@ -86,6 +86,8 @@ The same machinery — bridge, tunnel, read-only ChatGPT connector — serves bo
 
 Binding your conversation is all it takes — no config switch. `awehitch doctor` reports the dispatch marker.
 
+No agent session needs to be running, either: `awehitch dispatch watch <url> [-w <workspace>]` makes the bridge itself watch the conversation. Every authorized directive then spawns your coding agent (codex / opencode / zcode — name one in the message, pin it with `--harness`, or let it pick the first installed), which executes in the workspace and reports back into the same conversation. `awehitch dispatch stop` stops watching. One executor per conversation: if you also attach an agent session there, stop the watcher first.
+
 ## Config
 
 Per-workspace `.c2c.json`:
@@ -113,6 +115,8 @@ awehitch off               # disconnect (revoke access + stop local service; del
 awehitch status            # which awehitch service is mounted on this machine, and whether it is alive
 awehitch doctor            # diagnose and auto-repair (--no-fix for a strictly read-only check)
 awehitch tunnel            # inspect or choose the public connection (temporary / stable hostname)
+awehitch dispatch watch <url>  # hands-free: the bridge spawns your agent for authorized dispatches
+awehitch dispatch stop         # stop watching
 ```
 
 `awehitch up [-w <path>]` automatically identifies the project, establishes a secure public connection, auto-detects installed coding agents (codex / opencode / zcode) and connects them, and opens a browser to create the ChatGPT connector when needed. The only manual step in the entire flow is logging into ChatGPT once in the popped-up window. The service runs in the foreground by default (logs in your terminal, Ctrl+C stops it); `-d/--daemon` runs it in the background with logs under the state dir. One bridge per machine: `up` in a different directory replaces the previous workspace's service. `--json` for agent use — it always runs in the background so a machine caller never blocks.

@@ -74,6 +74,9 @@ import { saveExecutionOutput } from "../execution/output.js";
 import { runStdioServer } from "../control-plane/server.js";
 import { ControlPlaneBrowser, interactiveLogin } from "../control-plane/browser.js";
 import { resolveDispatchMarker } from "../control-plane/dispatch.js";
+import { normalizeChatUrl } from "../control-plane/state.js";
+import { readDispatchWatch, writeDispatchWatch } from "../dispatch/state.js";
+import { DispatchWatcher } from "../dispatch/watcher.js";
 import {
   manualConnectorFallback,
   runConnectorSetup,
@@ -745,12 +748,95 @@ program
       port: opts.port ? parseInt(opts.port, 10) : undefined,
       logger,
     });
+    // Hands-free dispatch: the bridge hosts the watcher that spawns the
+    // agent for user-authorized directives in a watched conversation.
+    const dispatchWatcher = new DispatchWatcher({ logger });
+    dispatchWatcher.start();
     const shutdown = (): void => {
-      void bridge.close().then(() => process.exit(0));
+      void Promise.all([bridge.close(), dispatchWatcher.stop()]).then(() => process.exit(0));
     };
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
     say(`bridge ready on ${bridge.localBaseUrl()} serving ${bridge.workspaces.length} workspace(s)`);
+  });
+
+// ---------------------------------------------------------------- dispatch
+
+const dispatchCmd = program
+  .command("dispatch")
+  .description(
+    "Watch a user-owned ChatGPT conversation; the bridge spawns your agent for user-authorized dispatches there"
+  );
+
+dispatchCmd
+  .command("watch", { isDefault: true })
+  .description(
+    "Watch a conversation (its chatgpt.com/c/… URL). Typing the dispatch marker in your own message there, with a task, makes the bridge spawn the agent — no agent session needs to be running."
+  )
+  .argument("<url>")
+  .option("-w, --workspace <path>", "workspace root the dispatched agent runs in (defaults to current directory)")
+  .option("--harness <id>", "harness to spawn (codex | opencode | zcode); default: a harness named in the directive, else the first installed", parseHarnessKey)
+  .option("--command <cmd>", "override the harness binary (space-separated; run without a shell)")
+  .option("--json", "machine-readable output", false)
+  .action(async (url: string, opts: { workspace?: string; harness?: string; command?: string; json: boolean }) => {
+    try {
+      const root = resolveWorkspace(opts.workspace);
+      const chatUrl = normalizeChatUrl(url);
+      if (!chatUrl) throw new InvalidArgumentError("not a chatgpt.com conversation URL (expected chatgpt.com/c/…)");
+      if (opts.harness && !HARNESS_IDS.includes(opts.harness as HarnessId)) {
+        throw new InvalidArgumentError(`--harness must be one of: ${HARNESS_IDS.join(", ")}`);
+      }
+      const previous = readDispatchWatch();
+      const sameChat = previous?.chatUrl === chatUrl;
+      writeDispatchWatch({
+        workspaceRoot: root,
+        chatUrl,
+        ...(opts.harness ? { harness: opts.harness as HarnessId } : {}),
+        ...(opts.command ? { command: opts.command } : {}),
+        // Same conversation re-watched: keep the note/dedup bookkeeping.
+        ...(sameChat && previous
+          ? { notedUrl: previous.notedUrl, lastDirective: previous.lastDirective }
+          : {}),
+        updatedAt: new Date().toISOString(),
+      });
+
+      // The watcher lives in the bridge process: make sure one is running.
+      let bridgePort: number | null = (await findLiveBridge())?.port ?? null;
+      if (bridgePort === null) bridgePort = (await ensureBridge(root)).runtime.port;
+
+      const marker = resolveDispatchMarker(new Workspace(root).projectConfig.dispatchMarker);
+      if (opts.json) {
+        say(JSON.stringify({ ok: true, watch: { workspaceRoot: root, chatUrl, harness: opts.harness ?? null }, dispatchMarker: marker, bridgePort }));
+        return;
+      }
+      check(`Watching ${chatUrl}`);
+      say(`· Workspace: ${root}`);
+      say(`· Dispatch marker: ${marker} — type it in your OWN message there to authorize work (config: dispatchMarker in .c2c.json)`);
+      say(`· Agent: ${opts.harness ?? "chosen per directive (a harness named in the message wins, else the first installed)"}`);
+      say("The watcher runs inside the bridge; ChatGPT turns an authorized dispatch into a spawned agent run that reports back into the same conversation.");
+      say("One executor per conversation: if you also attach an agent session there, run `awehitch dispatch stop` first.");
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+dispatchCmd
+  .command("stop")
+  .description("Stop watching (the conversation binding of an attached agent session is separate and stays)")
+  .option("--json", "machine-readable output", false)
+  .action((opts: { json: boolean }) => {
+    const watch = readDispatchWatch();
+    if (!watch) {
+      if (opts.json) say(JSON.stringify({ ok: true, watching: false }));
+      else say("Not watching anything.");
+      return;
+    }
+    writeDispatchWatch(null);
+    if (opts.json) say(JSON.stringify({ ok: true, watching: false, stopped: watch.chatUrl }));
+    else {
+      check(`Stopped watching ${watch.chatUrl}`);
+      say("The bridge releases its dispatch browser within a minute (or immediately on restart).");
+    }
   });
 
 // ---------------------------------------------------------------- control-plane (stdio MCP)

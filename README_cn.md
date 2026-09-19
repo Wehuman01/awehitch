@@ -86,6 +86,8 @@ awehitch Bridge（本地，工作区只读网关 + OAuth + 隧道）
 
 绑定你的对话就够了——不需要任何模式切换。`awehitch doctor` 会报告当前的派发标记。
 
+连 agent 会话都不用挂着也行：`awehitch dispatch watch <对话URL> [-w <工作区>]` 让 bridge 自己盯着这条对话。每条带标记授权的派发会拉起你的编码 agent（codex / opencode / zcode——在消息里点名、用 `--harness` 钉死，或默认取第一个装好的），在工作区里执行完回报进同一条对话。`awehitch dispatch stop` 停止监听。一条对话只留一个执行者：如果你同时在上面绑了 agent 会话，先 stop 监听。
+
 ## 配置
 
 工作区 `.c2c.json`：
@@ -113,6 +115,8 @@ awehitch off               # 断开（吊销访问并停掉本地服务；ChatGP
 awehitch status            # 看本机挂着哪个 awehitch 服务、是否存活
 awehitch doctor            # 诊断并自动修复（--no-fix 只读检查）
 awehitch tunnel            # 查看或选择公网连接（临时地址 / 稳定域名）
+awehitch dispatch watch <对话URL>  # 免挂机：bridge 自动拉起 agent 执行带标记授权的派发
+awehitch dispatch stop             # 停止监听
 ```
 
 `awehitch up [-w <路径>]` 会自动识别项目、建立安全公网连接、自动探测已安装的编码 agent（codex / opencode / zcode）并接入、需要时打开浏览器自动创建 ChatGPT 连接器。全流程唯一需要你动手的，是在弹出的窗口里登录一次 ChatGPT。服务默认前台运行（日志在终端，Ctrl+C 停止）；`-d/--daemon` 转后台，日志在状态目录里。一台机器只跑一个 bridge：换个目录 `up` 会自动替换上一个工作区的服务。`--json` 供 agent 使用——它固定后台运行，机器调用方不会被打断。

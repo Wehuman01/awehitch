@@ -19,6 +19,21 @@
 - Default dispatch marker changed from `@opencode` (a specific harness's
   name) to the neutral `@agent`. Existing configs that set a marker keep it;
   users relying on the old default type `@agent` from now on.
+
+### Features
+- Hands-free dispatch: `awehitch dispatch watch <url>` makes the bridge
+  itself watch a user-owned ChatGPT conversation and spawn the coding
+  agent for each user-authorized directive (the dispatch marker in the
+  user's own message + a `[C2C] DIRECTIVE:` reply — the same gate as the
+  manual flow). The spawned run executes in the workspace via the
+  harness's non-interactive mode (codex exec / opencode run /
+  `zcode --prompt`) and reports back into the same conversation through
+  the control-plane tools; a non-zero exit surfaces as `[C2C] BLOCKED`
+  with the log path. A harness named in the directive ("用 opencode …")
+  wins; `--harness` pins one; `--command` overrides the binary.
+  `awehitch dispatch stop` stops watching and releases the dispatch
+  browser. One executor per conversation: an attached agent session and
+  the watcher must not share a conversation.
 - Named-tunnel startup is more honest about why it failed: the start
   timeout is raised from 45 s to 90 s (matching the quick tunnel) because
   on networks that block QUIC cloudflared's pre-check-and-fall-back-to-

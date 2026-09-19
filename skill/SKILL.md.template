@@ -283,6 +283,11 @@ through the same awehitch connector as in every other workflow, and you are
 the follower there. Do NOT run the coding-task workflow inside the user's
 conversation; its per-task chats are separate conversations.
 
+The bridge's dispatch watcher may also start you directly: your prompt
+then carries the conversation URL and the TASK. Follow that prompt — it
+is this same workflow (open the chat, execute, report EXECUTED, wait for
+review), not a new protocol.
+
 Setup (once):
 
 1. `awehitch up -w <workspace> --json` — the usual machinery (bridge,
