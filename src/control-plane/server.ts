@@ -23,6 +23,7 @@ import { PRODUCT_NAME, VERSION } from "../version.js";
  *   awehitch_send_handoff     send the [C2C] HANDOFF brief from the checkpoint
  *   awehitch_wait_reply       poll for a reply (cheap DOM checks; timeout != failure)
  *   awehitch_read_reply       read the current reply
+ *   awehitch_chat_info        which ChatGPT conversation URL is bound to this session
  *   awehitch_check_dispatch   follow mode: is the user's own message an authorized dispatch?
  *   awehitch_wait_directive   follow mode: wait for a user-authorized [C2C] DIRECTIVE
  *

@@ -72,10 +72,19 @@ Then use your agent normally: "Plan XXX for me using ChatGPT". Casual asks work 
 awehitch Bridge（本地，工作区只读网关 + OAuth + 隧道）
 ```
 
-- **Control plane** — the agent and ChatGPT exchange tiny structured `[C2C]` messages (`INIT → PLAN → EXECUTED → REVIEW → DONE`). A local **control-plane proxy** wraps the ChatGPT web conversation (Playwright, dedicated profile) into five semantic tools: `awehitch_open_chat`, `awehitch_send_state`, `awehitch_send_handoff`, `awehitch_wait_reply`, `awehitch_read_reply`. One chat per task: a new TASK_ID automatically opens a fresh chat, and resuming the same task (across review iterations and agent restarts) always reuses its bound chat; when the old chat is lost, `awehitch_send_handoff` composes the resume brief from the local checkpoint (never files, diffs, or logs). Cheap DOM polling (20–30 s), timeouts are not failures, one tab, never resend. This decouples the original Codex-only browser control plane from any specific harness — an agent just needs "can call tools".
+- **Control plane** — the agent and ChatGPT exchange tiny structured `[C2C]` messages (`INIT → PLAN → EXECUTED → REVIEW → DONE`). A local **control-plane proxy** wraps the ChatGPT web conversation (Playwright, dedicated profile) into eight semantic tools: `awehitch_open_chat`, `awehitch_send_state`, `awehitch_send_handoff`, `awehitch_wait_reply`, `awehitch_read_reply`, `awehitch_chat_info`, plus follow-mode dispatch tools `awehitch_check_dispatch` / `awehitch_wait_directive`. One chat per task: a new TASK_ID automatically opens a fresh chat, and resuming the same task (across review iterations and agent restarts) always reuses its bound chat; when the old chat is lost, `awehitch_send_handoff` composes the resume brief from the local checkpoint (never files, diffs, or logs). Cheap DOM polling (20–30 s), timeouts are not failures, one tab, never resend. This decouples the original Codex-only browser control plane from any specific harness — an agent just needs "can call tools".
 - **Parallel by session** — every coding session gets its own ChatGPT conversation. Each harness has a small pool of browser profiles (seeded from the first logged-in profile, so one login covers all); a session claims a free slot at first use — slot 0 is the harness's own profile, extra concurrent sessions of the same harness (say, two opencode windows) get `<harness>-s1`, `-s2`… Task→chat bindings are merged under a short cross-process lock so a task always reopens its chat, while each session's current chat stays private. codex / opencode / zcode — and several instances of each — run planning loops at the same time. Raise the pool with `AWEHITCH_MAX_PARALLEL_SESSIONS` (default 2 per harness, max 16; each extra slot is one more Chromium window).
-- **Data plane** — ChatGPT pulls files, diffs, search results, test records itself through 9 read-only tools over an OAuth 2.1 + PKCE + dynamic-client-registration tunnel. Independent review: after EXECUTED, ChatGPT inspects the real git diff — it never trusts "all tests passed".
+- **Data plane** — ChatGPT pulls files, diffs, search results, test records itself through 10 read-only tools over an OAuth 2.1 + PKCE + dynamic-client-registration tunnel. Independent review: after EXECUTED, ChatGPT inspects the real git diff — it never trusts "all tests passed".
 - **Adapters** — codex (`~/.codex/skills` + `config.toml` MCP + sandbox writable_roots), opencode (`~/.config/opencode` skill + `opencode.json` MCP), zcode (`~/.zcode/cli/config.json` mcpServers + skill). Each is thin; none import each other.
+
+### Two modes: lead and follow
+
+Both modes share the exact same machinery — `awehitch up` starts the bridge, tunnel and ChatGPT connector in either mode, and ChatGPT's connector is read-only in both. The only difference is **who drives the ChatGPT conversation**:
+
+- **lead** (default) — the agent drives. You work in your coding agent's terminal ("use ChatGPT to plan X"); the agent opens the chat, exchanges `[C2C]` INIT → PLAN → EXECUTED → EXECUTED → DONE with ChatGPT, and you watch in the terminal.
+- **follow** — you drive. You chat with ChatGPT in your own conversation (browser, desktop app — anywhere your account is logged in; the conversation is account-level). The agent binds that conversation via its `chatgpt.com/c/<id>` URL and waits with `awehitch_wait_directive`. It only acts when **your own message** carries the dispatch marker (default `@opencode`) and ChatGPT answers with a `[C2C] DIRECTIVE:` — ChatGPT's text alone never authorizes execution, in either mode.
+
+Switch with `awehitch up --mode follow` (persisted to `.c2c.json`; `--mode lead` switches back). `awehitch doctor` reports the active mode and the dispatch marker.
 
 ## Config
 
@@ -85,7 +94,13 @@ Per-workspace `.c2c.json`:
 {
   "name": "my-project",            // workspace display name (connector title)
   "maxIterations": 12,             // C2C loop limit before asking the user
-  "browserIdleMinutes": 10         // close the idle control-plane browser after N minutes (default 10)
+  "browserIdleMinutes": 10,        // close the idle control-plane browser after N minutes (default 10)
+  "mode": "follow",                // C2C direction: "lead" (default) or "follow"
+  "follow": {                      // follow-mode settings (ignored in lead)
+    "chatWrite": false,            // declared write capability; reported honestly —
+                                   //   the connector is read-only in this version
+    "dispatchMarker": "@opencode"  // marker in YOUR message that authorizes the agent
+  }
 }
 ```
 
