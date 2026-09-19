@@ -8,8 +8,9 @@
  * never becomes shell syntax.
  */
 
-import { execFileSync, spawn as nodeSpawn } from "node:child_process";
+import { execFile as execFileCb, execFileSync, spawn as nodeSpawn } from "node:child_process";
 import fs from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import type { HarnessId } from "../adapters/paths.js";
 import { resolveInteractiveCommand } from "./harness.js";
@@ -95,7 +96,7 @@ export function buildCommandScript(launch: InteractiveLaunch, id: string): { scr
         'PROFILE=""',
         `profiles=(${profiles.map(shellQuote).join(" ")})`,
         "print -- 'Pick an aweswitch profile for this run:'",
-        'i=1; for p in "${profiles[@]}"; do printf "  %%2d) %%s\\n" "$i" "$p"; ((i++)); done',
+        'i=1; for p in "${profiles[@]}"; do printf "  %2d) %s\\n" "$i" "$p"; ((i++)); done',
         'read "reply?Profile number (Enter = plain launch, no profile switch): "',
         'if [[ "$reply" =~ ^[0-9]+$ ]] && (( reply >= 1 && reply <= ${#profiles} )); then',
         '  PROFILE=${profiles[reply]}',
@@ -121,17 +122,58 @@ export function buildCommandScript(launch: InteractiveLaunch, id: string): { scr
 
 export async function openInteractiveTerminal(launch: InteractiveLaunch): Promise<{ ok: true; scriptPath: string } | { ok: false; reason: string }> {
   if (process.platform !== "darwin") {
-    return { ok: false, reason: "interactive dispatch needs macOS Terminal; use `awehitch dispatch launch headless`" };
+    return { ok: false, reason: "interactive dispatch needs macOS; use `awehitch dispatch launch headless`" };
   }
   const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   const { scriptPath } = buildCommandScript(launch, id);
-  const exit = await new Promise<number | null>((resolve) => {
-    const child = nodeSpawn("open", ["-a", "Terminal", scriptPath], { stdio: "ignore", detached: true });
-    child.on("exit", (code) => resolve(code));
-    child.on("error", () => resolve(-1));
-  });
-  if (exit !== 0) {
-    return { ok: false, reason: `opening Terminal failed with exit code ${exit}` };
+  // The terminal follows the user: their "default terminal" override
+  // (Warp/iTerm2 write this LaunchServices binding for .command files) wins,
+  // then Warp when installed, then the system default (Terminal.app).
+  const opens: string[][] = [];
+  const bundleId = await readDefaultTerminalBundleId();
+  if (bundleId) opens.push(["-b", bundleId, scriptPath]);
+  const warp = ["/Applications/Warp.app", path.join(homedir(), "Applications/Warp.app")];
+  if (!bundleId?.startsWith("dev.warp.Warp") && warp.some((p) => fs.existsSync(p))) {
+    opens.push(["-a", "Warp", scriptPath]);
   }
-  return { ok: true, scriptPath };
+  opens.push([scriptPath]);
+  for (const args of opens) {
+    const exit = await new Promise<number | null>((resolve) => {
+      const child = nodeSpawn("open", args, { stdio: "ignore", detached: true });
+      child.on("exit", (code) => resolve(code));
+      child.on("error", () => resolve(-1));
+    });
+    if (exit === 0) return { ok: true, scriptPath };
+  }
+  return { ok: false, reason: "opening a terminal failed" };
+}
+
+/** The LaunchServices handler for .command files — the user's default terminal. */
+async function readDefaultTerminalBundleId(): Promise<string | null> {
+  const domains = [
+    "Library/Preferences/com.apple.LaunchServices/com.apple.launchservices.secure.plist",
+    "Library/Preferences/com.apple.LaunchServices/com.apple.launchservices.plist",
+  ];
+  for (const rel of domains) {
+    const file = path.join(homedir(), rel);
+    if (!fs.existsSync(file)) continue;
+    try {
+      const stdout = await new Promise<string>((resolve, reject) =>
+        execFileCb("plutil", ["-convert", "json", "-o", "-", file], { encoding: "utf8" }, (err, out) =>
+          err ? reject(err) : resolve(out)
+        )
+      );
+      const parsed = JSON.parse(stdout) as { LSHandlers?: Array<Record<string, unknown>> };
+      for (const handler of parsed.LSHandlers ?? []) {
+        const tag = handler.LSHandlerContentTag;
+        const uti = handler.LSHandlerContentType;
+        if (tag !== "command" && uti !== "com.apple.terminal.shell-script" && uti !== "public.shell-script") continue;
+        const app = handler.LSHandlerRoleAll ?? handler.LSHandlerRoleViewer;
+        if (typeof app === "string" && app !== "") return app;
+      }
+    } catch {
+      // unreadable domain: try the next
+    }
+  }
+  return null;
 }

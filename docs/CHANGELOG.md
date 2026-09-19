@@ -52,6 +52,9 @@
   profile picker for that harness (aweswitch is a dependency: enabling
   interactive installs it via pip when missing), so a dispatched run can
   start under a profile with quota instead of the exhausted default. The
+  terminal follows the user: their default terminal (the LaunchServices
+  .command binding Warp/iTerm2 write), else Warp when installed, else
+  Terminal.app. The
   chosen profile only affects that window (aweswitch launch mode isolates
   env; nothing is written into your agent configs); nothing reports [C2C]
   automatically (you report from that session). The prompt body only travels

@@ -46,6 +46,7 @@ describe("interactive dispatch script", () => {
       "test3"
     );
     expect(script).toContain("profiles=('oc-glm' 'oc-deepseek')");
+    expect(script).toContain('printf "  %2d) %s\\n" "$i" "$p"');
     expect(script).toContain("aweswitch");
     expect(script).toMatch(/exec aweswitch "\$PROFILE" 'opencode'/);
   });
