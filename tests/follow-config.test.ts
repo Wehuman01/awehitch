@@ -24,7 +24,7 @@ describe("follow config parsing", () => {
       JSON.stringify({
         name: "myrepo",
         mode: "follow",
-        follow: { chatWrite: false, dispatchMarker: "@hand", ctmUrl: "https://t.example/mcp", ctmArgs: ["--http-port", "9000"] },
+        follow: { chatWrite: false, dispatchMarker: "@hand" },
       })
     );
     const ws = new Workspace(dir);
@@ -32,8 +32,6 @@ describe("follow config parsing", () => {
     expect(ws.projectConfig.follow).toEqual({
       chatWrite: false,
       dispatchMarker: "@hand",
-      ctmUrl: "https://t.example/mcp",
-      ctmArgs: ["--http-port", "9000"],
     });
   });
 
@@ -43,12 +41,12 @@ describe("follow config parsing", () => {
       ".c2c.json",
       JSON.stringify({
         mode: "follow",
-        follow: { chatWrite: "no", dispatchMarker: "  ", ctmUrl: 42, ctmArgs: ["ok", 7, ""] },
+        follow: { chatWrite: "no", dispatchMarker: "  " },
       })
     );
     const ws = new Workspace(dir);
     expect(effectiveMode(ws.projectConfig)).toBe("follow");
-    expect(ws.projectConfig.follow).toEqual({ ctmArgs: ["ok"] });
+    expect(ws.projectConfig.follow).toEqual({});
   });
 
   it("treats an unknown mode as lead (unchanged behavior)", () => {

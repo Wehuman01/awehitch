@@ -57,25 +57,21 @@ export interface ListDirectoryResult {
 
 /**
  * C2C direction. "lead" (default): the local agent initiates, ChatGPT plans
- * and reviews through the read-only bridge connector. "follow": the USER
- * drives in a ChatGPT conversation of their own; ChatGPT's workspace access
- * comes from an external MCP data plane (e.g. coding-tools-mcp), and the
- * agent only acts on user-marked dispatches (see control-plane/dispatch.ts).
+ * and reviews. "follow": the USER drives in a ChatGPT conversation of their
+ * own and the agent only acts on user-marked dispatches (see
+ * control-plane/dispatch.ts). Both modes share the same machinery — bridge,
+ * tunnel, connector — and differ only in who drives the conversation.
  */
 export type C2CMode = "lead" | "follow";
 
 export interface FollowConfig {
-  /** Declared data-plane write capability. false → doctor verifies the
-   * endpoint reports a read-only permission mode. awehitch verifies, never
-   * manages the data plane. */
+  /** Declared write capability for ChatGPT in the user's conversation. The
+   * connector is read-only in this version; a true value is reported as a
+   * config problem by `up`/`doctor` instead of being silently ignored. */
   chatWrite?: boolean;
   /** Marker the USER types in the ChatGPT conversation that authorizes the
    * agent to act. Dispatch authority is the user's, never ChatGPT's. */
   dispatchMarker?: string;
-  /** MCP endpoint URL the data plane serves (verified by `up`/`doctor`). */
-  ctmUrl?: string;
-  /** Extra args echoed into the suggested data-plane start command. */
-  ctmArgs?: string[];
 }
 
 export interface ProjectConfig {
@@ -96,11 +92,6 @@ function parseFollowConfig(value: unknown): FollowConfig {
   if (typeof raw.chatWrite === "boolean") config.chatWrite = raw.chatWrite;
   if (typeof raw.dispatchMarker === "string" && raw.dispatchMarker.trim()) {
     config.dispatchMarker = raw.dispatchMarker.trim();
-  }
-  if (typeof raw.ctmUrl === "string" && raw.ctmUrl.trim()) config.ctmUrl = raw.ctmUrl.trim();
-  if (Array.isArray(raw.ctmArgs)) {
-    const args = raw.ctmArgs.filter((entry): entry is string => typeof entry === "string" && entry.trim() !== "");
-    if (args.length > 0) config.ctmArgs = args;
   }
   return config;
 }
