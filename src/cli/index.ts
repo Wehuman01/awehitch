@@ -14,7 +14,8 @@ import {
   stopBridge,
   stopBridgeAndWait,
 } from "../process/daemon.js";
-import { Workspace } from "../workspace/manager.js";
+import { Workspace, effectiveMode } from "../workspace/manager.js";
+import { verifyCtmEndpoint } from "../follow/ctm.js";
 import { readRegistryRoots } from "../workspace/registry.js";
 import { AuthStore } from "../auth/store.js";
 import { detectTunnelBinaries } from "../tunnel/detect.js";
@@ -409,6 +410,70 @@ interface UpOptions {
   json: boolean;
   daemon: boolean;
   timeout: number;
+  mode?: "lead" | "follow";
+}
+
+/**
+ * Follow mode's `up`: no bridge, no tunnel, no connector — the data plane is
+ * external (verify, don't manage) and the control plane is spawned by the
+ * harness. What remains: harness adapter wiring, and a data-plane check
+ * against the workspace's `follow.chatWrite` intent.
+ */
+async function runFollowUp(root: string, workspace: Workspace, requested: HarnessId[], json: boolean): Promise<void> {
+  const follow = workspace.projectConfig.follow ?? {};
+  const chatWrite = follow.chatWrite === true;
+  const ctm = follow.ctmUrl
+    ? await verifyCtmEndpoint(follow.ctmUrl, {
+        expectReadonly: !chatWrite,
+        workspaceRoot: root,
+        ctmArgs: follow.ctmArgs,
+      })
+    : null;
+
+  const harnesses: { id: string; installed: boolean; skillPath?: string; error?: string }[] = [];
+  for (const harness of requested) {
+    try {
+      const impl = await loadAdapter(harness);
+      const result = impl.setup({ workspaceRoot: root, cliEntry: awehitchCliEntry(), connectorName: "" });
+      harnesses.push({ id: harness, installed: true, skillPath: result.skillPath });
+      if (harness === "codex") trySandboxAllow();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      harnesses.push({ id: harness, installed: false, error: message });
+      if (!json) process.stderr.write("Failed to wire " + harnessLabel(harness) + ": " + message + "\n");
+    }
+  }
+
+  if (json) {
+    say(JSON.stringify({
+      ok: ctm === null || ctm.ok,
+      mode: "follow",
+      workspaceId: workspace.id,
+      workspaceName: workspace.name,
+      chatWrite,
+      dispatchMarker: follow.dispatchMarker ?? "@opencode",
+      ctm,
+      harnesses,
+    }));
+    return;
+  }
+  say(PRODUCT_NAME);
+  say("");
+  say("Follow mode — the user drives ChatGPT; this agent follows.");
+  if (ctm === null) {
+    say("· Data plane (coding-tools-mcp): not verified — set follow.ctmUrl in .c2c.json to enable the check");
+  } else if (ctm.ok) {
+    check(`Data plane verified (permission_mode=${ctm.permissionMode}, ${ctm.tools?.length ?? 0} tools)`);
+  } else {
+    cross("Data plane does not match .c2c.json");
+    for (const problem of ctm.problems) say(`  · ${problem}`);
+    if (ctm.suggestion) say(`  Start it like: ${ctm.suggestion}`);
+  }
+  if (requested.length === 0) say("· No coding agent detected (codex / opencode / zcode); pass --harness to pick one");
+  else say(`· Wired ${requested.map((h) => harnessLabel(h)).join(", ")}`);
+  say("");
+  say("Log in once with `awehitch login`; then bind your ChatGPT conversation with");
+  say("awehitch_open_chat (url=…) and follow the skill's follow-mode workflow.");
 }
 
 function parseHarnessOption(value: string, acc: HarnessId[]): HarnessId[] {
@@ -435,6 +500,11 @@ program
   .option("-d, --daemon", "run the service in the background and exit (implied by --json); logs under the state dir's logs/", false)
   .option("--json", "machine-readable output", false)
   .option("--timeout <minutes>", "how long to wait for the ChatGPT login", parsePositiveInteger, 5)
+  .option("--mode <mode>", "C2C direction for this run: lead (default) or follow; overrides .c2c.json mode without writing it", (value: string) => {
+    const mode = value.trim().toLowerCase();
+    if (mode !== "lead" && mode !== "follow") throw new InvalidArgumentError("must be lead or follow");
+    return mode as "lead" | "follow";
+  })
   .action(async (opts: UpOptions) => {
     const root = resolveWorkspace(opts.workspace);
     const json = opts.json;
@@ -454,6 +524,15 @@ program
       if (json) say(JSON.stringify({ ok: false, error: { code: "BAD_WORKSPACE", message } }));
       else cross(message);
       process.exitCode = 1;
+      return;
+    }
+
+    // Follow mode is a different up: no bridge/tunnel/connector to manage
+    // (the data plane is external and verified, not owned). The one-shot
+    // --mode override wins over .c2c.json for this run only.
+    const mode = opts.mode ?? effectiveMode(workspace.projectConfig);
+    if (mode === "follow") {
+      await runFollowUp(root, workspace, requested, json);
       return;
     }
 
@@ -704,6 +783,25 @@ program
   .option("-w, --workspace <path>", "accepted for compatibility; the bridge is machine-wide")
   .option("--json", "machine-readable output", false)
   .action(async (opts: { workspace?: string; json: boolean }) => {
+    // Follow mode owns no bridge and no connector; tearing down the machine
+    // bridge would break OTHER workspaces still running in lead mode. Off
+    // here means: forget this workspace's conversation binding.
+    try {
+      const workspace = new Workspace(resolveWorkspace(opts.workspace));
+      if (effectiveMode(workspace.projectConfig) === "follow") {
+        const cleared = clearChatPointer(workspace.id);
+        if (opts.json) {
+          say(JSON.stringify({ ok: true, mode: "follow", chatCleared: cleared.cleared }));
+          return;
+        }
+        check("Cleared this workspace's ChatGPT conversation binding (follow mode)");
+        say("· The machine bridge and the data plane (coding-tools-mcp) were left running on purpose");
+        return;
+      }
+    } catch {
+      // Not a workspace / unreadable config — fall through to the machine
+      // teardown below, which is what a lead-mode user means by `off`.
+    }
     try {
       await revokeConnectorAccess();
       await stopBridge();
@@ -1187,10 +1285,18 @@ program
       report.workspace = { ok: false, detail: (error as Error).message };
     }
 
+    // Follow mode changes what "healthy" means: the bridge/tunnel/connector
+    // are not part of this workspace's path (the data plane is external), so
+    // they are reported as not-required instead of being auto-started.
+    const followMode = workspace !== null && effectiveMode(workspace.projectConfig) === "follow";
+    let ctmVerify: Awaited<ReturnType<typeof verifyCtmEndpoint>> | null = null;
+
     // Bridge
     let runtime: RuntimeState | null = null;
     let bridgeUnknown = false;
-    {
+    if (followMode) {
+      report.bridge = { ok: true, detail: "not required (follow mode)" };
+    } else {
       const observation = await findBridgeObservation();
       if (observation.state === "healthy") {
         runtime = observation.runtime;
@@ -1207,6 +1313,28 @@ program
       }
       if (runtime) report.bridge = { ok: true, detail: `port ${runtime.port}` };
       else report.bridge = report.bridge ?? { ok: false, detail: "not running" };
+    }
+
+    // Data plane (follow mode): verify the declared CTM endpoint against the
+    // workspace's chatWrite intent. Verify, don't manage — a mismatch prints
+    // the command that would fix it.
+    if (followMode && workspace) {
+      const follow = workspace.projectConfig.follow ?? {};
+      if (follow.ctmUrl) {
+        ctmVerify = await verifyCtmEndpoint(follow.ctmUrl, {
+          expectReadonly: follow.chatWrite !== true,
+          workspaceRoot: root,
+          ctmArgs: follow.ctmArgs,
+        });
+        report.ctm = {
+          ok: ctmVerify.ok,
+          detail: ctmVerify.ok
+            ? `permission_mode=${ctmVerify.permissionMode}`
+            : ctmVerify.problems.join("; "),
+        };
+      } else {
+        report.ctm = { ok: false, detail: "follow.ctmUrl not set in .c2c.json (data plane unverified)" };
+      }
     }
 
     // MCP local reachability (401 without token means MCP + auth both work)
@@ -1458,6 +1586,8 @@ program
     if (opts.json) {
       say(
         JSON.stringify({
+          mode: followMode ? "follow" : "lead",
+          ...(ctmVerify ? { ctm: ctmVerify } : {}),
           report,
           repairs: results,
           chatgptRepair,
@@ -1474,7 +1604,7 @@ program
       );
       return;
     }
-    say(`${PRODUCT_NAME} Doctor`);
+    say(`${PRODUCT_NAME} Doctor${followMode ? " (follow mode)" : ""}`);
     say("");
     const labels: Record<string, string> = {
       node: "Node.js",
@@ -1484,6 +1614,7 @@ program
       mcp: "MCP",
       oauth: "OAuth",
       tunnel: "Tunnel",
+      ctm: "Data plane",
       selectors: "Selectors",
       controlPlane: "Control-plane DOM",
     };
@@ -1497,6 +1628,9 @@ program
       }
     }
     for (const repair of results) say(`· ${repair}`);
+    if (ctmVerify && !ctmVerify.ok && ctmVerify.suggestion) {
+      say(`· Start the data plane like: ${ctmVerify.suggestion}`);
+    }
     const installedHarnesses = Object.entries(adapters)
       .filter(([, value]) => (value as { installed: boolean }).installed)
       .map(([name]) => harnessLabel(name as HarnessId));

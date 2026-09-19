@@ -10,6 +10,7 @@ import {
   resolveChatTarget,
 } from "./state.js";
 import { typeMultiline, normalizeForCompare, lastUserText } from "./composer.js";
+import { isDispatchAuthorized, parseDirective, resolveDispatchMarker } from "./dispatch.js";
 import { loadSiteSelectors, type SiteSelectors } from "./selectors.js";
 import { acquireBrowserLock, type BrowserLock } from "./browser-lock.js";
 import { claimSessionSlot, type SessionSlot } from "./slot.js";
@@ -81,6 +82,21 @@ export function isFreshReply(
 export interface SendResult {
   sent: boolean;
   url: string;
+}
+
+/** Follow-mode view of the conversation for one dispatch check. */
+export interface DirectiveView {
+  status: "directive" | "timeout";
+  /** True when the user's own latest message carries the dispatch marker. */
+  authorized: boolean;
+  /** Latest user (human) message text on the page, when any. */
+  userText: string | null;
+  /** Latest assistant message text, when any. */
+  replyText: string | null;
+  /** Parsed [C2C] DIRECTIVE body when the latest reply is a directive. */
+  directive: string | null;
+  /** Present on timeout, and why. */
+  note?: string;
 }
 
 export interface DriverEvents {
@@ -535,6 +551,74 @@ export class ControlPlaneBrowser {
             : "the latest reply predates the last sent message; no new reply arrived";
         }
         return { ...reply, status: "timeout", note };
+      }
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    }
+  }
+
+  /**
+   * Read the latest USER (human) message on the page. Follow mode only, and
+   * the dispatch-authority signal: ChatGPT text never authorizes execution,
+   * the user's own message does.
+   */
+  async readLatestUserMessage(): Promise<{ text: string | null; count: number }> {
+    const page = await this.ensurePage();
+    await this.ensureConversationOpen(page);
+    const count = await page.locator(this.site.selectors.userTurn).count().catch(() => 0);
+    const text = count > 0 ? await lastUserText(page, this.site.selectors.userTurn) : null;
+    return { text, count };
+  }
+
+  /**
+   * Follow mode: wait for an actionable dispatch. A dispatch is actionable
+   * only when BOTH hold: (a) the user's own latest message carries the
+   * dispatch marker, and (b) the latest assistant message is a [C2C]
+   * DIRECTIVE. Anchoring: the first call returns an already-present
+   * authorized directive once (restart recovery); afterwards only NEW
+   * assistant output counts, and replies that are not authorized directives
+   * are consumed, so the user's plain conversation with ChatGPT (and GPT's
+   * replies to it) never triggers the agent.
+   */
+  async waitDirective(opts: { timeoutMs?: number; marker?: string } = {}): Promise<DirectiveView> {
+    const timeoutMs = opts.timeoutMs ?? 5 * 60_000;
+    const marker = resolveDispatchMarker(opts.marker);
+    const deadline = Date.now() + timeoutMs;
+    let anchor: { assistantCount: number; assistantText: string } | null = null;
+    let first = true;
+    for (;;) {
+      const page = await this.ensurePage();
+      await this.ensureConversationOpen(page);
+      const userCount = await page.locator(this.site.selectors.userTurn).count().catch(() => 0);
+      const userText = userCount > 0 ? await lastUserText(page, this.site.selectors.userTurn) : null;
+      const { messageCount, status, text } = await this.readReplyWithCount();
+      if (status === "error") {
+        return {
+          status: "timeout",
+          authorized: false,
+          userText,
+          replyText: text,
+          directive: null,
+          note: "not logged in to ChatGPT (open the conversation, log in, retry)",
+        };
+      }
+      const authorized = isDispatchAuthorized(userText, marker);
+      const { isDirective, body } = parseDirective(text);
+      const generating = status === "generating";
+      const changed =
+        anchor !== null && (messageCount !== anchor.assistantCount || (text ?? "") !== anchor.assistantText);
+      if (!generating && authorized && isDirective && (first || changed)) {
+        return { status: "directive", authorized: true, userText, replyText: text, directive: body };
+      }
+      // Consume the observed assistant state: whatever it was — plain chat,
+      // an unauthorized directive, or the recovery case already declined — it
+      // must not be re-reported until new output replaces it.
+      anchor = { assistantCount: messageCount, assistantText: text ?? "" };
+      first = false;
+      if (Date.now() >= deadline) {
+        const note = !authorized
+          ? `the latest user message does not carry the dispatch marker "${marker}"`
+          : "no new [C2C] DIRECTIVE reply arrived";
+        return { status: "timeout", authorized, userText, replyText: text, directive: null, note };
       }
       await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
     }

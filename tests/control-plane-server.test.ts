@@ -51,7 +51,7 @@ async function connect(): Promise<Client> {
 }
 
 describe("control-plane MCP server (stdio)", () => {
-  it("lists the five semantic tools", async () => {
+  it("lists the semantic tools", async () => {
     const c = await connect();
     const tools = await c.listTools();
     const names = tools.tools.map((tool) => tool.name);
@@ -62,6 +62,8 @@ describe("control-plane MCP server (stdio)", () => {
         "awehitch_send_handoff",
         "awehitch_wait_reply",
         "awehitch_read_reply",
+        "awehitch_check_dispatch",
+        "awehitch_wait_directive",
         "awehitch_chat_info",
       ])
     );

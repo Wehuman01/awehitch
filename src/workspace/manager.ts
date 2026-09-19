@@ -55,11 +55,54 @@ export interface ListDirectoryResult {
   hasMore: boolean;
 }
 
+/**
+ * C2C direction. "lead" (default): the local agent initiates, ChatGPT plans
+ * and reviews through the read-only bridge connector. "follow": the USER
+ * drives in a ChatGPT conversation of their own; ChatGPT's workspace access
+ * comes from an external MCP data plane (e.g. coding-tools-mcp), and the
+ * agent only acts on user-marked dispatches (see control-plane/dispatch.ts).
+ */
+export type C2CMode = "lead" | "follow";
+
+export interface FollowConfig {
+  /** Declared data-plane write capability. false → doctor verifies the
+   * endpoint reports a read-only permission mode. awehitch verifies, never
+   * manages the data plane. */
+  chatWrite?: boolean;
+  /** Marker the USER types in the ChatGPT conversation that authorizes the
+   * agent to act. Dispatch authority is the user's, never ChatGPT's. */
+  dispatchMarker?: string;
+  /** MCP endpoint URL the data plane serves (verified by `up`/`doctor`). */
+  ctmUrl?: string;
+  /** Extra args echoed into the suggested data-plane start command. */
+  ctmArgs?: string[];
+}
+
 export interface ProjectConfig {
   name?: string;
   maxIterations?: number;
   /** Minutes the control-plane browser may sit idle before it is closed. */
   browserIdleMinutes?: number;
+  /** C2C direction for this workspace; omit for "lead" (unchanged behavior). */
+  mode?: C2CMode;
+  /** Settings for mode "follow"; ignored in "lead". */
+  follow?: FollowConfig;
+}
+
+function parseFollowConfig(value: unknown): FollowConfig {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const raw = value as Record<string, unknown>;
+  const config: FollowConfig = {};
+  if (typeof raw.chatWrite === "boolean") config.chatWrite = raw.chatWrite;
+  if (typeof raw.dispatchMarker === "string" && raw.dispatchMarker.trim()) {
+    config.dispatchMarker = raw.dispatchMarker.trim();
+  }
+  if (typeof raw.ctmUrl === "string" && raw.ctmUrl.trim()) config.ctmUrl = raw.ctmUrl.trim();
+  if (Array.isArray(raw.ctmArgs)) {
+    const args = raw.ctmArgs.filter((entry): entry is string => typeof entry === "string" && entry.trim() !== "");
+    if (args.length > 0) config.ctmArgs = args;
+  }
+  return config;
 }
 
 function parseProjectConfig(value: unknown): ProjectConfig {
@@ -69,7 +112,14 @@ function parseProjectConfig(value: unknown): ProjectConfig {
   if (typeof raw.name === "string") config.name = raw.name;
   if (typeof raw.maxIterations === "number") config.maxIterations = raw.maxIterations;
   if (typeof raw.browserIdleMinutes === "number") config.browserIdleMinutes = raw.browserIdleMinutes;
+  if (raw.mode === "follow" || raw.mode === "lead") config.mode = raw.mode;
+  if (raw.follow !== undefined) config.follow = parseFollowConfig(raw.follow);
   return config;
+}
+
+/** Resolve the effective C2C mode; anything unrecognised behaves as "lead". */
+export function effectiveMode(config: ProjectConfig): C2CMode {
+  return config.mode === "follow" ? "follow" : "lead";
 }
 
 function stringRecord(value: unknown): Record<string, string> {
