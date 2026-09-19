@@ -126,7 +126,7 @@ Agent/advanced commands (session / record / login / connector-setup / stop / pai
 
 ## Security
 
-- One bridge per machine, serving exactly one workspace: running `up` for a different directory stops the previous bridge and switches. Every token is bound to the active workspace. The bridge binds 127.0.0.1 only — the public surface is HTTPS via the tunnel, protected by OAuth 2.1 + PKCE with dynamic client registration.
+- One bridge per machine, serving all of its registered workspaces: running `up` in another directory only adds it to the registry, never disrupting existing work. Every token is bound to the machine's bridge. The bridge binds 127.0.0.1 only — the public surface is HTTPS via the tunnel, protected by OAuth 2.1 + PKCE with dynamic client registration.
 - ChatGPT gets read-only scopes (`workspace.read`, `workspace.search`, `git.read`, `execution.read`, `offline_access`) plus `dispatch.execute`, which only starts an agent for YOUR @-mentioned request. Access tokens live 1 hour, refresh tokens rotate on every use, and only SHA-256 hashes are stored.
 - Sensitive files (`.env*`, `.envrc`, keys, SSH, cloud credentials, the whole `.git/` directory…) are denied at every gate — reads, listings, search and diff. `.env.example` is allowed; add your own rules via `.c2cignore`.
 - Pairing codes: ~40 bits, 5 attempts, one-time, 5-minute TTL, per-IP rate limit.

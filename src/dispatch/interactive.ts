@@ -20,6 +20,12 @@ export interface InteractiveLaunch {
   harness: HarnessId;
   workspaceRoot: string;
   prompt: string;
+  /**
+   * The dispatching conversation. When set, the script releases the
+   * conversation's one-session claim after the TUI exits (exec would skip
+   * that, so the TUI runs in the foreground instead).
+   */
+  chatUrl?: string;
   commandOverride?: string;
   /**
    * aweswitch profile names usable for this harness (launch mode). Detected
@@ -105,9 +111,15 @@ export function buildCommandScript(launch: InteractiveLaunch, id: string): { scr
         '  PROFILE=${profiles[reply]}',
         '  print -- "launching with aweswitch profile: $PROFILE"',
         "fi",
-        'if [[ -n "$PROFILE" ]]; then exec aweswitch "$PROFILE"; else exec ' + tuiLine + "; fi",
+        'if [[ -n "$PROFILE" ]]; then aweswitch "$PROFILE"; else ' + tuiLine + "; fi",
       ]
-    : [`exec ${tuiLine}`];
+    : [tuiLine];
+  // With a dispatching conversation, the claim on it must be released when
+  // this TUI exits — so the TUI runs in the foreground (no exec) and the
+  // release runs after. Without one there is nothing to release; keep exec.
+  const runTui = launch.chatUrl
+    ? [...profileMenu, `awehitch dispatch release ${shellQuote(launch.chatUrl)} >/dev/null 2>&1`]
+    : profileMenu.map((line) => (line === tuiLine ? `exec ${line}` : line));
 
   const script = [
     "#!/bin/zsh",
@@ -116,7 +128,7 @@ export function buildCommandScript(launch: InteractiveLaunch, id: string): { scr
     `cat ${shellQuote(promptPath)}`,
     `printf '\\n———— prompt copied to the clipboard — paste it into the agent below ————\\n\\n'`,
     `pbcopy < ${shellQuote(promptPath)}`,
-    ...profileMenu,
+    ...runTui,
     "",
   ].join("\n");
   fs.writeFileSync(scriptPath, script, { mode: 0o700 });

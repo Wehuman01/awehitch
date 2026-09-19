@@ -81,6 +81,7 @@ import { readDispatchWatch, writeDispatchWatch, readLaunchStyle, writeLaunchStyl
 import { ensureAweswitch } from "../dispatch/interactive.js";
 import { DispatchWatcher } from "../dispatch/watcher.js";
 import { createDispatchToolHandler, defaultDispatchToolDeps } from "../dispatch/tool.js";
+import { activeSession, releaseConversation } from "../dispatch/spawn.js";
 import {
   manualConnectorFallback,
   runConnectorSetup,
@@ -880,6 +881,28 @@ dispatchCmd
     if (watch?.mode === "chat" && watch.chatUrl) check(`Stopped watching ${watch.chatUrl}`);
     else check("No conversation is watched");
     say("The bridge releases its dispatch browser within a minute (or immediately on restart). Watching one again: `awehitch dispatch watch <url>`.");
+  });
+
+dispatchCmd
+  .command("release")
+  .description("Free a conversation's one-agent-session claim (a stuck interactive terminal, or a run the bridge lost track of)")
+  .argument("<url>")
+  .option("--json", "machine-readable output", false)
+  .action((url: string, opts: { json: boolean }) => {
+    try {
+      const chatUrl = normalizeChatUrl(url);
+      if (!chatUrl) throw new InvalidArgumentError("not a chatgpt.com conversation URL (expected chatgpt.com/c/…)");
+      const had = activeSession(chatUrl) !== null;
+      releaseConversation(chatUrl);
+      if (opts.json) {
+        say(JSON.stringify({ ok: true, chatUrl, released: had }));
+        return;
+      }
+      if (had) check(`Released ${chatUrl} — the conversation can dispatch a new agent session`);
+      else check(`No active claim on ${chatUrl}`);
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
   });
 
 dispatchCmd

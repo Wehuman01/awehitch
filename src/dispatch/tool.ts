@@ -23,6 +23,7 @@ import {
   buildDispatchPrompt,
   claimConversation,
   defaultSpawnFn,
+  noteClaimPid,
   releaseConversation,
   reportBlocked,
   type SpawnPlan,
@@ -31,7 +32,7 @@ import {
 
 export interface DispatchToolDeps {
   installedHarnesses(): HarnessId[];
-  spawn(plan: SpawnPlan): Promise<SpawnResult>;
+  spawn(plan: SpawnPlan, onStart?: (pid: number | undefined) => void): Promise<SpawnResult>;
   /** Conversations served by the explicitly pinned watcher; dispatch refuses those. */
   watchedConversations(): string[];
   /** How a dispatch starts the agent (visible TUI vs background run). */
@@ -120,13 +121,26 @@ export function createDispatchToolHandler(deps: DispatchToolDeps) {
           "This conversation is served by an explicitly pinned watcher (`awehitch dispatch watch`); it already spawns agents for marker messages here.",
       };
     }
+    // One conversation, one agent session — for interactive launches too: the
+    // terminal the script opens releases its claim when the TUI exits.
+    const busy = activeSession(chatUrl);
+    if (busy || !claimConversation(chatUrl, harness)) {
+      return {
+        ok: false,
+        code: "CONVERSATION_BUSY",
+        message: `This conversation already has an active agent session (${busy?.harness ?? "unknown"}, started ${busy?.startedAt ?? "earlier"}). Wait for its [C2C] EXECUTED report before dispatching again, or have the user run \`awehitch dispatch release ${chatUrl}\` if that session is gone.`,
+      };
+    }
+
     if (deps.launchStyle() === "interactive") {
       const opened = await deps.openInteractive({
         harness,
         workspaceRoot: opts.workspace.root,
+        chatUrl,
         prompt: buildDispatchPrompt(stripMention(task, harness), chatUrl, { protocolNote: true }),
       });
       if (!opened) {
+        releaseConversation(chatUrl);
         return {
           ok: false,
           code: "INTERACTIVE_LAUNCH_FAILED",
@@ -138,23 +152,14 @@ export function createDispatchToolHandler(deps: DispatchToolDeps) {
         ok: true,
         harness,
         chatUrl,
-        message: `Opened an interactive ${harness} terminal for this conversation (workspace ${opts.workspace.root}). The task is printed there and copied to the clipboard; the window first offers an aweswitch profile picker (Enter launches plain), then the user pastes the task into the agent. No automatic [C2C] report will be posted — the user reports back from that session.`,
-      };
-    }
-
-    const busy = activeSession(chatUrl);
-    if (busy || !claimConversation(chatUrl, harness)) {
-      return {
-        ok: false,
-        code: "CONVERSATION_BUSY",
-        message: `This conversation already has an active agent session (${busy?.harness ?? "unknown"}, started ${busy?.startedAt ?? "earlier"}). Wait for its [C2C] EXECUTED report before dispatching again.`,
+        message: `Opened an interactive ${harness} terminal for this conversation (workspace ${opts.workspace.root}). The task is printed there and copied to the clipboard; the window first offers an aweswitch profile picker (Enter launches plain), then the user pastes the task into the agent. The conversation stays bound to that session until its terminal closes. No automatic [C2C] report will be posted — the user reports back from that session.`,
       };
     }
 
     const prompt = buildDispatchPrompt(stripMention(task, harness), chatUrl, { protocolNote: true });
     const plan = planSpawn(harness, opts.workspace.root, prompt);
     void deps
-      .spawn(plan)
+      .spawn(plan, (pid) => noteClaimPid(chatUrl, pid))
       .then((result) => {
         if (result.exitCode !== 0) {
           void reportBlocked(chatUrl, opts.workspace.id, harness, result.exitCode, deps.logger);
@@ -202,7 +207,7 @@ export function browserConversationResolver(logger: Logger) {
 export function defaultDispatchToolDeps(logger: Logger, watchedConversations: () => string[]): DispatchToolDeps {
   return {
     installedHarnesses: detectHarnesses,
-    spawn: defaultSpawnFn,
+    spawn: (plan, onStart) => defaultSpawnFn(plan, onStart),
     watchedConversations,
     launchStyle: readLaunchStyle,
     openInteractive: async (launch) => (await openInteractiveTerminal(launch)).ok,

@@ -285,9 +285,10 @@ conversation; its per-task chats are separate conversations.
 
 ChatGPT's `dispatch_agent` connector tool may also start you directly
 (the user @-mentioned you in their own conversation): your prompt then
-carries the conversation URL and the TASK. Follow that prompt — it
-is this same workflow (open the chat, execute, report EXECUTED, wait for
-review), not a new protocol.
+carries the conversation URL, its stable task_id, and the TASK. Follow
+that prompt — it is this same workflow (open the chat WITH that task_id,
+execute, report EXECUTED, wait for review), not a new protocol. Reuse
+that task_id for every checkpoint and handoff in this conversation.
 
 Setup (once):
 

@@ -48,7 +48,22 @@ describe("interactive dispatch script", () => {
     expect(script).toContain("profiles=('oc-glm' 'oc-deepseek')");
     expect(script).toContain('printf "  %2d) %s\\n" "$i" "$p"');
     expect(script).toContain("aweswitch");
-    expect(script).toMatch(/exec aweswitch "\$PROFILE"; else exec 'opencode'/);
+    expect(script).toMatch(/then aweswitch "\$PROFILE"; else 'opencode'; fi/);
+  });
+
+  it("releases the conversation claim after the TUI exits when dispatched from a chat", () => {
+    const { script } = buildCommandScript(
+      {
+        harness: "opencode",
+        workspaceRoot: "/tmp",
+        prompt: "x",
+        chatUrl: "https://chatgpt.com/c/abc-123",
+        aweswitchProfiles: [],
+      },
+      "test4"
+    );
+    expect(script).not.toContain("exec ");
+    expect(script).toMatch(/'opencode'\nawehitch dispatch release 'https:\/\/chatgpt\.com\/c\/abc-123' >\/dev\/null 2>&1\n?$/);
   });
 
   it("refuses non-macOS honestly", async () => {

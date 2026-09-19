@@ -26,6 +26,20 @@
   scope gates the tool, so re-pair the connector once after upgrading.
 
 ### Changes
+- One ChatGPT conversation, one durable agent identity. Every dispatched
+  run now receives the conversation's stable task id (`chat-<conversation
+  id>`) in its prompt and binds it via `awehitch_open_chat url=… task_id=…`:
+  the binding lands in `taskChats` (per-conversation, merge-safe) instead
+  of overwriting the workspace-level chat pointer, and checkpoints
+  (`awehitch session set --task …`) resume the same conversation across
+  dispatches.
+- The one-session-per-conversation registry is file-backed
+  (`dispatch/sessions.json`) instead of in-memory: it survives bridge
+  restarts, records the spawned run's pid (a dead pid frees the claim),
+  and interactive launches claim too — their terminal script releases the
+  claim when the TUI exits. A claim without a live pid is trusted for 4
+  hours, any claim expires after 24; `awehitch dispatch release <url>`
+  frees a stuck one manually.
 - Sidebar and conversation reads wait (bounded) for their selectors: the
   ChatGPT sidebar and turns are client-rendered, and an immediate scrape
   after domcontentloaded saw nothing every time.

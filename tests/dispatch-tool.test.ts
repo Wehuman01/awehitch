@@ -1,7 +1,7 @@
 import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import { createDispatchToolHandler, type DispatchToolDeps } from "../src/dispatch/tool.js";
 import type { SpawnPlan } from "../src/dispatch/spawn.js";
-import { activeSession, claimConversation, releaseConversation } from "../src/dispatch/spawn.js";
+import { activeSession, claimConversation, noteClaimPid, releaseConversation, dispatchTaskId } from "../src/dispatch/spawn.js";
 import type { HarnessId } from "../src/adapters/paths.js";
 import type { Logger } from "../src/logger/index.js";
 import { cleanup, isolateStateDir, makeTmpDir } from "./helpers.js";
@@ -28,7 +28,7 @@ function deps(opts: {
   watched?: string[];
   resolve?: string | null;
   launchStyle?: "headless" | "interactive";
-  openInteractive?: (launch: { harness: HarnessId; workspaceRoot: string; prompt: string }) => Promise<boolean>;
+  openInteractive?: (launch: { harness: HarnessId; workspaceRoot: string; prompt: string; chatUrl?: string }) => Promise<boolean>;
 } = {}): { deps: DispatchToolDeps; plans: SpawnPlan[]; logger: Logger } {
   const plans: SpawnPlan[] = [];
   const logger = {
@@ -83,6 +83,7 @@ describe("dispatch_agent tool", () => {
     expect(plans[0].cmd).toBe("opencode");
     expect(plans[0].args.at(-1)).toContain("TASK:\n在桌面建一个 demo 文件夹");
     expect(plans[0].args.at(-1)).toContain(CHAT_URL);
+    expect(plans[0].args.at(-1)).toContain(`task_id: ${dispatchTaskId(CHAT_URL)}`); // stable conversation identity
     expect(plans[0].args.at(-1)).toContain("STATE: FOLLOW"); // the spawned run introduces the protocol
   });
 
@@ -129,9 +130,22 @@ describe("dispatch_agent tool", () => {
     releaseConversation(CHAT_URL);
     expect(claimConversation(CHAT_URL, "opencode")).toBe(true);
     expect(activeSession(CHAT_URL)?.harness).toBe("opencode");
+    expect(activeSession(CHAT_URL)?.taskId).toBe(dispatchTaskId(CHAT_URL));
     releaseConversation(CHAT_URL);
     expect(activeSession(CHAT_URL)).toBeNull();
     expect(claimConversation(CHAT_URL, "codex")).toBe(true);
+    releaseConversation(CHAT_URL);
+  });
+
+  it("a claim with a dead pid is stale and reclaimable; a live pid holds it", () => {
+    releaseConversation(CHAT_URL);
+    expect(claimConversation(CHAT_URL, "opencode")).toBe(true);
+    noteClaimPid(CHAT_URL, 999999999); // no such process on this machine
+    expect(activeSession(CHAT_URL)).toBeNull(); // dead pid: the claim freed itself
+    expect(claimConversation(CHAT_URL, "codex")).toBe(true);
+    noteClaimPid(CHAT_URL, process.pid); // the bridge itself is alive
+    expect(activeSession(CHAT_URL)?.harness).toBe("codex");
+    expect(claimConversation(CHAT_URL, "opencode")).toBe(false);
     releaseConversation(CHAT_URL);
   });
 
@@ -160,12 +174,12 @@ describe("dispatch_agent tool", () => {
 });
 
 describe("dispatch tool (interactive launch)", () => {
-  it("opens the TUI instead of a background run, without claiming the conversation", async () => {
-    const launches: { harness: HarnessId; prompt: string }[] = [];
+  it("opens the TUI instead of a background run, claiming the conversation for that session", async () => {
+    const launches: { harness: HarnessId; prompt: string; chatUrl?: string }[] = [];
     const { deps: d, plans } = deps({
       launchStyle: "interactive",
       openInteractive: async (launch) => {
-        launches.push({ harness: launch.harness, prompt: launch.prompt });
+        launches.push({ harness: launch.harness, prompt: launch.prompt, chatUrl: launch.chatUrl });
         return true;
       },
     });
@@ -178,11 +192,13 @@ describe("dispatch tool (interactive launch)", () => {
     expect(plans).toHaveLength(0);
     expect(launches).toHaveLength(1);
     expect(launches[0].harness).toBe("opencode");
+    expect(launches[0].chatUrl).toBe(CHAT_URL);
     expect(launches[0].prompt).not.toContain("@opencode");
-    expect(activeSession(CHAT_URL)).toBeNull();
+    expect(activeSession(CHAT_URL)?.harness).toBe("opencode"); // the terminal releases it on exit
+    releaseConversation(CHAT_URL);
   });
 
-  it("reports an honest failure when the terminal cannot open", async () => {
+  it("a busy conversation is refused in interactive mode too, and a failed open releases the claim", async () => {
     const { deps: d, plans } = deps({
       launchStyle: "interactive",
       openInteractive: async () => false,
@@ -191,6 +207,6 @@ describe("dispatch tool (interactive launch)", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe("INTERACTIVE_LAUNCH_FAILED");
     expect(plans).toHaveLength(0);
-    expect(activeSession(CHAT_URL)).toBeNull();
+    expect(activeSession(CHAT_URL)).toBeNull(); // released: the terminal never opened
   });
 });

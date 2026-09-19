@@ -36,6 +36,7 @@ import { pickHarness, planSpawn } from "./harness.js";
 import {
   buildDispatchPrompt,
   claimConversation,
+  noteClaimPid,
   releaseConversation,
   FOLLOW_PROTOCOL_NOTE,
   type SpawnResult,
@@ -57,13 +58,18 @@ export interface DispatchDriver {
   close(): Promise<void>;
 }
 
+export type DispatchSpawnFn = (
+  plan: { cmd: string; args: string[]; cwd: string },
+  onStart?: (pid: number | undefined) => void
+) => Promise<SpawnResult>;
+
 export interface DispatchWatcherOptions {
   pollMs?: number;
   logger?: Logger;
   /** Test seam: inject a driver instead of a real Playwright browser. */
   driver?: DispatchDriver;
   /** Test seam: run the spawn and await its exit. */
-  spawnFn?: (plan: { cmd: string; args: string[]; cwd: string }) => Promise<SpawnResult>;
+  spawnFn?: DispatchSpawnFn;
   /** Test seam: which harnesses are installed (default: detect on disk). */
   installedFn?: () => HarnessId[];
 }
@@ -76,7 +82,7 @@ export class DispatchWatcher {
   private readonly pollMs: number;
   private readonly logger: Logger;
   private readonly injectedDriver: DispatchDriver | null;
-  private readonly spawnFn: (plan: { cmd: string; args: string[]; cwd: string }) => Promise<SpawnResult>;
+  private readonly spawnFn: DispatchSpawnFn;
   private readonly installedFn: () => HarnessId[];
 
   constructor(opts: DispatchWatcherOptions = {}) {
@@ -86,7 +92,7 @@ export class DispatchWatcher {
     this.installedFn = opts.installedFn ?? detectHarnesses;
     this.spawnFn =
       opts.spawnFn ??
-      (async (plan) => {
+      (async (plan, onStart) => {
         const out = fs.openSync(dispatchLogPath(), "a");
         fs.appendFileSync(
           dispatchLogPath(),
@@ -96,6 +102,7 @@ export class DispatchWatcher {
           cwd: plan.cwd,
           stdio: ["ignore", out, out],
         });
+        onStart?.(child.pid);
         return await new Promise<SpawnResult>((resolve) => {
           child.on("exit", (code) => resolve({ exitCode: code }));
           child.on("error", () => resolve({ exitCode: -1 }));
@@ -205,7 +212,7 @@ export class DispatchWatcher {
     if (!claimConversation(watch.chatUrl, choice.harness)) return; // a tool-dispatched run owns it
     const prompt = buildDispatchPrompt(view.directive, watch.chatUrl);
     const plan = planSpawn(choice.harness, watch.workspaceRoot, prompt, watch.command);
-    const result = await this.spawnFn(plan);
+    const result = await this.spawnFn(plan, (pid) => noteClaimPid(watch.chatUrl, pid));
     releaseConversation(watch.chatUrl);
     this.logger.info(`dispatched ${choice.harness} run finished with code ${result.exitCode}`);
     if (result.exitCode !== 0) {
