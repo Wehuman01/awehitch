@@ -678,7 +678,15 @@ program
     }
     say("");
     say('From now on, ask your agent to "use ChatGPT to plan XXX".');
-    say(`To work from your own ChatGPT conversation instead, bind it with awehitch_open_chat (url=…) and dispatch work by typing ${dispatchMarker} there.`);
+    const watchMode = readDispatchWatch()?.mode ?? "auto";
+    if (watchMode === "off") {
+      say(`Watching is currently off: \`awehitch dispatch auto\` re-enables it, then ${dispatchMarker} in any of your own ChatGPT conversations dispatches work.`);
+    } else if (watchMode === "chat") {
+      say(`Dispatching is pinned to one conversation: ${dispatchMarker} there dispatches work. \`awehitch dispatch auto\` widens this to any of your conversations.`);
+    } else {
+      say(`To work from your own ChatGPT conversations, just type a task with ${dispatchMarker} there — no binding needed. Naming an executor picks it: @zcode, @opencode, @codex.`);
+    }
+    say("For a full agent-driven protocol loop in one conversation, bind it with awehitch_open_chat (url=…) instead.");
     say("After a reboot it usually self-heals; if not, re-run awehitch.");
     if (addressChanged) {
       say("");
