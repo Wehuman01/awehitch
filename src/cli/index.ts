@@ -853,7 +853,7 @@ dispatchCmd
   });
 
 dispatchCmd
-  .command("launch <style>")
+  .command("launch")
   .description("How a dispatch starts the agent: headless (background run, reports [C2C] back into the conversation) or interactive (the harness's TUI opens in a terminal window — switch profile, steer, keep talking there)")
   .argument("<style>", "headless | interactive", (value: string) => {
     if (value !== "headless" && value !== "interactive") {
