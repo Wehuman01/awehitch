@@ -10,7 +10,10 @@ import {
   parseQuickTunnelUrl,
   type CloudflaredQuickTunnelOptions,
 } from "../src/tunnel/cloudflared.js";
-import { normalizeNamedTunnelHostname } from "../src/tunnel/cloudflared-named.js";
+import {
+  CloudflaredNamedTunnel,
+  normalizeNamedTunnelHostname,
+} from "../src/tunnel/cloudflared-named.js";
 import { hostnameSlug, parseZoneInput, suggestedNamedHostname } from "../src/tunnel/hostname.js";
 import {
   chooseQuickTunnel,
@@ -273,6 +276,56 @@ describe("CloudflaredQuickTunnel", () => {
 
     await expect(starting).resolves.toBe(QUICK_URL);
     await tunnel.stop();
+  });
+});
+
+function setupNamedTunnel(startTimeoutMs = 20) {
+  const child = new FakeCloudflaredProcess();
+  const spawnImpl = vi.fn(() => child as unknown as ChildProcess);
+  const tunnel = new CloudflaredNamedTunnel({
+    tunnelName: "c2c-test",
+    hostname: "c2c.example.com",
+    binaryOverride: "cloudflared",
+    startTimeoutMs,
+    spawnImpl,
+  });
+  return { child, spawnImpl, tunnel };
+}
+
+describe("CloudflaredNamedTunnel", () => {
+  it("resolves when cloudflared reports a registered tunnel connection", async () => {
+    const { child, spawnImpl, tunnel } = setupNamedTunnel();
+    const starting = tunnel.start(3333);
+    child.stderr.write("INF Registered tunnel connection connIndex=0\n");
+
+    await expect(starting).resolves.toBe("https://c2c.example.com");
+    expect(spawnImpl).toHaveBeenCalledWith(
+      "cloudflared",
+      ["tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:3333", "run", "c2c-test"],
+      { stdio: ["ignore", "pipe", "pipe"], windowsHide: true }
+    );
+    expect(tunnel.status()).toMatchObject({ running: true, url: "https://c2c.example.com" });
+    await tunnel.stop();
+  });
+
+  it("times out and reports the last cloudflared error", async () => {
+    const { child, tunnel } = setupNamedTunnel(20);
+    const starting = tunnel.start(3333);
+    child.stderr.write('ERR Failed to dial a quic connection error="failed to dial to edge with quic"\n');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    await expect(starting).rejects.toThrow(/Named tunnel start timed out.*Failed to dial a quic connection/i);
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(tunnel.status()).toMatchObject({ running: false, url: null });
+  });
+
+  it("rejects when cloudflared exits before establishing the tunnel", async () => {
+    const { child, tunnel } = setupNamedTunnel(20);
+    const starting = tunnel.start(3333);
+    child.exitCode = 1;
+    child.emit("exit", 1, null);
+
+    await expect(starting).rejects.toThrow(/exited \(code 1\) before establishing/i);
   });
 });
 

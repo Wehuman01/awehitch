@@ -19,6 +19,12 @@
 - Default dispatch marker changed from `@opencode` (a specific harness's
   name) to the neutral `@agent`. Existing configs that set a marker keep it;
   users relying on the old default type `@agent` from now on.
+- Named-tunnel startup is more honest about why it failed: the start
+  timeout is raised from 45 s to 90 s (matching the quick tunnel) because
+  on networks that block QUIC cloudflared's pre-check-and-fall-back-to-
+  HTTP/2 path alone can take tens of seconds; and the timeout error now
+  carries cloudflared's last error line (e.g. a failed QUIC dial) instead
+  of a bare "timed out".
 
 ### Features
 - Parallel C2C per session, not just per harness: a second (third, …)

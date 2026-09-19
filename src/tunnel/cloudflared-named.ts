@@ -14,6 +14,12 @@ export interface CloudflaredNamedTunnelOptions {
   logger?: Logger;
   binaryOverride?: string;
   startTimeoutMs?: number;
+  /** Injectable spawn for tests. */
+  spawnImpl?: (
+    command: string,
+    args: string[],
+    options: { stdio: ["ignore", "pipe", "pipe"]; windowsHide: true }
+  ) => ChildProcess;
 }
 
 export function normalizeNamedTunnelHostname(hostname: string): string {
@@ -38,6 +44,7 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
   private readonly logger: Logger;
   private readonly binaryOverride?: string;
   private readonly startTimeoutMs: number;
+  private readonly spawnImpl: NonNullable<CloudflaredNamedTunnelOptions["spawnImpl"]>;
   private child: ChildProcess | null = null;
   private connected = false;
   private lastError: string | null = null;
@@ -51,7 +58,11 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
     this.hostname = normalizeNamedTunnelHostname(opts.hostname);
     this.logger = opts.logger ?? nullLogger;
     this.binaryOverride = opts.binaryOverride;
-    this.startTimeoutMs = opts.startTimeoutMs ?? 45_000;
+    // 90s, like the quick tunnel: on networks that block QUIC (UDP 7844)
+    // cloudflared runs connectivity pre-checks and falls back to HTTP/2,
+    // which alone can eat tens of seconds before the first registration.
+    this.startTimeoutMs = opts.startTimeoutMs ?? 90_000;
+    this.spawnImpl = opts.spawnImpl ?? ((command, args, spawnOptions) => spawn(command, args, spawnOptions));
   }
 
   private binary(): string | null {
@@ -72,7 +83,7 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
     }
 
     return new Promise<string>((resolve, reject) => {
-      const child = spawn(
+      const child = this.spawnImpl(
         bin,
         [
           "tunnel",
@@ -97,9 +108,11 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
       };
       const timeout = setTimeout(() => {
         if (!this.connected) {
-          this.lastError = "Named tunnel start timed out";
+          // Surface what cloudflared actually complained about (e.g. a
+          // blocked QUIC path) instead of a bare "timed out".
+          const detail = this.lastError ? `; last cloudflared error: ${this.lastError}` : "";
           child.kill("SIGTERM");
-          finish(() => reject(new Error(this.lastError ?? "Named tunnel start timed out")));
+          finish(() => reject(new Error(`Named tunnel start timed out${detail}`)));
         }
       }, this.startTimeoutMs);
 
