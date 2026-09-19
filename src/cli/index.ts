@@ -789,6 +789,7 @@ dispatchCmd
       const previous = readDispatchWatch();
       const sameChat = previous?.chatUrl === chatUrl;
       writeDispatchWatch({
+        mode: "chat",
         workspaceRoot: root,
         chatUrl,
         ...(opts.harness ? { harness: opts.harness as HarnessId } : {}),
@@ -821,22 +822,59 @@ dispatchCmd
   });
 
 dispatchCmd
+  .command("auto")
+  .description(
+    "Watch your recent ChatGPT conversations automatically (the default): a dispatch marker in your own message with a task spawns the agent. Without -w, the single registered workspace is used."
+  )
+  .option("-w, --workspace <path>", "pin the workspace root the dispatched agent runs in")
+  .option("--harness <id>", "harness to spawn (codex | opencode | zcode); default: a marker/named harness, else the first installed", parseHarnessKey)
+  .option("--command <cmd>", "override the harness binary (space-separated; run without a shell)")
+  .option("--json", "machine-readable output", false)
+  .action(async (opts: { workspace?: string; harness?: string; command?: string; json: boolean }) => {
+    try {
+      const previous = readDispatchWatch();
+      let root: string | null = null;
+      if (opts.workspace) {
+        root = resolveWorkspace(opts.workspace);
+      } else if (previous?.workspaceRoot && previous.mode === "auto") {
+        root = previous.workspaceRoot;
+      }
+      const watch: Record<string, unknown> = {
+        mode: "auto",
+        ...(root ? { workspaceRoot: root } : {}),
+        ...(opts.harness ? { harness: opts.harness } : {}),
+        ...(opts.command ? { command: opts.command } : {}),
+        ...(previous?.mode === "auto" && previous.scanned ? { scanned: previous.scanned } : {}),
+      };
+      writeDispatchWatch(watch as never);
+      const marker = resolveDispatchMarker(root ? new Workspace(root).projectConfig.dispatchMarker : undefined);
+      if (opts.json) {
+        say(JSON.stringify({ ok: true, mode: "auto", workspaceRoot: root, dispatchMarker: marker }));
+        return;
+      }
+      check("Auto dispatch is on");
+      say(`· In ANY of your ChatGPT conversations, type ${marker} (or @opencode / @codex / @zcode) in your own message with a task`);
+      say(`· The bridge spawns the agent${root ? ` in ${root}` : " in the single registered workspace"}; it reports back into that conversation`);
+      say("· One executor per conversation: if you also attach an agent session there, run `awehitch dispatch stop` first");
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+dispatchCmd
   .command("stop")
-  .description("Stop watching (the conversation binding of an attached agent session is separate and stays)")
+  .description("Stop all dispatch watching, including the auto-watch (turn it back on with `awehitch dispatch auto`)")
   .option("--json", "machine-readable output", false)
   .action((opts: { json: boolean }) => {
     const watch = readDispatchWatch();
-    if (!watch) {
-      if (opts.json) say(JSON.stringify({ ok: true, watching: false }));
-      else say("Not watching anything.");
+    writeDispatchWatch({ mode: "off", updatedAt: new Date().toISOString() });
+    if (opts.json) {
+      say(JSON.stringify({ ok: true, watching: false, stopped: watch?.chatUrl ?? watch?.mode ?? "auto" }));
       return;
     }
-    writeDispatchWatch(null);
-    if (opts.json) say(JSON.stringify({ ok: true, watching: false, stopped: watch.chatUrl }));
-    else {
-      check(`Stopped watching ${watch.chatUrl}`);
-      say("The bridge releases its dispatch browser within a minute (or immediately on restart).");
-    }
+    if (watch?.mode === "chat" && watch.chatUrl) check(`Stopped watching ${watch.chatUrl}`);
+    else check("Auto dispatch is off");
+    say("The bridge releases its dispatch browser within a minute (or immediately on restart). Re-enable with `awehitch dispatch auto`.");
   });
 
 // ---------------------------------------------------------------- control-plane (stdio MCP)

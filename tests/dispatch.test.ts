@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_DISPATCH_MARKER,
+  isAgentInjected,
   isDispatchAuthorized,
   parseDirective,
   resolveDispatchMarker,
@@ -64,5 +65,21 @@ describe("parseDirective", () => {
   it("rejects a state message that also carries a DIRECTIVE line", () => {
     const reply = "[C2C]\nSTATE: EXECUTED\nDIRECTIVE: echoed back somehow";
     expect(parseDirective(reply).isDirective).toBe(false);
+  });
+});
+
+describe("isAgentInjected", () => {
+  it("marks [C2C] composer sends as machine-authored", () => {
+    expect(isAgentInjected("[C2C]\nSTATE: EXECUTED\nRESULT: ok")).toBe(true);
+    expect(isAgentInjected("  [C2C]\nSTATE: EXECUTED")).toBe(true);
+    expect(isAgentInjected("[C2C]\nSTATE: FOLLOW\n...")).toBe(true);
+  });
+
+  it("never marks user-typed text, even with a marker inside", () => {
+    expect(isAgentInjected("@agent fix the login page")).toBe(false);
+    expect(isAgentInjected("来吧 @opencode 修一下")).toBe(false);
+    expect(isAgentInjected(null)).toBe(false);
+    expect(isAgentInjected(undefined)).toBe(false);
+    expect(isAgentInjected("")).toBe(false);
   });
 });

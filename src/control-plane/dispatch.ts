@@ -20,6 +20,18 @@ export function resolveDispatchMarker(marker?: string): string {
 }
 
 /**
+ * True when a user-turn on the page was injected by an agent (composer
+ * sends through the control plane) rather than typed by the user: [C2C]
+ * protocol messages are machine-authored, so they can never carry the
+ * USER's own authorization — even when they echo a dispatch marker (task
+ * text inside an EXECUTED report, say). Without this guard a report that
+ * quotes the marker would re-authorize a dispatch loop.
+ */
+export function isAgentInjected(text: string | null | undefined): boolean {
+  return typeof text === "string" && text.trimStart().startsWith("[C2C]");
+}
+
+/**
  * True when the user's own message authorizes a dispatch. The marker must
  * appear as a standalone token: not glued to Latin letters, digits, "@",
  * "_" or "-" on either side — so "not@agent", "@agent-x" or

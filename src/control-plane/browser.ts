@@ -10,7 +10,7 @@ import {
   resolveChatTarget,
 } from "./state.js";
 import { typeMultiline, normalizeForCompare, lastUserText } from "./composer.js";
-import { isDispatchAuthorized, parseDirective, resolveDispatchMarker } from "./dispatch.js";
+import { isAgentInjected, isDispatchAuthorized, parseDirective, resolveDispatchMarker } from "./dispatch.js";
 import { loadSiteSelectors, type SiteSelectors } from "./selectors.js";
 import { acquireBrowserLock, type BrowserLock } from "./browser-lock.js";
 import { claimSessionSlot, type SessionSlot } from "./slot.js";
@@ -570,6 +570,35 @@ export class ControlPlaneBrowser {
   }
 
   /**
+   * URLs of the most recent conversations from the home page's sidebar,
+   * newest first. The dispatch auto-watch polls these to discover where the
+   * user typed a dispatch marker — the daemon has no account-level API, the
+   * sidebar IS the recent-activity index. Opening the home page binds
+   * nothing (home has no conversation id).
+   */
+  async listRecentConversations(limit = 3): Promise<string[]> {
+    const page = await this.ensurePage();
+    await this.openConversation(CHATGPT_HOME);
+    const handles = await page
+      .locator(this.site.selectors.sidebarLink)
+      .elementHandles()
+      .catch(() => []);
+    const urls: string[] = [];
+    for (const handle of handles) {
+      const href = await handle.getAttribute("href").catch(() => null);
+      if (!href) continue;
+      try {
+        const url = normalizeChatUrl(new URL(href, "https://chatgpt.com").href);
+        if (url && !urls.includes(url)) urls.push(url);
+      } catch {
+        // Malformed href: skip it.
+      }
+      if (urls.length >= limit) break;
+    }
+    return urls;
+  }
+
+  /**
    * Wait for an actionable dispatch in a user-owned conversation. A dispatch
    * is actionable only when BOTH hold: (a) the user's own latest message
    * carries the dispatch marker, and (b) the latest assistant message is a
@@ -601,7 +630,10 @@ export class ControlPlaneBrowser {
           note: "not logged in to ChatGPT (open the conversation, log in, retry)",
         };
       }
-      const authorized = isDispatchAuthorized(userText, marker);
+      // A user-turn that an agent injected via composer send (it starts
+      // with [C2C]) is machine-authored: it can never carry the USER's own
+      // authorization, even when its task text echoes the marker.
+      const authorized = !isAgentInjected(userText) && isDispatchAuthorized(userText, marker);
       const { isDirective, body } = parseDirective(text);
       const generating = status === "generating";
       const changed =

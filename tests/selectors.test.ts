@@ -29,6 +29,7 @@ const browser: Browser | null = await (async () => {
 })();
 
 const FIXTURE = `<!doctype html><html><body>
+  <nav><a href="/c/abc-123">Recent conversation</a></nav>
   <main>
     <div id="log">
       <div data-message-author-role="user">[C2C] hi</div>

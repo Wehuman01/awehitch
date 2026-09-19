@@ -32,6 +32,8 @@ export interface SiteSelectors {
     userTurn: string;
     generating: string;
     loginWall: string;
+    /** Sidebar links to recent conversations (dispatch auto-watch discovery). */
+    sidebarLink: string;
   };
   connector: ConnectorSelectorPack;
 }
@@ -66,7 +68,7 @@ export type ConnectorSelectorPack = Record<ConnectorTarget, string[]>;
 
 export const DEFAULT_SITE: SiteSelectors = {
   id: "chatgpt",
-  version: "chatgpt-1",
+  version: "chatgpt-2",
   matches: ["https://chatgpt.com/*"],
   selectors: {
     composer: "#prompt-textarea, div[contenteditable='true'][role='textbox']",
@@ -79,6 +81,9 @@ export const DEFAULT_SITE: SiteSelectors = {
     // "succeeds" against a page that never rendered.
     loginWall:
       "#login-button, [data-testid='login-button'], button[data-testid='login-button'], a[href*='/auth/login'], [data-testid='signup-button']",
+    // Sidebar entries of recent conversations, newest first. The dispatch
+    // auto-watch reads these hrefs to find where the user typed a marker.
+    sidebarLink: "nav a[href^='/c/'], aside a[href^='/c/'], a[href^='/c/']",
   },
   connector: {
     // Verified against a logged-in ChatGPT (2026-09): the Security settings
