@@ -611,9 +611,15 @@ export class ControlPlaneBrowser {
       }
       // Consume the observed assistant state: whatever it was — plain chat,
       // an unauthorized directive, or the recovery case already declined — it
-      // must not be re-reported until new output replaces it.
-      anchor = { assistantCount: messageCount, assistantText: text ?? "" };
-      first = false;
+      // must not be re-reported until new output replaces it. A reply that is
+      // still generating is NOT consumed: its text is provisional, and the
+      // finished render can be byte-identical to the last streamed poll
+      // (same count, same text) — consuming it there would make the final
+      // directive look unchanged and never fire.
+      if (!generating) {
+        anchor = { assistantCount: messageCount, assistantText: text ?? "" };
+        first = false;
+      }
       if (Date.now() >= deadline) {
         const note = !authorized
           ? `the latest user message does not carry the dispatch marker "${marker}"`

@@ -186,6 +186,9 @@ describe("opencode adapter", () => {
     const config = JSON.parse(fs.readFileSync(result.configPath, "utf8"));
     expect(config.mcp.awehitch.type).toBe("local");
     expect(config.mcp.awehitch.command).toContain(workDir);
+    // opencode caps MCP requests at 60 s unless the entry declares a
+    // timeout; the wait tools block for minutes, so the entry must raise it.
+    expect(config.mcp.awehitch.timeout).toBeGreaterThanOrEqual(600_000);
 
     const status = opencodeAdapterStatus();
     expect(status.skillInstalled).toBe(true);
@@ -234,6 +237,22 @@ describe("opencode adapter", () => {
     expect(fs.readFileSync(configPath, "utf8")).toBe(first);
     expect(first).toContain("// keep me");
     expect(JSON.parse(stripLineComments(first)).mcp.awehitch.enabled).toBe(true);
+  });
+
+  it("upgrades an existing entry that predates the MCP request timeout", async () => {
+    // Entries written before the timeout field existed (opencode's 60 s
+    // default then killed every long wait) must gain it on the next setup.
+    const configPath = path.join(home, "opencode", "opencode.json");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ mcp: { awehitch: { type: "local", command: ["old"], enabled: true } } }, null, 2)
+    );
+    const { setupOpencodeAdapter } = await import("../src/adapters/opencode.js");
+    setupOpencodeAdapter({ workspaceRoot: workDir, cliEntry, connectorName: "awehitch" });
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    expect(config.mcp.awehitch.timeout).toBeGreaterThanOrEqual(600_000);
+    expect(config.mcp.awehitch.command).toContain(workDir);
   });
 
   it("refuses to touch a broken config instead of clobbering it", async () => {

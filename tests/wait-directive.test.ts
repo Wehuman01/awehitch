@@ -150,6 +150,30 @@ describe("waitDirective", () => {
     const view = await pending;
     expect(view.status).toBe("directive");
   });
+
+  it("fires when streaming completed between polls without a text change", async () => {
+    vi.useFakeTimers();
+    // A poll can land after the last character is rendered but before the
+    // stop button disappears: the full directive text is already visible
+    // while status is still "generating". The final poll then sees the SAME
+    // count and text — the directive must still fire, not be swallowed as
+    // an already-consumed state.
+    const dom: DomState = {
+      userText: "@opencode fix it",
+      assistantText: "[C2C]\nDIRECTIVE: fix it",
+      generating: true,
+    };
+    const driver = driverFor(fakePage(dom));
+
+    const pending = driver.waitDirective({ timeoutMs: 120_000 });
+    await vi.advanceTimersByTimeAsync(0); // poll during generation: full text visible
+    dom.generating = false; // finished; count and text unchanged
+    await vi.advanceTimersByTimeAsync(25_000);
+
+    const view = await pending;
+    expect(view.status).toBe("directive");
+    expect(view.directive).toBe("fix it");
+  });
 });
 
 describe("readLatestUserMessage", () => {

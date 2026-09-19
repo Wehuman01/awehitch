@@ -316,8 +316,11 @@ The follow loop (stay in it; this replaces INIT/PLAN — the user initiates):
 6. Report with `awehitch_send_state` (`[C2C]` / `STATE: EXECUTED` / one-line
    RESULT + CHANGED_FILES + TESTS, no diffs, no logs), then
    `awehitch_wait_reply` — ChatGPT reviews through the connector and replies
-   (DONE, a correction, or the user redirects). Corrections arrive as new
-   directives: return to step 4.
+   (DONE, a correction, or the user redirects). A correction is a new
+   DIRECTIVE, but it is not yet executable: your EXECUTED message is now the
+   latest user turn, so the dispatch marker no longer passes. Relay the
+   correction to the user, return to step 4, and act only when they re-send
+   the marker.
 7. If the agent session restarts: `awehitch_open_chat` with the same `url`
    (the binding persists), then step 4 — `wait_directive` returns an
    already-present authorized directive once, and the session checkpoint

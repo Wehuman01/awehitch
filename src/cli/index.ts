@@ -73,6 +73,7 @@ import { appendExecutionRecord } from "../execution/records.js";
 import { saveExecutionOutput } from "../execution/output.js";
 import { runStdioServer } from "../control-plane/server.js";
 import { ControlPlaneBrowser, interactiveLogin } from "../control-plane/browser.js";
+import { DEFAULT_DISPATCH_MARKER } from "../control-plane/dispatch.js";
 import {
   manualConnectorFallback,
   runConnectorSetup,
@@ -421,7 +422,7 @@ function followUpSummary(workspace: Workspace): { chatWriteDeclared: boolean; di
   const follow = workspace.projectConfig.follow ?? {};
   return {
     chatWriteDeclared: follow.chatWrite === true,
-    dispatchMarker: follow.dispatchMarker ?? "@opencode",
+    dispatchMarker: follow.dispatchMarker ?? DEFAULT_DISPATCH_MARKER,
   };
 }
 
@@ -1285,7 +1286,7 @@ program
       } else {
         report.follow = {
           ok: true,
-          detail: `dispatch marker ${follow.dispatchMarker ?? "@opencode"}`,
+          detail: `dispatch marker ${follow.dispatchMarker ?? DEFAULT_DISPATCH_MARKER}`,
         };
       }
     }

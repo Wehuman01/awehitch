@@ -20,6 +20,16 @@ import { renderSkill } from "./skill-template.js";
  * control plane.
  */
 
+/**
+ * Per-request timeout (ms) declared for the awehitch MCP entry.
+ *
+ * opencode passes an entry's `timeout` to every MCP request and, when it is
+ * unset, the MCP client caps requests at 60 s. The wait tools legitimately
+ * block for minutes (`timeout_seconds` up to 600, browser launch included),
+ * so the entry must declare a ceiling above that: 600 s max wait + margin.
+ */
+const MCP_REQUEST_TIMEOUT_MS = 660_000;
+
 export function setupOpencodeAdapter(opts: {
   workspaceRoot: string;
   cliEntry: { cmd: string; args: string[] };
@@ -50,6 +60,7 @@ export function setupOpencodeAdapter(opts: {
       "opencode",
     ],
     enabled: true,
+    timeout: MCP_REQUEST_TIMEOUT_MS,
   };
   let next: string;
   try {
