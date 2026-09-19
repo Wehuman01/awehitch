@@ -4,6 +4,8 @@
  * but ngrok / Tailscale / custom providers can be added without touching
  * the bridge.
  */
+export type TunnelProtocol = "quic" | "http2";
+
 export interface TunnelStatus {
   running: boolean;
   url: string | null;

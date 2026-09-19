@@ -115,6 +115,7 @@ awehitch off               # disconnect (revoke access + stop local service; del
 awehitch status            # which awehitch service is mounted on this machine, and whether it is alive
 awehitch doctor            # diagnose and auto-repair (--no-fix for a strictly read-only check)
 awehitch tunnel            # inspect or choose the public connection (temporary / stable hostname)
+                           # pin the transport: awehitch tunnel protocol http2 (for QUIC-hostile networks)
 awehitch dispatch auto         # default-on: a marker in any recent conversation spawns the agent
 awehitch dispatch watch <url>  # pin one conversation instead (full DIRECTIVE protocol loop)
 awehitch dispatch stop         # stop all watching (dispatch auto re-enables)
@@ -143,6 +144,7 @@ First move, always: `awehitch doctor` (it repairs what it can; `--no-fix` is str
 - **Pairing code invalid** — codes are one-time and expire in ~5 minutes: `awehitch pair` mints a fresh one.
 - **401 on every tool call** — the token expired and refresh failed: authorize again in ChatGPT with a fresh pairing code.
 - **cloudflared missing** — `brew install cloudflared` (macOS) / `winget install Cloudflare.cloudflared` (Windows); custom location via `AWEHITCH_CLOUDFLARED_PATH`.
+- **Named tunnel start timed out, errors mention QUIC** — this network blocks or tampers with UDP 7844, so cloudflared's QUIC-first dials never register within the start timeout. Pin the TCP transport: `awehitch tunnel protocol http2`, then `awehitch up` again (the timeout error itself names this remedy when it watched QUIC fail).
 - **ACCESS_DENIED_SENSITIVE_FILE** — working as intended (see Security).
 - **Completely stuck** — `awehitch stop -w <path>` then `awehitch up -w <path>` rebuilds bridge, tunnel and pairing. Use `awehitch off` only for a full disconnect — it also revokes ChatGPT's tokens.
 

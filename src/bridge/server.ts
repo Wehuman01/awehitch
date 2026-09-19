@@ -25,6 +25,7 @@ function tunnelForMachine(logger: Logger): TunnelProvider {
     return new CloudflaredNamedTunnel({
       tunnelName: binding.tunnelName,
       hostname: binding.hostname,
+      protocol: binding.protocol,
       logger,
     });
   }

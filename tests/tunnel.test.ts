@@ -24,7 +24,13 @@ import {
   provisionNamedTunnel,
   type CloudflaredAccount,
 } from "../src/tunnel/named-provision.js";
-import { isNamedTunnelReady, needsTunnelChoice, readTunnelState } from "../src/tunnel/state.js";
+import {
+  isNamedTunnelReady,
+  namedTunnelBinding,
+  needsTunnelChoice,
+  readTunnelState,
+  writeTunnelState,
+} from "../src/tunnel/state.js";
 import { cleanup, isolateStateDir, makeTmpDir, write } from "./helpers.js";
 
 const stateDirs: string[] = [];
@@ -279,7 +285,7 @@ describe("CloudflaredQuickTunnel", () => {
   });
 });
 
-function setupNamedTunnel(startTimeoutMs = 20) {
+function setupNamedTunnel(startTimeoutMs = 20, protocol?: "quic" | "http2") {
   const child = new FakeCloudflaredProcess();
   const spawnImpl = vi.fn(() => child as unknown as ChildProcess);
   const tunnel = new CloudflaredNamedTunnel({
@@ -287,6 +293,7 @@ function setupNamedTunnel(startTimeoutMs = 20) {
     hostname: "c2c.example.com",
     binaryOverride: "cloudflared",
     startTimeoutMs,
+    protocol,
     spawnImpl,
   });
   return { child, spawnImpl, tunnel };
@@ -326,6 +333,30 @@ describe("CloudflaredNamedTunnel", () => {
     child.emit("exit", 1, null);
 
     await expect(starting).rejects.toThrow(/exited \(code 1\) before establishing/i);
+  });
+
+  it("pins the edge transport with --protocol when configured", async () => {
+    const { child, spawnImpl, tunnel } = setupNamedTunnel(20, "http2");
+    const starting = tunnel.start(3333);
+    child.stderr.write("INF Registered tunnel connection connIndex=0\n");
+
+    await expect(starting).resolves.toBe("https://c2c.example.com");
+    expect(spawnImpl).toHaveBeenCalledWith(
+      "cloudflared",
+      ["tunnel", "--protocol", "http2", "--no-autoupdate", "--url", "http://127.0.0.1:3333", "run", "c2c-test"],
+      { stdio: ["ignore", "pipe", "pipe"], windowsHide: true }
+    );
+    await tunnel.stop();
+  });
+
+  it("suggests pinning http2 when the timeout followed QUIC failures", async () => {
+    const { child, tunnel } = setupNamedTunnel(20);
+    const starting = tunnel.start(3333);
+    child.stderr.write('ERR Failed to dial a quic connection error="failed to dial to edge with quic"\n');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    await expect(starting).rejects.toThrow(/awehitch tunnel protocol http2/);
+    await tunnel.stop();
   });
 });
 
@@ -448,6 +479,25 @@ describe("tunnel preference state", () => {
       expect(result.state.tunnelName).toBe("c2c-awehitch");
       expect(isNamedTunnelReady(readTunnelState())).toBe(true);
     });
+  });
+
+  it("keeps a valid transport pin and drops an invalid one", () => {
+    stateDirs.push(isolateStateDir());
+    writeTunnelState({
+      preference: "named",
+      tunnelName: "c2c-awehitch",
+      hostname: "c2c.example.com",
+      protocol: "http2",
+    });
+    expect(namedTunnelBinding(readTunnelState())).toMatchObject({ tunnelName: "c2c-awehitch", protocol: "http2" });
+
+    writeTunnelState({
+      preference: "named",
+      tunnelName: "c2c-awehitch",
+      hostname: "c2c.example.com",
+      protocol: "bogus" as never,
+    });
+    expect(namedTunnelBinding(readTunnelState())?.protocol).toBeUndefined();
   });
 
   it("falls back to a temporary address when named provisioning fails", () => {

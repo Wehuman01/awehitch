@@ -3,7 +3,7 @@ import readline from "node:readline";
 import type { Logger } from "../logger/index.js";
 import { nullLogger } from "../logger/index.js";
 import { findBinary } from "./detect.js";
-import type { TunnelDoctorReport, TunnelProvider, TunnelStatus } from "./provider.js";
+import type { TunnelDoctorReport, TunnelProtocol, TunnelProvider, TunnelStatus } from "./provider.js";
 
 const CONNECTED_RE = /registered tunnel connection/i;
 const HOSTNAME_RE = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
@@ -11,6 +11,8 @@ const HOSTNAME_RE = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a
 export interface CloudflaredNamedTunnelOptions {
   tunnelName: string;
   hostname: string;
+  /** Pin the edge transport. Default: cloudflared's own choice (QUIC first). */
+  protocol?: TunnelProtocol;
   logger?: Logger;
   binaryOverride?: string;
   startTimeoutMs?: number;
@@ -41,6 +43,7 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
   readonly name = "cloudflare-named";
   private readonly tunnelName: string;
   private readonly hostname: string;
+  private readonly protocol?: TunnelProtocol;
   private readonly logger: Logger;
   private readonly binaryOverride?: string;
   private readonly startTimeoutMs: number;
@@ -56,6 +59,7 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
     }
     this.tunnelName = tunnelName;
     this.hostname = normalizeNamedTunnelHostname(opts.hostname);
+    this.protocol = opts.protocol;
     this.logger = opts.logger ?? nullLogger;
     this.binaryOverride = opts.binaryOverride;
     // 90s, like the quick tunnel: on networks that block QUIC (UDP 7844)
@@ -83,18 +87,13 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
     }
 
     return new Promise<string>((resolve, reject) => {
-      const child = this.spawnImpl(
-        bin,
-        [
-          "tunnel",
-          "--no-autoupdate",
-          "--url",
-          `http://127.0.0.1:${localPort}`,
-          "run",
-          this.tunnelName,
-        ],
-        { stdio: ["ignore", "pipe", "pipe"], windowsHide: true }
-      );
+      const args = ["tunnel"];
+      if (this.protocol) args.push("--protocol", this.protocol);
+      args.push("--no-autoupdate", "--url", `http://127.0.0.1:${localPort}`, "run", this.tunnelName);
+      const child = this.spawnImpl(bin, args, {
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      });
       this.child = child;
       this.connected = false;
       this.lastError = null;
@@ -111,8 +110,11 @@ export class CloudflaredNamedTunnel implements TunnelProvider {
           // Surface what cloudflared actually complained about (e.g. a
           // blocked QUIC path) instead of a bare "timed out".
           const detail = this.lastError ? `; last cloudflared error: ${this.lastError}` : "";
+          const hint = /quic/i.test(this.lastError ?? "")
+            ? " (QUIC to Cloudflare is failing on this network; pin the HTTP/2 transport: awehitch tunnel protocol http2)"
+            : "";
           child.kill("SIGTERM");
-          finish(() => reject(new Error(`Named tunnel start timed out${detail}`)));
+          finish(() => reject(new Error(`Named tunnel start timed out${detail}${hint}`)));
         }
       }, this.startTimeoutMs);
 

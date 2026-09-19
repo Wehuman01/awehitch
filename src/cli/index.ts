@@ -33,7 +33,9 @@ import {
   needsTunnelChoice,
   readTunnelState,
   TUNNEL_CHOICE_PROMPT,
+  writeTunnelState,
 } from "../tunnel/state.js";
+import type { TunnelProtocol } from "../tunnel/provider.js";
 import { Logger } from "../logger/index.js";
 import { getStateDir, parseHarnessKey } from "../config/paths.js";
 import { ensureSandboxAllowlist, getCodexConfigPath, isStateDirAllowlisted } from "../config/sandbox-allow.js";
@@ -2149,6 +2151,48 @@ tunnelCmd
       }
       if (result.fallback) say(result.userMessage ?? "");
       else check(`Stable hostname ready: ${result.state.hostname}`);
+    } catch (error) {
+      handleCliError(error, opts.json);
+    }
+  });
+
+tunnelCmd
+  .command("protocol")
+  .description(
+    "Pin the named tunnel's edge transport. Use http2 when QUIC (UDP 7844) is blocked or tampered with on this network"
+  )
+  .argument("<protocol>", "quic, http2, or unset (back to cloudflared's own choice)")
+  .option("--json", "machine-readable output", false)
+  .action(async (protocol: string, opts: { json: boolean }) => {
+    try {
+      const wanted = protocol.trim().toLowerCase();
+      if (wanted !== "quic" && wanted !== "http2" && wanted !== "unset") {
+        throw new Error("protocol must be quic, http2, or unset");
+      }
+      const state = readTunnelState();
+      if (!isNamedTunnelReady(state)) {
+        throw new Error("No named tunnel on this machine yet; run `awehitch tunnel choose --mode named` first");
+      }
+      const next = writeTunnelState({
+        ...state,
+        protocol: wanted === "unset" ? undefined : (wanted as TunnelProtocol),
+      });
+      // The bridge builds its tunnel provider at startup: stop a live bridge
+      // so the next `up` dials with the new transport.
+      const wasLive = Boolean(await findLiveBridge());
+      if (wasLive) await stopBridge();
+      const payload = {
+        ok: true,
+        protocol: next.protocol ?? null,
+        hostname: next.hostname ?? null,
+        stoppedBridge: wasLive,
+      };
+      if (opts.json) {
+        say(JSON.stringify(payload));
+        return;
+      }
+      check(`Named tunnel transport: ${next.protocol ?? "cloudflared's own choice (QUIC first)"}`);
+      if (wasLive) say("The running bridge was stopped; run `awehitch up` to come back with the new transport.");
     } catch (error) {
       handleCliError(error, opts.json);
     }

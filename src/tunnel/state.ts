@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
+import type { TunnelProtocol } from "./provider.js";
 
 export type TunnelPreference = "unset" | "quick" | "named";
 
@@ -16,6 +17,8 @@ export interface TunnelState {
   tunnelId?: string;
   hostname?: string;
   zone?: string;
+  /** Pinned edge transport; absent lets cloudflared choose (QUIC first). */
+  protocol?: TunnelProtocol;
   configuredAt?: string;
   fallbackReason?: string;
 }
@@ -70,9 +73,12 @@ export function isNamedTunnelReady(state: TunnelState): boolean {
   );
 }
 
-export function namedTunnelBinding(state: TunnelState): { tunnelName: string; hostname: string } | null {
+export function namedTunnelBinding(
+  state: TunnelState
+): { tunnelName: string; hostname: string; protocol?: TunnelProtocol } | null {
   if (!isNamedTunnelReady(state) || !state.tunnelName || !state.hostname) return null;
-  return { tunnelName: state.tunnelName, hostname: state.hostname };
+  const protocol = state.protocol === "quic" || state.protocol === "http2" ? state.protocol : undefined;
+  return { tunnelName: state.tunnelName, hostname: state.hostname, protocol };
 }
 
 export const TUNNEL_CHOICE_PROMPT = `Before connecting to ChatGPT, one optional choice:

@@ -115,6 +115,7 @@ awehitch off               # 断开（吊销访问并停掉本地服务；ChatGP
 awehitch status            # 看本机挂着哪个 awehitch 服务、是否存活
 awehitch doctor            # 诊断并自动修复（--no-fix 只读检查）
 awehitch tunnel            # 查看或选择公网连接（临时地址 / 稳定域名）
+                           # 固定传输方式：awehitch tunnel protocol http2（QUIC 被墙的网络用）
 awehitch dispatch auto         # 默认开启：任意最近对话里带标记即拉起 agent
 awehitch dispatch watch <对话URL>  # 钉死某一条对话（完整 DIRECTIVE 协议循环）
 awehitch dispatch stop             # 全部停止（dispatch auto 重新开启）
@@ -137,6 +138,7 @@ Agent/高级命令（session / record / login / connector-setup / stop / pair / 
 第一步永远是 `awehitch doctor`（能修的自动修；加 `--no-fix` 则严格只读）。
 
 - **Bridge 没在跑** — 跑 `awehitch up` 即可，doctor 也会自动起；日志看 `awehitch logs --verbose`。doctor 说状态*不确定*时等一等再跑——不要起第二个 bridge。
+- **named tunnel 启动超时、报错提到 QUIC** — 本网络封锁或干扰 UDP 7844，cloudflared 的 QUIC 优先重试在启动超时内注册不上。固定走 TCP：`awehitch tunnel protocol http2`，然后再跑一次 `awehitch up`（超时报错看到 QUIC 失败时会自带这条补救提示）。
 - **地址过期 / 连接器坏了** — doctor 会标记 `chatgptRepair.needed`：**删除**本工作区的连接器、用新地址重建。绝不点 Reconnect——旧 URL 已死。
 - **连接器自动配置失败（`CONNECTOR_DOM_CHANGED`）** — ChatGPT 页面结构变了。此时 `awehitch up` 会打印确切的手动步骤（开发者模式、删除旧连接器、创建表单的名称和服务器地址、配对码）：在浏览器里照做，然后重跑 `awehitch up`。想彻底不弹配置浏览器：`awehitch prefs set --setup-mode manual`，之后 `up` 和 `connector-setup` 只打印引导步骤（在你自己已登录的浏览器里完成），不再启动浏览器。先看哪一步定位失效：`awehitch connector-setup --dry-run`。
 - **connector-setup 时 `plugins/list` 返回 5xx** — ChatGPT 后端偶发抖动；清理步骤会自动重试，仍失败就跳过清理继续创建。若之后残留了同名旧连接器，重跑一次即可清掉。

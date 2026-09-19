@@ -46,6 +46,11 @@
   HTTP/2 path alone can take tens of seconds; and the timeout error now
   carries cloudflared's last error line (e.g. a failed QUIC dial) instead
   of a bare "timed out".
+- Named tunnels can pin their edge transport: `awehitch tunnel protocol
+  http2` forces cloudflared over TCP/HTTP-2. On networks that block or
+  tamper with QUIC (UDP 7844) its QUIC-first retries can exceed even the
+  90 s start timeout; `unset` returns to cloudflared's own choice, and
+  the timeout error names this remedy when it watched QUIC dials fail.
 
 ### Features
 - Parallel C2C per session, not just per harness: a second (third, …)
