@@ -6,6 +6,7 @@ import { searchWorkspace } from "../workspace/search.js";
 import { gitDiff, gitInfo, gitStatus, type DiffMode } from "../workspace/git.js";
 import { executionRecordSchema, latestExecutionRecord, readExecutionRecords } from "../execution/records.js";
 import { listExecutionOutputs, readExecutionOutput } from "../execution/output.js";
+import { browserConversationResolver } from "../dispatch/tool.js";
 import type { Logger } from "../logger/index.js";
 import { PRODUCT_NAME, VERSION } from "../version.js";
 
@@ -246,6 +247,21 @@ const executionOutputOutputSchema = {
 export interface McpContext {
   workspaces: Workspace[];
   logger: Logger;
+  /**
+   * Start a coding agent for the user's own dispatch request. Optional:
+   * injected by the bridge; when absent the tool reports NOT_AVAILABLE.
+   * Kept as a seam so tests (and non-bridge MCP hosts) never spawn.
+   */
+  dispatchAgent?: (opts: {
+    workspace: Workspace;
+    task: string;
+    harness?: string;
+    chatUrl?: string;
+    resolveConversation: (workspace: Workspace, explicitUrl?: string) => Promise<string | null>;
+  }) => Promise<
+    | { ok: true; message: string; harness: string; chatUrl: string }
+    | { ok: false; code: string; message: string }
+  >;
 }
 
 export function createMcpServer(ctx: McpContext): McpServer {
@@ -607,6 +623,64 @@ export function createMcpServer(ctx: McpContext): McpServer {
         timestamp: result.meta.timestamp,
         truncated: result.meta.truncated,
         text: result.text,
+      });
+    }
+  );
+
+  server.registerTool(
+    "dispatch_agent",
+    {
+      title: "Dispatch a coding agent",
+      description:
+        `Start a local coding agent (codex / opencode / zcode) to EXECUTE work in the registered ` +
+        `workspace, bound to this conversation. Call it ONLY when the user's own message asks for ` +
+        `execution — typically an @-mention (@opencode, @codex, @zcode) with a task; the task text ` +
+        `is the user's requested work, not yours. One conversation gets one agent session: later ` +
+        `calls here are refused until the current run posts its [C2C] EXECUTED report. The run ` +
+        `reports back into this conversation automatically. ${UNTRUSTED_NOTE}`,
+      inputSchema: {
+        workspace: selector,
+        task: z.string().min(1).describe("The concrete task for the agent, in the user's words"),
+        harness: z
+          .string()
+          .optional()
+          .describe("Executor: codex, opencode or zcode. Default: whichever the user @-mentioned in their task text"),
+        chatUrl: z
+          .string()
+          .optional()
+          .describe("This conversation's chatgpt.com/c/… URL when you know it; otherwise the most recent conversation is used"),
+      },
+      outputSchema: {
+        dispatched: z.boolean(),
+        harness: z.string().optional(),
+        chatUrl: z.string().optional(),
+        message: z.string().optional(),
+      },
+      annotations: {},
+    },
+    async (args, extra) => {
+      const denied = requireScope(extra.authInfo, "dispatch.execute");
+      if (denied) return denied;
+      if (!ctx.dispatchAgent) return fail("NOT_AVAILABLE", "Agent dispatching is not enabled on this bridge.");
+      let workspace: Workspace;
+      try {
+        workspace = resolveWorkspace(workspaces, args.workspace);
+      } catch (error) {
+        return mapSelectionError(error) ?? mapError(error);
+      }
+      const result = await ctx.dispatchAgent({
+        workspace,
+        task: args.task,
+        harness: args.harness,
+        chatUrl: args.chatUrl,
+        resolveConversation: browserConversationResolver(ctx.logger),
+      });
+      if (!result.ok) return fail(result.code, result.message);
+      return okStructured({
+        dispatched: true,
+        harness: result.harness,
+        chatUrl: result.chatUrl,
+        message: result.message,
       });
     }
   );

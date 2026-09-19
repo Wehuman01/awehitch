@@ -14,38 +14,36 @@
   and `up --json` reports `dispatchMarker` unconditionally instead of
   `mode`/`chatWrite`. The skill template's mode-gated workflows are merged:
   binding a conversation is the only trigger for the dispatch loop.
+- The background dispatch auto-watch is gone, replaced by a connector
+  tool. Hands-free dispatching is now `dispatch_agent`: you @-mention an
+  executor in your own message (`@opencode fix the login page`) and ChatGPT
+  calls the tool; the bridge spawns the harness immediately — no polling,
+  no browser opening on its own every cycle. `awehitch dispatch auto` is
+  removed (`dispatch watch <url>` keeps serving one pinned conversation;
+  a leftover `mode: "auto"` state reads as off). One conversation, one
+  agent session: further `dispatch_agent` calls there are refused until
+  the current run posts its `[C2C]` report. The new `dispatch.execute`
+  scope gates the tool, so re-pair the connector once after upgrading.
 
 ### Changes
-- The dispatch auto-watch now actually sees conversations: the ChatGPT
-  sidebar and conversation turns are client-rendered, and the scan used
-  to scrape right after domcontentloaded — zero candidates and zero user
-  turns every cycle, silently. Both reads now wait (bounded) for their
-  selector, and an empty sidebar scan logs a warning once per streak
-  instead of staying silent.
+- Sidebar and conversation reads wait (bounded) for their selectors: the
+  ChatGPT sidebar and turns are client-rendered, and an immediate scrape
+  after domcontentloaded saw nothing every time.
 - Default dispatch marker changed from `@opencode` (a specific harness's
   name) to the neutral `@agent`. Existing configs that set a marker keep it;
   users relying on the old default type `@agent` from now on.
 
 ### Features
-- Hands-free dispatch, on by default after `awehitch up`: the bridge
-  watches the home sidebar's most recent conversations; a dispatch marker
-  in the USER's own latest message (`@agent`, or name the executor:
-  `@opencode` / `@codex` / `@zcode`) with a task spawns that harness
-  non-interactively (codex exec / opencode run / `zcode --prompt`, prompt
-  passed as argv, never a shell) in the registered workspace — exactly
-  one root required, pinned via `awehitch dispatch auto -w <root>`. The
-  spawned run introduces the [C2C] protocol itself, executes, and reports
-  EXECUTED back into the same conversation; a non-zero exit surfaces as
-  `[C2C] BLOCKED` with the log path. Agent-injected turns ([C2C] composer
-  sends) never count as authorization, even when they echo a marker.
-  `awehitch dispatch watch <url>` pins one conversation with the full
-  marker + DIRECTIVE protocol loop (protocol note sent on first sight);
-  `dispatch stop` turns watching off, `dispatch auto` resumes it. The two
-  watching styles coexist: auto mode defers to conversations where
-  ChatGPT answers a marker message with a `[C2C] DIRECTIVE` (the
-  signature of a manually bound agent session). One executor per
-  conversation remains the safe rule: an attached agent session and the
-  watcher must not serve the same conversation.
+- ChatGPT can start your agent: the `dispatch_agent` connector tool (new
+  `dispatch.execute` scope) spawns codex exec / opencode run /
+  `zcode --prompt` non-interactively (prompt as argv, never a shell) in the
+  registered workspace, with the conversation URL ChatGPT passes — or, when
+  it cannot tell, one short local sidebar peek identifies the most recent
+  conversation. The spawned run introduces the [C2C] protocol itself,
+  executes, and reports EXECUTED back into the same conversation; a
+  non-zero exit surfaces as `[C2C] BLOCKED` with the log path. The tool
+  defers to conversations pinned by `awehitch dispatch watch` and enforces
+  one agent session per conversation.
 - Named-tunnel startup is more honest about why it failed: the start
   timeout is raised from 45 s to 90 s (matching the quick tunnel) because
   on networks that block QUIC cloudflared's pre-check-and-fall-back-to-

@@ -44,6 +44,8 @@ export interface BridgeOptions {
   authStoreFile?: string;
   pairingTtlMs?: number;
   accessTokenTtlMs?: number;
+  /** Handler behind the dispatch_agent tool; absent disables the tool. */
+  dispatchAgent?: import("../mcp/server.js").McpContext["dispatchAgent"];
 }
 
 export interface Bridge {
@@ -152,7 +154,10 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
 
   // A fresh server per request picks up the live workspace list and the
   // selector hints that depend on it.
-  const mcpHandler = createMcpHttpHandler(() => createMcpServer({ workspaces, logger }), logger);
+  const mcpHandler = createMcpHttpHandler(
+    () => createMcpServer({ workspaces, logger, dispatchAgent: opts.dispatchAgent }),
+    logger
+  );
   app.all(
     "/mcp",
     express.json({ limit: "8mb" }),

@@ -79,6 +79,7 @@ import { resolveDispatchMarker } from "../control-plane/dispatch.js";
 import { normalizeChatUrl } from "../control-plane/state.js";
 import { readDispatchWatch, writeDispatchWatch } from "../dispatch/state.js";
 import { DispatchWatcher } from "../dispatch/watcher.js";
+import { createDispatchToolHandler, defaultDispatchToolDeps } from "../dispatch/tool.js";
 import {
   manualConnectorFallback,
   runConnectorSetup,
@@ -678,13 +679,11 @@ program
     }
     say("");
     say('From now on, ask your agent to "use ChatGPT to plan XXX".');
-    const watchMode = readDispatchWatch()?.mode ?? "auto";
-    if (watchMode === "off") {
-      say(`Watching is currently off: \`awehitch dispatch auto\` re-enables it, then ${dispatchMarker} in any of your own ChatGPT conversations dispatches work.`);
-    } else if (watchMode === "chat") {
-      say(`Dispatching is pinned to one conversation: ${dispatchMarker} there dispatches work. \`awehitch dispatch auto\` widens this to any of your conversations.`);
+    const watchMode = readDispatchWatch()?.mode ?? "off";
+    if (watchMode === "chat") {
+      say(`One pinned conversation is watched: ${dispatchMarker} there dispatches work (\`awehitch dispatch stop\` unpins it).`);
     } else {
-      say(`To work from your own ChatGPT conversations, just type a task with ${dispatchMarker} there — no binding needed. Naming an executor picks it: @zcode, @opencode, @codex.`);
+      say(`To run an agent from your own ChatGPT conversations, @-mention one with a task (@opencode, @codex, @zcode) and let ChatGPT call its dispatch tool — nothing runs in the background.`);
     }
     say("For a full agent-driven protocol loop in one conversation, bind it with awehitch_open_chat (url=…) instead.");
     say("After a reboot it usually self-heals; if not, re-run awehitch.");
@@ -754,13 +753,19 @@ program
   .action(async (opts: { port?: string }) => {
     migrateLegacyStateToMachine();
     const logger = new Logger({ name: "bridge", console: true });
+    // Hands-free dispatch: ChatGPT itself calls the dispatch_agent tool; the
+    // watcher below is the explicit, pinned-conversation variant.
+    const dispatchWatcher = new DispatchWatcher({ logger });
     const bridge = await startBridge({
       port: opts.port ? parseInt(opts.port, 10) : undefined,
       logger,
+      dispatchAgent: createDispatchToolHandler(
+        defaultDispatchToolDeps(logger, () => {
+          const watched = dispatchWatcher.watchedConversation();
+          return watched ? [watched] : [];
+        })
+      ),
     });
-    // Hands-free dispatch: the bridge hosts the watcher that spawns the
-    // agent for user-authorized directives in a watched conversation.
-    const dispatchWatcher = new DispatchWatcher({ logger });
     dispatchWatcher.start();
     const shutdown = (): void => {
       void Promise.all([bridge.close(), dispatchWatcher.stop()]).then(() => process.exit(0));
@@ -832,59 +837,19 @@ dispatchCmd
   });
 
 dispatchCmd
-  .command("auto")
-  .description(
-    "Watch your recent ChatGPT conversations automatically (the default): a dispatch marker in your own message with a task spawns the agent. Without -w, the single registered workspace is used."
-  )
-  .option("-w, --workspace <path>", "pin the workspace root the dispatched agent runs in")
-  .option("--harness <id>", "harness to spawn (codex | opencode | zcode); default: a marker/named harness, else the first installed", parseHarnessKey)
-  .option("--command <cmd>", "override the harness binary (space-separated; run without a shell)")
-  .option("--json", "machine-readable output", false)
-  .action(async (opts: { workspace?: string; harness?: string; command?: string; json: boolean }) => {
-    try {
-      const previous = readDispatchWatch();
-      let root: string | null = null;
-      if (opts.workspace) {
-        root = resolveWorkspace(opts.workspace);
-      } else if (previous?.workspaceRoot && previous.mode === "auto") {
-        root = previous.workspaceRoot;
-      }
-      const watch: Record<string, unknown> = {
-        mode: "auto",
-        ...(root ? { workspaceRoot: root } : {}),
-        ...(opts.harness ? { harness: opts.harness } : {}),
-        ...(opts.command ? { command: opts.command } : {}),
-        ...(previous?.mode === "auto" && previous.scanned ? { scanned: previous.scanned } : {}),
-      };
-      writeDispatchWatch(watch as never);
-      const marker = resolveDispatchMarker(root ? new Workspace(root).projectConfig.dispatchMarker : undefined);
-      if (opts.json) {
-        say(JSON.stringify({ ok: true, mode: "auto", workspaceRoot: root, dispatchMarker: marker }));
-        return;
-      }
-      check("Auto dispatch is on");
-      say(`· In ANY of your ChatGPT conversations, type ${marker} (or @opencode / @codex / @zcode) in your own message with a task`);
-      say(`· The bridge spawns the agent${root ? ` in ${root}` : " in the single registered workspace"}; it reports back into that conversation`);
-      say("· One executor per conversation: if you also attach an agent session there, run `awehitch dispatch stop` first");
-    } catch (error) {
-      handleCliError(error, opts.json);
-    }
-  });
-
-dispatchCmd
   .command("stop")
-  .description("Stop all dispatch watching, including the auto-watch (turn it back on with `awehitch dispatch auto`)")
+  .description("Stop watching the pinned conversation (hands-free dispatching via the connector tool is unaffected — it never polls)")
   .option("--json", "machine-readable output", false)
   .action((opts: { json: boolean }) => {
     const watch = readDispatchWatch();
     writeDispatchWatch({ mode: "off", updatedAt: new Date().toISOString() });
     if (opts.json) {
-      say(JSON.stringify({ ok: true, watching: false, stopped: watch?.chatUrl ?? watch?.mode ?? "auto" }));
+      say(JSON.stringify({ ok: true, watching: false, stopped: watch?.chatUrl ?? watch?.mode ?? "off" }));
       return;
     }
     if (watch?.mode === "chat" && watch.chatUrl) check(`Stopped watching ${watch.chatUrl}`);
-    else check("Auto dispatch is off");
-    say("The bridge releases its dispatch browser within a minute (or immediately on restart). Re-enable with `awehitch dispatch auto`.");
+    else check("No conversation is watched");
+    say("The bridge releases its dispatch browser within a minute (or immediately on restart). Watching one again: `awehitch dispatch watch <url>`.");
   });
 
 // ---------------------------------------------------------------- control-plane (stdio MCP)

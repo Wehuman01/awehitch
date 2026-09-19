@@ -22,8 +22,7 @@ const CHAT_URL = "https://chatgpt.com/c/abc123";
 const DIRECTIVE = "fix the login validation";
 
 function writeWatch(root: string, extra: Record<string, unknown> = {}): void {
-  // No explicit mode: readDispatchWatch infers "chat" from the chat URL.
-  writeDispatchWatch({ workspaceRoot: root, chatUrl: CHAT_URL, updatedAt: new Date().toISOString(), ...extra });
+  writeDispatchWatch({ mode: "chat", workspaceRoot: root, chatUrl: CHAT_URL, updatedAt: new Date().toISOString(), ...extra });
 }
 
 interface Calls {
@@ -104,14 +103,14 @@ describe("dispatch watch state", () => {
     cleanup(root);
   });
 
-  it("infers the mode: chat from a chat URL, auto otherwise, off stays off", () => {
+  it("reads chat and off modes; a leftover auto watch means off", () => {
     const root = makeTmpDir("dispatch-root");
     writeWatch(root);
     expect(readDispatchWatch()?.mode).toBe("chat");
-    writeDispatchWatch({ mode: "auto", updatedAt: "" });
-    expect(readDispatchWatch()?.mode).toBe("auto");
     writeDispatchWatch({ mode: "off", updatedAt: "" });
     expect(readDispatchWatch()).toEqual({ mode: "off", updatedAt: expect.any(String) });
+    writeDispatchWatch({ mode: "auto", updatedAt: "" } as never);
+    expect(readDispatchWatch()?.mode).toBe("off"); // the pre-tool era's auto watch is gone
     cleanup(root);
   });
 
@@ -119,9 +118,9 @@ describe("dispatch watch state", () => {
     fs.mkdirSync(path.dirname(dispatchStateFile()), { recursive: true });
     fs.writeFileSync(dispatchStateFile(), "{ not json");
     expect(readDispatchWatch()).toBeNull();
-    writeDispatchWatch({ workspaceRoot: makeTmpDir("dispatch-root"), chatUrl: "https://example.com/x", updatedAt: "" });
+    writeDispatchWatch({ mode: "chat", workspaceRoot: makeTmpDir("dispatch-root"), chatUrl: "https://example.com/x", updatedAt: "" } as never);
     expect(readDispatchWatch()).toBeNull();
-    writeDispatchWatch({ workspaceRoot: "/definitely/missing/dir", chatUrl: CHAT_URL, updatedAt: "" });
+    writeDispatchWatch({ mode: "chat", workspaceRoot: "/definitely/missing/dir", chatUrl: CHAT_URL, updatedAt: "" } as never);
     expect(readDispatchWatch()).toBeNull();
   });
 });
@@ -283,188 +282,21 @@ describe("DispatchWatcher chat mode", () => {
   });
 });
 
-describe("DispatchWatcher auto mode", () => {
-  const MARKER_MESSAGE = "@opencode fix the login validation";
-
-  it("spawns the named harness for a marker message in a recent conversation", async () => {
-    const root = makeTmpDir("dispatch-root");
-    const { driver, calls } = stubDriver([{ status: "timeout", directive: null }], MARKER_MESSAGE);
-    calls.recent = [CHAT_URL];
-    const spawns: unknown[] = [];
-    const watcher = new DispatchWatcher(watcherOpts(driver, spawns, { registered: [root] }));
-    watcher.start();
-    try {
-      await vi.waitFor(() => expect(spawns).toHaveLength(1));
-      const plan = spawns[0] as { cmd: string; args: string[]; cwd: string };
-      expect(plan.cwd).toBe(root);
-      expect(plan.cmd).toBe("opencode"); // named by the @opencode marker
-      expect(plan.args.at(-1)).toContain("TASK:\nfix the login validation");
-      expect(plan.args.at(-1)).toContain(CHAT_URL);
-      expect(plan.args.at(-1)).toContain("STATE: FOLLOW"); // spawned run introduces the protocol
-      expect(readDispatchWatch()?.scanned?.[CHAT_URL]?.lastDispatched).toBe("fix the login validation");
-      // No re-fire on later polls.
-      await new Promise((resolve) => setTimeout(resolve, 40));
-      expect(spawns).toHaveLength(1);
-    } finally {
-      await watcher.stop();
-    }
-    cleanup(root);
-  });
-
-  it("treats @agent as authorization and lets the installed harnesses decide", async () => {
-    const root = makeTmpDir("dispatch-root");
-    const { driver, calls } = stubDriver([{ status: "timeout", directive: null }], "@agent fix the login validation");
-    calls.recent = [CHAT_URL];
-    const spawns: unknown[] = [];
-    const watcher = new DispatchWatcher(watcherOpts(driver, spawns, { registered: [root] }));
-    watcher.start();
-    try {
-      await vi.waitFor(() => expect(spawns).toHaveLength(1));
-      const plan = spawns[0] as { cmd: string; args: string[] };
-      expect(plan.cmd).toBe("codex"); // first installed
-    } finally {
-      await watcher.stop();
-    }
-    cleanup(root);
-  });
-
-  it("defers to a protocol-aware executor: DIRECTIVE reply means owned", async () => {
-    const root = makeTmpDir("dispatch-root");
-    const { driver, calls } = stubDriver(
-      [{ status: "timeout", directive: null }],
-      MARKER_MESSAGE,
-      { status: "replied", text: "[C2C]\nDIRECTIVE: fix the login validation" }
-    );
-    calls.recent = [CHAT_URL];
-    const spawns: unknown[] = [];
-    const watcher = new DispatchWatcher(watcherOpts(driver, spawns, { registered: [root] }));
-    watcher.start();
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 40));
-      expect(spawns).toHaveLength(0); // a manually bound agent owns this conversation
-    } finally {
-      await watcher.stop();
-    }
-    cleanup(root);
-  });
-
-  it("waits out a generating reply instead of spawning mid-answer", async () => {
-    const root = makeTmpDir("dispatch-root");
-    const { driver, calls } = stubDriver(
-      [{ status: "timeout", directive: null }],
-      MARKER_MESSAGE,
-      { status: "generating", text: "[C2C]\nDIRECTIVE: fix the…" }
-    );
-    calls.recent = [CHAT_URL];
-    const spawns: unknown[] = [];
-    const watcher = new DispatchWatcher(watcherOpts(driver, spawns, { registered: [root] }));
-    watcher.start();
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 40));
-      expect(spawns).toHaveLength(0);
-      // Once the answer renders as plain prose, the dispatch fires.
-      calls.reply = { status: "replied", text: "Sure, on it." };
-      await vi.waitFor(() => expect(spawns).toHaveLength(1));
-    } finally {
-      await watcher.stop();
-    }
-    cleanup(root);
-  });
-
-  it("ignores agent-injected turns even when they echo a marker", async () => {
-    const root = makeTmpDir("dispatch-root");
-    const { driver, calls } = stubDriver(
-      [{ status: "timeout", directive: null }],
-      "[C2C]\nSTATE: EXECUTED\nRESULT: done for @opencode"
-    );
-    calls.recent = [CHAT_URL];
-    const spawns: unknown[] = [];
-    const watcher = new DispatchWatcher(watcherOpts(driver, spawns, { registered: [root] }));
-    watcher.start();
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 40));
-      expect(spawns).toHaveLength(0);
-    } finally {
-      await watcher.stop();
-    }
-    cleanup(root);
-  });
-
-  it("skips a bare marker with no task, and skips with zero or several workspaces", async () => {
-    const root = makeTmpDir("dispatch-root");
-    const { driver, calls } = stubDriver([{ status: "timeout", directive: null }], "@opencode");
-    calls.recent = [CHAT_URL];
-    const spawns: unknown[] = [];
-    const watcher = new DispatchWatcher(watcherOpts(driver, spawns, { registered: [root, makeTmpDir("extra")] }));
-    watcher.start();
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 40));
-      expect(spawns).toHaveLength(0); // several registered roots: skip
-    } finally {
-      await watcher.stop();
-    }
-
-    const watcher2 = new DispatchWatcher(watcherOpts(driver, spawns, { registered: [] }));
-    watcher2.start();
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      expect(spawns).toHaveLength(0); // no registered root: skip
-    } finally {
-      await watcher2.stop();
-    }
-
-    // Bare marker with a single root: still no task to run.
-    const watcher3 = new DispatchWatcher(watcherOpts(driver, spawns, { registered: [root] }));
-    watcher3.start();
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      expect(spawns).toHaveLength(0);
-    } finally {
-      await watcher3.stop();
-    }
-    cleanup(root);
-  });
-
-  it("warns once per empty-scan streak, then recovers silently", async () => {
-    const root = makeTmpDir("dispatch-root");
-    const { driver, calls } = stubDriver([{ status: "timeout", directive: null }], null);
-    calls.recent = []; // the broken-scan case: zero candidates every cycle
-    const spawns: unknown[] = [];
-    const warnings: string[] = [];
-    const logger = { warn: (msg: string) => warnings.push(msg), info: () => undefined, error: () => undefined };
-    const watcher = new DispatchWatcher(watcherOpts(driver, spawns, { registered: [root], logger }));
-    watcher.start();
-    try {
-      await vi.waitFor(() => expect(warnings).toHaveLength(1));
-      await new Promise((resolve) => setTimeout(resolve, 40));
-      expect(warnings).toHaveLength(1); // once per streak, not once per cycle
-
-      calls.recent = [CHAT_URL]; // sidebar recovers; latest message carries no marker
-      calls.latestUser = "hello there";
-      await vi.waitFor(() => expect(calls.opened.length).toBeGreaterThan(0));
-      await new Promise((resolve) => setTimeout(resolve, 40));
-      expect(warnings).toHaveLength(1);
-      expect(spawns).toHaveLength(0);
-
-      calls.recent = []; // a new empty streak warns again
-      await vi.waitFor(() => expect(warnings).toHaveLength(2));
-    } finally {
-      await watcher.stop();
-    }
-    cleanup(root);
-  });
-
-  it("releases the browser when the watch is turned off", async () => {
+describe("DispatchWatcher off mode", () => {
+  it("releases the browser when no conversation is watched", async () => {
     const root = makeTmpDir("dispatch-root");
     writeWatch(root, { notedUrl: CHAT_URL });
-    const { driver, calls } = stubDriver([{ status: "directive", directive: DIRECTIVE }]);
+    const { driver, calls } = stubDriver([{ status: "timeout", directive: null }]);
     const spawns: unknown[] = [];
     const watcher = new DispatchWatcher(watcherOpts(driver, spawns));
     watcher.start();
     try {
-      await vi.waitFor(() => expect(calls.waits).toBeGreaterThan(0));
+      await new Promise((resolve) => setTimeout(resolve, 40)); // a chat cycle runs quietly
+      expect(spawns).toHaveLength(0);
       writeDispatchWatch({ mode: "off", updatedAt: new Date().toISOString() });
-      await vi.waitFor(() => expect(calls.closed).toBe(true));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(calls.closed).toBe(true);
+      expect(spawns).toHaveLength(0);
     } finally {
       await watcher.stop();
     }

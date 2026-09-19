@@ -76,6 +76,7 @@ function pairingPage(opts: {
     "workspace.search": "Search the registered workspaces",
     "git.read": "Read git status and diffs",
     "execution.read": "Read coding-agent execution summaries",
+    "dispatch.execute": "Start a local coding agent when you ask for one",
     offline_access: "Stay connected between sessions",
   };
   const scopeList = opts.scopes

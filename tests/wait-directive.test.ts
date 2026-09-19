@@ -34,6 +34,12 @@ function fakePage(dom: DomState): Page {
     url: () => "https://chatgpt.com/c/follow-1",
     isClosed: () => false,
     close: async () => undefined,
+    waitForSelector: async (selector: string) => {
+      if (selector.includes("author-role='user'") && dom.userText === null) {
+        throw new Error("Timeout");
+      }
+      return {} as never;
+    },
     locator: (selector: string) => {
       if (selector.includes("author-role='user'")) {
         return {

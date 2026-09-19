@@ -74,7 +74,7 @@ awehitch Bridge（本地，工作区只读网关 + OAuth + 隧道）
 
 - **控制面** — agent 与 ChatGPT 交换极小的结构化 `[C2C]` 消息（`INIT → PLAN → EXECUTED → REVIEW → DONE`）。本地**控制面代理**用 Playwright（独立浏览器配置目录）把 ChatGPT 会话封装成八个语义化工具：`awehitch_open_chat`、`awehitch_send_state`、`awehitch_send_handoff`、`awehitch_wait_reply`、`awehitch_read_reply`、`awehitch_chat_info`，以及派发工具 `awehitch_check_dispatch` / `awehitch_wait_directive`。一个任务一条聊天：新 TASK_ID 自动开新聊天，同一任务的恢复与多轮审查始终复用它绑定的聊天；原聊天丢失时 `awehitch_send_handoff` 从本地检查点自动生成交接简报（绝不包含文件、diff 或日志）。轮询是 20–30 秒的廉价 DOM 检查；超时不等于失败；只用一个标签页；绝不因超时重发。原方案里绑死 Codex 内置浏览器的控制面被彻底解耦——任何 agent 只要"能调工具"就能接入。
 - **按会话并行** — 每个编码会话拥有自己的 ChatGPT 对话。每个 harness 维护一个小型浏览器 profile 池（从首个登录的 profile 播种，全程只需登录一次）；会话在首次使用时领取空闲槽位 —— 槽位 0 就是该 harness 自己的 profile，同 harness 的额外并发会话（比如同时开两个 opencode 窗口）依次拿到 `<harness>-s1`、`-s2`…… 任务→对话的绑定通过短跨进程锁合并写入，任务总能重开自己的对话，而每个会话"当前所在对话"的指针是私有的。codex / opencode / zcode —— 以及它们的多个实例 —— 都能同时跑规划循环。可用 `AWEHITCH_MAX_PARALLEL_SESSIONS` 调大池子（默认每个 harness 2 个，上限 16；每个额外槽位对应多开一个 Chromium 窗口）。
-- **数据面** — ChatGPT 通过 10 个只读工具自行拉取文件、diff、搜索结果、测试记录，走 OAuth 2.1 + PKCE + 动态客户端注册的隧道。独立审查：EXECUTED 之后 ChatGPT 亲自看真实 git diff，绝不轻信"测试全过"。
+- **数据面** — ChatGPT 通过 10 个只读工具自行拉取文件、diff、搜索结果、测试记录，走 OAuth 2.1 + PKCE + 动态客户端注册的隧道；另有 `dispatch_agent` 工具（独立 `dispatch.execute` 权限）在你点名时启动本地 agent。独立审查：EXECUTED 之后 ChatGPT 亲自看真实 git diff，绝不轻信"测试全过"。
 - **Adapter** — codex（`~/.codex/skills` + `config.toml` MCP + 沙箱 writable_roots）、opencode（`~/.config/opencode` skill + `opencode.json` MCP）、zcode（`~/.zcode/cli/config.json` mcpServers + skill）。每个 adapter 都很薄，互不 import。
 
 ### 两种用法——没有模式开关
@@ -86,7 +86,7 @@ awehitch Bridge（本地，工作区只读网关 + OAuth + 隧道）
 
 绑定你的对话就够了——不需要任何模式切换。`awehitch doctor` 会报告当前的派发标记。
 
-连 agent 会话都不用挂着也行——`awehitch up` 之后自动派发默认开启。在你**任意**一条 ChatGPT 对话里，用自己的消息带标记加任务（`@agent 修一下登录页`，或点名执行者：`@opencode …`、`@codex …`、`@zcode …`）；bridge 会盯着你最近的对话列表，在注册的工作区里拉起对应 agent（要求恰好一个工作区根，即 `up -w ~` 的用法；用 `awehitch dispatch auto -w <根目录>` 钉死别的）。拉起的执行跑完回报进同一条对话，交给 ChatGPT 审查。想把范围钉死在某一条对话、走完整的标记 + DIRECTIVE 协议循环？`awehitch dispatch watch <对话URL>` 仍然保留。`awehitch dispatch stop` 全部关掉，`awehitch dispatch auto` 重新开启。两种监听方式可以共存：自动模式下，若 ChatGPT 对标记消息回的是 `[C2C] DIRECTIVE`（这是"该对话已绑定了 agent 会话"的签名），watcher 会自动让位给绑定的 agent；但安全规则不变——一条对话只留一个执行者，绑了 agent 会话的地方不要同时 @ 派发，或者先 stop 监听。（自动监听是用你自己的登录 profile 在本地读最近对话的侧边栏，除了 ChatGPT 本身没有第三方参与。）
+连 agent 会话都不用挂着也行——ChatGPT 自己就能帮你起。在你**任意**一条 ChatGPT 对话里，用自己的消息 @ 点名执行者加任务（`@opencode 修一下登录页`、`@codex …`、`@zcode …`）；ChatGPT 随即调用它的 `dispatch_agent` 连接器工具，bridge 在注册的工作区里拉起对应 agent，跑完回报进同一条对话交给 ChatGPT 审查。一条对话只有一个 agent 会话——当前执行没回报前，再次派发会被拒绝。后台没有任何轮询：工具调用就是触发，你的 @ 点名就是授权。想把范围钉死在某一条对话、走完整的标记 + DIRECTIVE 协议循环？`awehitch dispatch watch <对话URL>` 仍然保留，`dispatch stop` 取消钉定。两种方式可以共存（工具会让位给钉定的对话），安全规则不变——一条对话只留一个执行者。（ChatGPT 说不出自己所在对话的 URL 时，bridge 会用你自己的登录 profile 在本地看一眼最近对话侧栏来定位，除了 ChatGPT 本身没有第三方参与。）
 
 ## 配置
 
@@ -116,9 +116,8 @@ awehitch status            # 看本机挂着哪个 awehitch 服务、是否存�
 awehitch doctor            # 诊断并自动修复（--no-fix 只读检查）
 awehitch tunnel            # 查看或选择公网连接（临时地址 / 稳定域名）
                            # 固定传输方式：awehitch tunnel protocol http2（QUIC 被墙的网络用）
-awehitch dispatch auto         # 默认开启：任意最近对话里带标记即拉起 agent
 awehitch dispatch watch <对话URL>  # 钉死某一条对话（完整 DIRECTIVE 协议循环）
-awehitch dispatch stop             # 全部停止（dispatch auto 重新开启）
+awehitch dispatch stop             # 取消钉定（ChatGPT 侧的 @opencode 派发不受影响）
 ```
 
 `awehitch up [-w <路径>]` 会自动识别项目、建立安全公网连接、自动探测已安装的编码 agent（codex / opencode / zcode）并接入、需要时打开浏览器自动创建 ChatGPT 连接器。全流程唯一需要你动手的，是在弹出的窗口里登录一次 ChatGPT。服务默认前台运行（日志在终端，Ctrl+C 停止）；`-d/--daemon` 转后台，日志在状态目录里。一台机器只跑一个 bridge：换个目录 `up` 会自动替换上一个工作区的服务。`--json` 供 agent 使用——它固定后台运行，机器调用方不会被打断。
@@ -128,10 +127,10 @@ Agent/高级命令（session / record / login / connector-setup / stop / pair / 
 ## 安全
 
 - 全机同时只有一个 bridge，只服务一个工作区：对另一个目录跑 `up` 会停掉旧的并切换。所有 token 都绑定当前工作区。bridge 只监听 127.0.0.1——唯一的公网面是走隧道的 HTTPS，由 OAuth 2.1 + PKCE + 动态客户端注册保护。
-- ChatGPT 只拿到只读 scope（`workspace.read`、`workspace.search`、`git.read`、`execution.read`、`offline_access`）。访问令牌 1 小时失效，刷新令牌每次使用即轮换，落盘只存 SHA-256 哈希。
+- ChatGPT 拿到只读 scope（`workspace.read`、`workspace.search`、`git.read`、`execution.read`、`offline_access`）加一个 `dispatch.execute`——它只为你 @ 点名的请求启动 agent。访问令牌 1 小时失效，刷新令牌每次使用即轮换，落盘只存 SHA-256 哈希。
 - 敏感文件（`.env*`、`.envrc`、密钥、SSH、云凭证、整个 `.git/` 目录…）在所有关口被拒绝——读、列目录、搜索、diff 一视同仁。`.env.example` 放行；自己的规则写在 `.c2cignore`。
 - 配对码：约 40 位强度、5 次尝试、一次性、5 分钟有效期、按 IP 限流。
-- ChatGPT 永远不能写文件、删文件、跑 shell、提交、装包——服务端根本不存在这些工具。
+- ChatGPT 永远不能写文件、删文件、跑 shell、提交、装包——服务端根本不存在这些工具。`dispatch_agent` 只为用户 @ 点名的任务启动编码 agent，不接受 shell 命令。
 
 ## 故障排查
 

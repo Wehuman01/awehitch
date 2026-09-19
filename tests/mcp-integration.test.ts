@@ -82,6 +82,7 @@ describe("MCP tools over Streamable HTTP", () => {
     const { tools } = await client.listTools();
     const names = tools.map((tool) => tool.name).sort();
     expect(names).toEqual([
+      "dispatch_agent",
       "execution_output",
       "execution_summary",
       "git_diff",
