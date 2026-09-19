@@ -48,8 +48,12 @@
   interactive` switches the `dispatch_agent` tool from a background
   `opencode run` to the harness's own TUI in a new Terminal window (macOS).
   The full dispatch prompt — conversation URL plus TASK — is printed in the
-  window and copied to the clipboard, so you can switch profiles first, steer
-  the run, or keep talking to the agent there; nothing reports [C2C]
+  window and copied to the clipboard; the window first offers an aweswitch
+  profile picker for that harness (aweswitch is a dependency: enabling
+  interactive installs it via pip when missing), so a dispatched run can
+  start under a profile with quota instead of the exhausted default. The
+  chosen profile only affects that window (aweswitch launch mode isolates
+  env; nothing is written into your agent configs); nothing reports [C2C]
   automatically (you report from that session). The prompt body only travels
   through a file, never as shell syntax. `dispatch launch headless` (the
   default) restores the background run that reports EXECUTED back into the

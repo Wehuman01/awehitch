@@ -78,6 +78,7 @@ import { ControlPlaneBrowser, interactiveLogin } from "../control-plane/browser.
 import { resolveDispatchMarker } from "../control-plane/dispatch.js";
 import { normalizeChatUrl } from "../control-plane/state.js";
 import { readDispatchWatch, writeDispatchWatch, readLaunchStyle, writeLaunchStyle, type DispatchLaunchStyle } from "../dispatch/state.js";
+import { ensureAweswitch } from "../dispatch/interactive.js";
 import { DispatchWatcher } from "../dispatch/watcher.js";
 import { createDispatchToolHandler, defaultDispatchToolDeps } from "../dispatch/tool.js";
 import {
@@ -862,14 +863,18 @@ dispatchCmd
     return value as DispatchLaunchStyle;
   })
   .option("--json", "machine-readable output", false)
-  .action((style: DispatchLaunchStyle, opts: { json: boolean }) => {
+  .action(async (style: DispatchLaunchStyle, opts: { json: boolean }) => {
     writeLaunchStyle(style);
+    if (style === "interactive") {
+      const ensured = await ensureAweswitch();
+      if (!ensured.ok && ensured.note) say(`⚠ ${ensured.note}`);
+    }
     if (opts.json) {
       say(JSON.stringify({ ok: true, launchStyle: readLaunchStyle() }));
       return;
     }
     check(style === "interactive"
-      ? "Dispatches now open the agent's TUI in a Terminal window (task printed + copied to the clipboard; no automatic [C2C] report)"
+      ? "Dispatches now open the agent's TUI in a Terminal window with an aweswitch profile picker (task printed + copied to the clipboard; no automatic [C2C] report)"
       : "Dispatches now run in the background and report [C2C] back into the conversation");
   });
 

@@ -86,7 +86,7 @@ awehitch Bridge（本地，工作区只读网关 + OAuth + 隧道）
 
 绑定你的对话就够了——不需要任何模式切换。`awehitch doctor` 会报告当前的派发标记。
 
-连 agent 会话都不用挂着也行——ChatGPT 自己就能帮你起。在你**任意**一条 ChatGPT 对话里，用自己的消息 @ 点名执行者加任务（`@opencode 修一下登录页`、`@codex …`、`@zcode …`）；ChatGPT 随即调用它的 `dispatch_agent` 连接器工具，bridge 在注册的工作区里拉起对应 agent，跑完回报进同一条对话交给 ChatGPT 审查。一条对话只有一个 agent 会话——当前执行没回报前，再次派发会被拒绝。后台没有任何轮询：工具调用就是触发，你的 @ 点名就是授权。想把范围钉死在某一条对话、走完整的标记 + DIRECTIVE 协议循环？`awehitch dispatch watch <对话URL>` 仍然保留，`dispatch stop` 取消钉定。两种方式可以共存（工具会让位给钉定的对话），安全规则不变——一条对话只留一个执行者。（ChatGPT 说不出自己所在对话的 URL 时，bridge 会用你自己的登录 profile 在本地看一眼最近对话侧栏来定位，除了 ChatGPT 本身没有第三方参与。） 想亲眼看着它跑？`awehitch dispatch launch interactive` 会让派发改为在终端窗口打开 agent 自己的 TUI——任务打印在窗口里并复制到剪贴板，你可以先切 profile，也可以直接在那个窗口里继续对话（`dispatch launch headless` 恢复会自动回报的后台运行）。
+连 agent 会话都不用挂着也行——ChatGPT 自己就能帮你起。在你**任意**一条 ChatGPT 对话里，用自己的消息 @ 点名执行者加任务（`@opencode 修一下登录页`、`@codex …`、`@zcode …`）；ChatGPT 随即调用它的 `dispatch_agent` 连接器工具，bridge 在注册的工作区里拉起对应 agent，跑完回报进同一条对话交给 ChatGPT 审查。一条对话只有一个 agent 会话——当前执行没回报前，再次派发会被拒绝。后台没有任何轮询：工具调用就是触发，你的 @ 点名就是授权。想把范围钉死在某一条对话、走完整的标记 + DIRECTIVE 协议循环？`awehitch dispatch watch <对话URL>` 仍然保留，`dispatch stop` 取消钉定。两种方式可以共存（工具会让位给钉定的对话），安全规则不变——一条对话只留一个执行者。（ChatGPT 说不出自己所在对话的 URL 时，bridge 会用你自己的登录 profile 在本地看一眼最近对话侧栏来定位，除了 ChatGPT 本身没有第三方参与。） 想亲眼看着它跑？`awehitch dispatch launch interactive` 会让派发改为在终端窗口打开 agent 自己的 TUI——任务打印在窗口里并复制到剪贴板，窗口会先列出该 agent 的 aweswitch profile 供选择（aweswitch 是依赖项：启用 interactive 时若未安装会用 pip 自动装上），选完即以该 profile 启动，也可以直接在窗口里继续对话（`dispatch launch headless` 恢复会自动回报的后台运行）。
 
 ## 配置
 
