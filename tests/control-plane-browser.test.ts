@@ -189,3 +189,17 @@ describe("listRecentConversations waits for the client-rendered sidebar", () => 
     await expect(d.listRecentConversations(3)).resolves.toEqual([]);
   });
 });
+
+describe("proxyLaunchArgs", () => {
+  it("forwards the standard proxy env vars as --proxy-server", async () => {
+    const { proxyLaunchArgs } = await import("../src/control-plane/browser.js");
+    expect(proxyLaunchArgs({ https_proxy: "http://127.0.0.1:7890" })).toEqual([
+      "--proxy-server=http://127.0.0.1:7890",
+    ]);
+    expect(proxyLaunchArgs({ ALL_PROXY: "socks5://127.0.0.1:7890" })).toEqual([
+      "--proxy-server=socks5://127.0.0.1:7890",
+    ]);
+    expect(proxyLaunchArgs({})).toEqual([]);
+    expect(proxyLaunchArgs({ https_proxy: "   " })).toEqual([]);
+  });
+});

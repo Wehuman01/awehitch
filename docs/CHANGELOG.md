@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixes
+- The control-plane Chromium now honors the standard proxy environment
+  variables (https_proxy / http_proxy / all_proxy, any case) as
+  --proxy-server. On networks where chatgpt.com needs a local proxy,
+  connector setup and dispatch conversation peeks used to die with
+  ERR_CONNECTION_CLOSED because Chromium ignores the shell's proxy
+  settings.
+
 ### Collaborative mode: hard dispatch gate
 - `dispatch_agent` now verifies authorization server-side instead of
   trusting ChatGPT's parameters: before spawning, the bridge opens the

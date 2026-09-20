@@ -143,6 +143,18 @@ interface SharedBrowser {
 
 const sharedByProfile = new Map<string, SharedBrowser>();
 
+/**
+ * Chromium does not inherit the shell's proxy environment. On networks where
+ * chatgpt.com is only reachable through a local proxy, a direct-launching
+ * control-plane browser dies with ERR_CONNECTION_CLOSED — so forward the
+ * standard proxy env vars as --proxy-server when present.
+ */
+export function proxyLaunchArgs(env: NodeJS.ProcessEnv = process.env): string[] {
+  const proxy =
+    env.https_proxy ?? env.HTTPS_PROXY ?? env.http_proxy ?? env.HTTP_PROXY ?? env.all_proxy ?? env.ALL_PROXY;
+  return proxy && proxy.trim() !== "" ? [`--proxy-server=${proxy.trim()}`] : [];
+}
+
 async function launchSharedContext(profileKey: string): Promise<SharedBrowser> {
   const acquired = acquireBrowserLock(profileKey);
   if ("heldBy" in acquired) {
@@ -157,7 +169,7 @@ async function launchSharedContext(profileKey: string): Promise<SharedBrowser> {
   const dir = ensureBrowserProfile(profileKey);
   const launchOptions = {
     headless: false,
-    args: ["--disable-blink-features=AutomationControlled"],
+    args: ["--disable-blink-features=AutomationControlled", ...proxyLaunchArgs()],
   };
   let context: BrowserContext;
   try {
