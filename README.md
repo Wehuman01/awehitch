@@ -58,7 +58,7 @@ Please run awehitch and set it up for me automatically.
 
 Pairing and connector creation are fully automatic. The only action that may need you: logging in to ChatGPT in the popped-up window. After setup, everyday use requires zero commands.
 
-Then use your agent normally: "Plan XXX for me using ChatGPT". Casual asks work too — "ask ChatGPT …" / "问问 ChatGPT …"; the agent starts the service on demand when it is not running.
+Then use your agent normally: "@chatgpt plan XXX for me". Casual asks work too — "using ChatGPT …", "ask ChatGPT …" / "问问 ChatGPT …"; the agent starts the service on demand when it is not running.
 
 ## How it works
 
@@ -81,10 +81,12 @@ awehitch Bridge（本地，工作区网关 + OAuth + 隧道）
 
 The same machinery — bridge, tunnel, connector — serves one collaborative loop; which side initiates is a runtime fact, not two modes. The one invariant: **execution authority always comes from you**. Work from whichever side you like, even both at once:
 
-- **Starting from the terminal** — you ask your coding agent ("use ChatGPT to plan X"); the agent opens a per-task chat, exchanges `[C2C]` INIT → PLAN → EXECUTED → REVIEW → DONE with ChatGPT, and you watch in the terminal.
+- **Starting from the terminal** — you tell your coding agent "@chatgpt plan the login-page refactor" ("use ChatGPT to plan X" and other casual phrasings count too); the agent opens a per-task chat, exchanges `[C2C]` INIT → PLAN → EXECUTED → REVIEW → DONE with ChatGPT, and you watch in the terminal.
 - **Starting from your own ChatGPT conversation** — you chat with ChatGPT in your own conversation (browser, desktop app — anywhere your account is logged in; the conversation is account-level). The agent binds that conversation via its `chatgpt.com/c/<id>` URL and waits with `awehitch_wait_directive`. It only acts when **your own message** carries the dispatch marker (default `@agent`) and ChatGPT answers with a `[C2C] DIRECTIVE:` — ChatGPT's text alone never authorizes execution.
 
 Binding your conversation is all it takes — no config switch. `awehitch doctor` reports the dispatch marker.
+
+Both sides share one @ syntax: **`@chatgpt` in your terminal hands the thinking to the brain; `@opencode` in your ChatGPT conversation hands the execution to the local agent.** An @-mention always means "the user personally named this" — on the agent side it is only a routing hint (harmless, casual phrasings accepted); on the ChatGPT side it is the one and only execution-authorization marker (strictly enforced).
 
 No agent session needs to be running, either — ChatGPT can start one for you. In **any** of your ChatGPT conversations, @-mention an executor with a task in your own message (`@opencode fix the login page`, `@codex …`, `@zcode …`); ChatGPT then calls its `dispatch_agent` connector tool, the bridge spawns that agent in the registered workspace, and the run reports back into the same conversation for ChatGPT's review. One conversation gets one agent session — a second dispatch there is refused until the current run reports. Nothing polls in the background: the tool call is the trigger, your @-mention is the authorization. Prefer an explicit, pinned conversation with the full marker + DIRECTIVE protocol loop? `awehitch dispatch watch <url>` still does that; `dispatch stop` unpins it. The two styles coexist (the tool defers to a pinned conversation), but the safe rule stays "one executor per conversation". (When ChatGPT cannot tell which conversation it is in, the bridge identifies it with one short local peek at your recent-conversations sidebar through your own logged-in profile; no third party is involved beyond ChatGPT itself.) Prefer to see the agent run? `awehitch dispatch launch interactive` opens the harness's own TUI in a Terminal window instead of a background run — the task is printed there and copied to the clipboard, so you can pick an aweswitch profile (aweswitch is a dependency: enabling interactive installs it via pip if missing) or keep talking to the agent in that window (`dispatch launch headless` restores the reporting background run).
 

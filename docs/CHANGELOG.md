@@ -25,6 +25,11 @@
 - README narrative: the two "ways to work" are merged into one
   collaborative mode (either side can start); direct mode is documented
   as the opt-in pure-ChatGPT usage.
+- READMEs lead with the unified @ syntax everywhere: `@chatgpt` in your
+  terminal routes the thinking to ChatGPT, `@opencode` / `@codex` /
+  `@zcode` in your ChatGPT conversation routes the execution to a local
+  agent — an @-mention is always the user personally naming the other
+  side.
 
 ### Breaking
 - The lead/follow mode switch is gone. There is one way to run awehitch:

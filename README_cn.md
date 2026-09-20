@@ -58,7 +58,7 @@ awehitch up
 
 配对与连接器创建全自动。唯一可能需要你动手的，是在弹出的窗口里登录一次 ChatGPT。装好后日常零命令。
 
-之后正常使用："用 ChatGPT 帮我规划 XXX"。口语化的"问问 ChatGPT …"也可以——服务没跑时 agent 会按需自动拉起。
+之后正常使用："@chatgpt 帮我规划 XXX"。口语化的"用 ChatGPT …"、"问问 ChatGPT …"也可以——服务没跑时 agent 会按需自动拉起。
 
 ## 工作原理
 
@@ -81,8 +81,10 @@ awehitch Bridge（本地，工作区网关 + OAuth + 隧道）
 
 同一套机器——bridge、隧道、连接器——服务一个协作循环，控制流从哪边发起是运行时的事，不是两种模式。不变量只有一条：**执行授权永远来自你**。想从哪边干活都行，两边同时用也可以：
 
-- **从终端发起** — 你对 coding agent 说"用 ChatGPT 规划 X"；agent 开一条按任务隔离的聊天，与 ChatGPT 交换 `[C2C]` INIT → PLAN → EXECUTED → REVIEW → DONE，你在终端里看全程。
+- **从终端发起** — 你对 coding agent 说"`@chatgpt 帮我规划登录页重构`"（"用 ChatGPT 规划 X"、"问问 ChatGPT …"这类口语也算）；agent 开一条按任务隔离的聊天，与 ChatGPT 交换 `[C2C]` INIT → PLAN → EXECUTED → REVIEW → DONE，你在终端里看全程。
 - **从你自己的 ChatGPT 对话发起** — 你在自己的对话里直接聊（浏览器、桌面端——账号登录过的任何地方；对话是账号级的）。agent 通过该对话的 `chatgpt.com/c/<id>` URL 绑定它，然后用 `awehitch_wait_directive` 挂着等。只有当**你自己的消息**带派发标记（默认 `@agent`）且 ChatGPT 回了 `[C2C] DIRECTIVE:` 它才动手——ChatGPT 的文字本身永远不能授权执行。
+
+两边是同一套 @ 语法：**终端里 `@chatgpt` 把思考交给大脑，对话里 `@opencode` 把执行交给本地 agent**。@ 永远代表"来自用户本人的点名"——agent 侧它只是路由提示（零风险，口语也放行），ChatGPT 侧它是唯一的执行授权标记（必须严格）。
 
 绑定你的对话就够了——不需要任何模式切换。`awehitch doctor` 会报告当前的派发标记。
 
