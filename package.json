@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Wehuman01/awehitch.git"
+    "url": "git+https://github.com/wehuman01/awehitch.git"
   },
   "files": [
     "bin",

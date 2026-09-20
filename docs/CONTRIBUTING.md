@@ -3,7 +3,7 @@
 ## Setup
 
 ```bash
-git clone https://github.com/Wehuman01/awehitch.git awehitch
+git clone https://github.com/wehuman01/awehitch.git awehitch
 cd awehitch
 corepack pnpm install
 corepack pnpm run verify   # typecheck + tests — exactly what CI runs
