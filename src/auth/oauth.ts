@@ -77,6 +77,8 @@ function pairingPage(opts: {
     "git.read": "Read git status and diffs",
     "execution.read": "Read coding-agent execution summaries",
     "dispatch.execute": "Start a local coding agent when you ask for one",
+    "workspace.write": "Apply file patches (only where the workspace's chatgptMode allows)",
+    "exec.run": "Run allowlisted commands (only where chatgptMode is write-exec)",
     offline_access: "Stay connected between sessions",
   };
   const scopeList = opts.scopes

@@ -1,9 +1,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import { Workspace, WorkspaceError } from "../workspace/manager.js";
+import { Workspace, WorkspaceError, chatgptModeTier } from "../workspace/manager.js";
 import { searchWorkspace } from "../workspace/search.js";
 import { gitDiff, gitInfo, gitStatus, type DiffMode } from "../workspace/git.js";
+import { applyWorkspacePatch, type PatchEdit } from "../workspace/patch.js";
+import { runWorkspaceCommand } from "../workspace/exec.js";
 import { executionRecordSchema, latestExecutionRecord, readExecutionRecords } from "../execution/records.js";
 import { listExecutionOutputs, readExecutionOutput } from "../execution/output.js";
 import { browserConversationResolver } from "../dispatch/tool.js";
@@ -45,6 +47,23 @@ function requireScope(authInfo: AuthInfo | undefined, scope: string): ToolResult
   if (!authInfo) return null;
   if (!authInfo.scopes.includes(scope)) {
     return fail("INSUFFICIENT_SCOPE", `This operation requires the '${scope}' scope.`);
+  }
+  return null;
+}
+
+/**
+ * chatgptMode gate for the write tools. The catalog is advertised when any
+ * served workspace enables the tier (connections are per-server); each call
+ * still checks the workspace it resolves to, so a mixed machine keeps its
+ * readonly workspaces readonly.
+ */
+function requireMode(workspace: Workspace, tier: 1 | 2, tool: string): ToolResult | null {
+  if (chatgptModeTier(workspace.projectConfig.chatgptMode) < tier) {
+    return fail(
+      "MODE_DISABLED",
+      `${tool} is disabled for workspace '${workspace.name}': its .c2c.json does not set chatgptMode ` +
+        (tier === 2 ? "to 'write-exec'." : "to 'write' (or 'write-exec').")
+    );
   }
   return null;
 }
@@ -267,6 +286,9 @@ export interface McpContext {
 export function createMcpServer(ctx: McpContext): McpServer {
   const { workspaces } = ctx;
   const selector = workspaceSelector(workspaces);
+  const writeEnabled = workspaces.some((w) => chatgptModeTier(w.projectConfig.chatgptMode) >= 1);
+  const execEnabled = workspaces.some((w) => chatgptModeTier(w.projectConfig.chatgptMode) >= 2);
+
   const server = new McpServer(
     { name: PRODUCT_NAME, version: VERSION },
     {
@@ -275,6 +297,9 @@ export function createMcpServer(ctx: McpContext): McpServer {
         UNTRUSTED_NOTE +
         (workspaces.length > 1
           ? ` This machine serves ${workspaces.length} workspaces (${workspaceNames(workspaces)}); every tool takes a workspace selector.`
+          : "") +
+        (writeEnabled
+          ? " Direct write access is enabled for some workspace(s) (chatgptMode); prefer reading and confirming before patching."
           : ""),
     }
   );
@@ -684,6 +709,105 @@ export function createMcpServer(ctx: McpContext): McpServer {
       });
     }
   );
+
+  if (writeEnabled) {
+    const editSchema = z
+      .object({
+        path: z.string().describe("Workspace-relative file path"),
+        action: z.enum(["create", "update", "delete"]),
+        oldText: z
+          .string()
+          .optional()
+          .describe("For update: the exact current text being replaced (must match once)"),
+        newText: z.string().optional().describe("For create: full file content. For update: replacement for oldText"),
+      })
+      .describe("One file edit");
+    server.registerTool(
+      "apply_patch",
+      {
+        title: "Apply a file patch",
+        description:
+          `Apply structured, atomic file edits: create, update (exact oldText match) or delete files. ` +
+          `All edits are validated before anything is written; a failure rolls everything back, so a ` +
+          `patch is all-or-nothing. Sensitive files (.env, keys, credentials) are always denied. ` +
+          `Requires the workspace's .c2c.json to set chatgptMode to 'write' (or 'write-exec'). ${UNTRUSTED_NOTE}`,
+        inputSchema: {
+          workspace: selector,
+          edits: z.array(editSchema).min(1).max(20).describe("Edits to apply atomically"),
+        },
+        outputSchema: {
+          applied: z.array(
+            z.object({
+              path: z.string(),
+              action: z.enum(["create", "update", "delete"]),
+              bytesWritten: z.number().int().nonnegative(),
+            })
+          ),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: true },
+      },
+      async (args, extra) => {
+        const denied = requireScope(extra.authInfo, "workspace.write");
+        if (denied) return denied;
+        try {
+          const workspace = resolveWorkspace(workspaces, args.workspace);
+          const gated = requireMode(workspace, 1, "apply_patch");
+          if (gated) return gated;
+          return okStructured(await applyWorkspacePatch(workspace, args.edits as PatchEdit[]));
+        } catch (error) {
+          return mapSelectionError(error) ?? mapError(error);
+        }
+      }
+    );
+  }
+
+  if (execEnabled) {
+    server.registerTool(
+      "run_command",
+      {
+        title: "Run a command",
+        description:
+          `Run a command in the workspace. argv only — no shell, so no pipes, expansion or redirection. ` +
+          `Network clients, sudo, destructive system tools and git's network subcommands are denied; the ` +
+          `command sees a minimal environment (no secrets). Requires chatgptMode 'write-exec'. ${UNTRUSTED_NOTE}`,
+        inputSchema: {
+          workspace: selector,
+          command: z.array(z.string()).min(1).describe("argv array, e.g. ['npm', 'test']"),
+          cwd: z.string().optional().describe("Workspace-relative working directory (default: the root)"),
+          timeout_ms: z.number().int().min(1000).max(300000).optional().describe("Timeout in ms (default 60000)"),
+        },
+        outputSchema: {
+          command: z.string(),
+          cwd: z.string(),
+          exitCode: z.number().int().nullable(),
+          timedOut: z.boolean(),
+          durationMs: z.number().int().nonnegative(),
+          stdout: z.string(),
+          stderr: z.string(),
+          truncated: z.boolean(),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false },
+      },
+      async (args, extra) => {
+        const denied = requireScope(extra.authInfo, "exec.run");
+        if (denied) return denied;
+        try {
+          const workspace = resolveWorkspace(workspaces, args.workspace);
+          const gated = requireMode(workspace, 2, "run_command");
+          if (gated) return gated;
+          return okStructured(
+            await runWorkspaceCommand(workspace, {
+              command: args.command,
+              cwd: args.cwd,
+              timeoutMs: args.timeout_ms,
+            })
+          );
+        } catch (error) {
+          return mapSelectionError(error) ?? mapError(error);
+        }
+      }
+    );
+  }
 
   return server;
 }

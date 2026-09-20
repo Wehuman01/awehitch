@@ -41,7 +41,7 @@ a workflow below with that content. Natural-language ChatGPT requests
 **Golden rules**
 
 1. NEVER paste file contents, diffs, or logs into ChatGPT. ChatGPT reads them
-   through the read-only connector.
+   through the connector (read-only unless the user enabled chatgptMode write tiers).
 2. NEVER show the user technical internals (MCP, OAuth, PKCE, tunnel, ports,
    localhost). Speak in terms of "connect ChatGPT / secure connection / pairing".
 3. The CLI fills in the pairing code automatically. The only thing a user
@@ -304,7 +304,7 @@ Setup (once):
 1. `awehitch up -w <workspace> --json` — the usual machinery (bridge,
    tunnel, connector: that connector IS ChatGPT's read access in the
    user's conversation). It reports the dispatch marker the user will
-   type. The connector is read-only, including here.
+   type. The connector is read-only by default (write tiers only if the user set chatgptMode), including here.
 2. `awehitch_open_chat` with the user's conversation `url`. On first bind,
    send the dispatch protocol note once via `awehitch_send_state`:
 

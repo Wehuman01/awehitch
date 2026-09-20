@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Direct mode (pure ChatGPT)
+- New `chatgptMode` in `.c2c.json` with three monotonic tiers, keeping
+  read-only as the default and the structural story unchanged:
+  - `readonly` (default): exactly today's connector — read tools plus
+    `dispatch_agent`; no write tool exists server-side.
+  - `write`: adds `apply_patch` — structured, atomic, rollback-safe
+    multi-file patches. Updates require `oldText` matching the current
+    file exactly once (baseline check); a failing edit rejects the whole
+    patch. The sensitive-file policy (`.env*`, keys, SSH, `.git/`…) and
+    the workspace boundary/symlink checks cover writes too.
+  - `write-exec`: adds `run_command` — argv passed straight to spawn, no
+    shell (pipes, expansion, redirection structurally impossible), a
+    minimal environment with no inherited secrets, network clients /
+    privilege escalation / destructive system tools denied, git's network
+    subcommands (push/fetch/pull/clone) denied, 60 s default timeout,
+    capped output.
+- New OAuth scopes `workspace.write` and `exec.run` gate the write tools;
+  the workspace's `chatgptMode` is the real gate (scope granted + tier
+  off = tools absent from the catalog). There is deliberately no
+  dangerous tier.
+- README narrative: the two "ways to work" are merged into one
+  collaborative mode (either side can start); direct mode is documented
+  as the opt-in pure-ChatGPT usage.
+
 ### Breaking
 - The lead/follow mode switch is gone. There is one way to run awehitch:
   the same bridge, tunnel and read-only connector serve both entry points —

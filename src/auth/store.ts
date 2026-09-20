@@ -9,6 +9,8 @@ export const SUPPORTED_SCOPES = [
   "git.read",
   "execution.read",
   "dispatch.execute",
+  "workspace.write",
+  "exec.run",
   "offline_access",
 ] as const;
 

@@ -14,7 +14,15 @@ export type WorkspaceErrorCode =
   | "NOT_A_FILE"
   | "NOT_A_DIRECTORY"
   | "BINARY_FILE"
-  | "FILE_TOO_LARGE";
+  | "FILE_TOO_LARGE"
+  | "INVALID_PATCH"
+  | "BASELINE_MISMATCH"
+  | "FILE_EXISTS"
+  | "TOO_MANY_EDITS"
+  | "PATCH_TOO_LARGE"
+  | "INVALID_ARGUMENTS"
+  | "COMMAND_DENIED"
+  | "WRITE_FAILED";
 
 export class WorkspaceError extends Error {
   constructor(
@@ -56,6 +64,27 @@ export interface ListDirectoryResult {
   hasMore: boolean;
 }
 
+/**
+ * What ChatGPT itself may do to a workspace through the data plane, on top of
+ * the always-available read tools. Independent of dispatch: local agents
+ * always keep full execution authority. Ranked so a higher tier includes the
+ * lower one's capabilities.
+ */
+export type ChatgptMode = "readonly" | "write" | "write-exec";
+
+export const CHATGPT_MODES: readonly ChatgptMode[] = ["readonly", "write", "write-exec"];
+
+export function chatgptModeTier(mode: ChatgptMode | undefined): number {
+  switch (mode) {
+    case "write":
+      return 1;
+    case "write-exec":
+      return 2;
+    default:
+      return 0;
+  }
+}
+
 export interface ProjectConfig {
   name?: string;
   maxIterations?: number;
@@ -65,6 +94,8 @@ export interface ProjectConfig {
    * authorizes the agent to act on a dispatch. Dispatch authority is the
    * user's, never ChatGPT's — see control-plane/dispatch.ts. */
   dispatchMarker?: string;
+  /** What ChatGPT may do directly (see ChatgptMode). Default: readonly. */
+  chatgptMode?: ChatgptMode;
 }
 
 function parseProjectConfig(value: unknown): ProjectConfig {
@@ -76,6 +107,10 @@ function parseProjectConfig(value: unknown): ProjectConfig {
   if (typeof raw.browserIdleMinutes === "number") config.browserIdleMinutes = raw.browserIdleMinutes;
   const marker = raw.dispatchMarker;
   if (typeof marker === "string" && marker.trim()) config.dispatchMarker = marker.trim();
+  const mode = raw.chatgptMode;
+  if (typeof mode === "string" && (CHATGPT_MODES as readonly string[]).includes(mode)) {
+    config.chatgptMode = mode as ChatgptMode;
+  }
   // Legacy (v0.2.7 "follow" mode config): the marker lived under
   // `follow.dispatchMarker`. The `mode` and `follow.chatWrite` keys are dead
   // now — there is no mode switch, and the connector is read-only.
