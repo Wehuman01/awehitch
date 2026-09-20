@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.0 - 2026-09-20
+## v0.3.2 - 2026-09-20
 
 ### Direct mode is now the default
 - The built-in `chatgptMode` default flips from `readonly` to
