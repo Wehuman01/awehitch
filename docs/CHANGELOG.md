@@ -14,6 +14,13 @@
   user's @, ChatGPT's only path is its own data-plane tools.
 
 ### Direct mode (pure ChatGPT)
+- Token refresh now upgrades the grant to the full currently-supported
+  scope set, so releases adding scopes (like `workspace.write` /
+  `exec.run`) no longer force a connector re-pair: within an hour of a
+  bridge upgrade the refresh picks them up on its own. The workspace's
+  chatgptMode stays the real write gate. `list_workspaces` now reports
+  each workspace's chatgptMode, and `awehitch status` shows the tier
+  next to every registered root.
 - `chatgptMode` can now be set globally in `~/.c2c.json` and applies to
   every registered workspace; a workspace's own `.c2c.json` wins when it
   sets the key, and an unset key everywhere stays `readonly`

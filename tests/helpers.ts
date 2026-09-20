@@ -57,10 +57,16 @@ export function makeGitRepo(dir: string): void {
   git(dir, "commit", "-m", "initial commit");
 }
 
-/** Point the persistent state dir at an isolated temp location. */
+/**
+ * Point the persistent state dir at an isolated temp location, and isolate
+ * the global ~/.c2c.json fallback the same way — otherwise a developer's
+ * real global chatgptMode leaks into Workspace construction and tests fail
+ * (or pass) depending on their machine.
+ */
 export function isolateStateDir(): string {
   const dir = makeTmpDir("state");
   process.env.AWEHITCH_STATE_DIR = dir;
+  process.env.AWEHITCH_GLOBAL_CONFIG = path.join(dir, "global-c2c.json");
   return dir;
 }
 

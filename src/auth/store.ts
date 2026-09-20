@@ -243,9 +243,15 @@ export class AuthStore {
     if (record.clientId !== clientId) return { ok: false, reason: "invalid_client" };
     record.revoked = true;
     this.tokens.delete(record.hash);
+    // Scope upgrade on refresh: the pairing page grants the full set of
+    // scopes the server supported at that time, so a release adding scopes
+    // must not force every connector through a re-pair. Refreshed tokens
+    // carry the full currently-supported set; the workspace's chatgptMode
+    // remains the real write gate.
+    const scopes = [...new Set([...record.scopes, ...SUPPORTED_SCOPES])];
     const tokens = this.issueTokens({
       clientId,
-      scopes: record.scopes,
+      scopes,
       workspaceId: record.workspaceId,
     });
     return { ok: true, tokens };

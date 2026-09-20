@@ -145,7 +145,7 @@ Agent/高级命令（session / record / login / connector-setup / stop / pair / 
 ## 安全
 
 - 全机同时只有一个 bridge，只服务一个工作区：对另一个目录跑 `up` 会停掉旧的并切换。所有 token 都绑定当前工作区。bridge 只监听 127.0.0.1——唯一的公网面是走隧道的 HTTPS，由 OAuth 2.1 + PKCE + 动态客户端注册保护。
-- ChatGPT 拿到只读 scope（`workspace.read`、`workspace.search`、`git.read`、`execution.read`、`offline_access`）加一个 `dispatch.execute`——它只为你 @ 点名的请求启动 agent。访问令牌 1 小时失效，刷新令牌每次使用即轮换，落盘只存 SHA-256 哈希。直操模式另发 `workspace.write` / `exec.run` scope，但真正的闸门是工作区的 `chatgptMode`——scope 授了、档位没开，写工具连目录里都不会出现。
+- ChatGPT 拿到只读 scope（`workspace.read`、`workspace.search`、`git.read`、`execution.read`、`offline_access`）加一个 `dispatch.execute`——它只为你 @ 点名的请求启动 agent。访问令牌 1 小时失效，刷新令牌每次使用即轮换，落盘只存 SHA-256 哈希。直操模式另发 `workspace.write` / `exec.run` scope，但真正的闸门是工作区的 `chatgptMode`——scope 授了、档位没开，写工具连目录里都不会出现。令牌刷新时会自动补齐服务端新支持的 scope，所以以后升级不需要重新配对连接器。
 - 敏感文件（`.env*`、`.envrc`、密钥、SSH、云凭证、整个 `.git/` 目录…）在所有关口被拒绝——读、列目录、搜索、diff、**写**一视同仁。`.env.example` 放行；自己的规则写在 `.c2cignore`。
 - 配对码：约 40 位强度、5 次尝试、一次性、5 分钟有效期、按 IP 限流。
 - 默认情况下 ChatGPT 永远不能写文件、删文件、跑 shell、提交、装包——服务端根本不存在这些工具。开启直操（`chatgptMode`）后唯一的写入口是 `apply_patch`（结构化、原子、基线校验、敏感文件照拦）与 `run_command`（无 shell、最小环境、网络/提权/破坏性命令拒绝）；不存在无限制的 dangerous 档。`dispatch_agent` 只为用户 @ 点名的任务启动编码 agent，不接受 shell 命令。

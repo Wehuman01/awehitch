@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Workspace, WorkspaceError } from "../src/workspace/manager.js";
 import { IgnoreRules } from "../src/workspace/ignore.js";
-import { makeTmpDir, cleanup, write } from "./helpers.js";
+import { makeTmpDir, cleanup, write, isolateStateDir } from "./helpers.js";
 
 let root: string;
 let outside: string;
@@ -11,6 +11,7 @@ let ws: Workspace;
 let symlinksReady: boolean;
 
 beforeAll(() => {
+  isolateStateDir(); // keep the developer's real global ~/.c2c.json out of these tests
   root = makeTmpDir("ws");
   outside = makeTmpDir("outside");
   write(root, "hello.txt", "hello world\n");

@@ -334,6 +334,25 @@ describe("refresh token rotation", () => {
     const replayed = await refresh(initial.body.refresh_token);
     expect(replayed.status).toBe(400);
   });
+
+  it("upgrades a pre-write-era grant to the full current scope set (no re-pair needed)", async () => {
+    // A token pair issued before workspace.write/exec.run existed.
+    const legacy = bridge.authStore.issueTokens({
+      clientId: "legacy-client",
+      scopes: ["workspace.read", "workspace.search", "git.read", "execution.read", "dispatch.execute", "offline_access"],
+    });
+    expect(legacy.scopes).not.toContain("workspace.write");
+
+    const refreshed = bridge.authStore.refresh(legacy.refreshToken!, "legacy-client");
+    expect(refreshed.ok).toBe(true);
+    if (refreshed.ok) {
+      expect(refreshed.tokens.scopes).toEqual(expect.arrayContaining(["workspace.write", "exec.run"]));
+      // and the upgraded access token actually passes the write-scope check
+      const record = bridge.authStore.verifyAccessToken(refreshed.tokens.accessToken);
+      expect(record.ok).toBe(true);
+      if (record.ok) expect(record.record.scopes).toContain("exec.run");
+    }
+  });
 });
 
 describe("pairingIpKey", () => {

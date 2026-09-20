@@ -360,12 +360,13 @@ describe("MCP tools over Streamable HTTP", () => {
     git(root, "reset", "--hard", "HEAD");
   });
 
-  it("list_workspaces shows the served roots; unknown selectors are refused", async () => {
-    const listed = structuredJsonOf<{ workspaces: { workspaceId: string; workspaceName: string }[] }>(
+  it("list_workspaces shows the served roots and their chatgptMode; unknown selectors are refused", async () => {
+    const listed = structuredJsonOf<{ workspaces: { workspaceId: string; workspaceName: string; chatgptMode: string }[] }>(
       await client.callTool({ name: "list_workspaces", arguments: {} })
     );
     expect(listed.workspaces).toHaveLength(1);
     expect(listed.workspaces[0].workspaceId).toBe(workspaceId);
+    expect(listed.workspaces[0].chatgptMode).toBe("readonly");
 
     // Selecting by id (single registered workspace) works…
     const byId = structuredJsonOf<{ workspaceId: string }>(

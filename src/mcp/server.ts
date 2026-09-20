@@ -314,7 +314,12 @@ export function createMcpServer(ctx: McpContext): McpServer {
       inputSchema: {},
       outputSchema: {
         workspaces: z.array(
-          z.object({ workspaceId: z.string(), workspaceName: z.string(), rootAlias: z.string() })
+          z.object({
+            workspaceId: z.string(),
+            workspaceName: z.string(),
+            rootAlias: z.string(),
+            chatgptMode: z.enum(["readonly", "write", "write-exec"]),
+          })
         ),
       },
       annotations: { readOnlyHint: true },
@@ -327,6 +332,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
           workspaceId: workspace.id,
           workspaceName: workspace.name,
           rootAlias: "workspace:/",
+          chatgptMode: workspace.projectConfig.chatgptMode ?? "readonly",
         })),
       });
     }

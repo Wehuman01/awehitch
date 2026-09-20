@@ -1315,7 +1315,18 @@ program
 
     if (registryRoots.length > 0) {
       say(`  Registered workspaces (${registryRoots.length}):`);
-      for (const root of registryRoots) say(`    · ${root}`);
+      for (const root of registryRoots) {
+        // The tier line comes from the same config the bridge serves, so
+        // status answers "why does ChatGPT say it has no write access".
+        let tier = "";
+        try {
+          const workspace = new Workspace(root);
+          tier = ` — ${workspace.projectConfig.chatgptMode ?? "readonly"}`;
+        } catch {
+          // A vanished root is reported by doctor; status stays silent here.
+        }
+        say(`    · ${root}${tier}`);
+      }
     } else if (observation.state === "healthy") {
       say("  No workspaces registered yet: run `awehitch up -w <directory>`.");
     }
