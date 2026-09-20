@@ -32,6 +32,12 @@ export interface InteractiveLaunch {
    * from `aweswitch list` when omitted; pass [] to skip the picker.
    */
   aweswitchProfiles?: string[];
+  /**
+   * Bundle id of the terminal app that will run the script. The auto-paste
+   * keystrokes must land in THAT app: System Events types into whatever is
+   * frontmost, so the script activates this bundle first.
+   */
+  terminalBundleId?: string;
 }
 
 function shellQuote(text: string): string {
@@ -122,19 +128,32 @@ export function buildCommandScript(launch: InteractiveLaunch, id: string): { scr
     // System Events; when macOS denies that, the printed fallback tells
     // the user to paste it themselves. The TUI runs in the background so
     // the conversation claim is released after `wait` when it exits.
+    const activate = /^[\w.-]+$/.test(launch.terminalBundleId ?? "")
+      ? [
+          // System Events keystrokes land in whatever app is frontmost — the
+          // user may have switched away during the sleep. Bring OUR terminal
+          // forward first so the task is never pasted into (and submitted
+          // by) some other app.
+          `osascript -e 'tell application id "${launch.terminalBundleId}" to activate' >/dev/null 2>&1`,
+        ]
+      : [];
     const launchTui = profiles.length
       ? [`if [[ -n "$PROFILE" ]]; then aweswitch "$PROFILE" & else ${tuiLine} & fi`]
       : [`${tuiLine} &`];
     runTui = [
+      // Release the claim no matter how the script ends — including the
+      // user closing the window (HUP) — instead of only on a clean exit.
+      `trap "awehitch dispatch release ${shellQuote(launch.chatUrl)} >/dev/null 2>&1" EXIT HUP`,
       ...profilePicker,
       ...launchTui,
       "AGENT=$!",
       "sleep 8",
+      ...activate,
+      "sleep 1",
       "osascript -e 'tell application \"System Events\" to keystroke \"v\" using command down' >/dev/null 2>&1",
       "sleep 1",
       "osascript -e 'tell application \"System Events\" to keystroke return' >/dev/null 2>&1",
       "wait $AGENT",
-      `awehitch dispatch release ${shellQuote(launch.chatUrl)} >/dev/null 2>&1`,
     ];
   } else if (profiles.length) {
     runTui = [...profilePicker, `if [[ -n "$PROFILE" ]]; then exec aweswitch "$PROFILE"; else exec ${tuiLine}; fi`];
@@ -163,28 +182,46 @@ export async function openInteractiveTerminal(launch: InteractiveLaunch): Promis
     return { ok: false, reason: "interactive dispatch needs macOS; use `awehitch dispatch launch headless`" };
   }
   const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-  const { scriptPath } = buildCommandScript(launch, id);
   // The terminal follows the user: their "default terminal" override
   // (Warp/iTerm2 write this LaunchServices binding for .command files) wins,
   // then Warp when installed, then the system default (Terminal.app).
-  const opens: string[][] = [];
+  const opens: { args: string[]; bundleId: string }[] = [];
   const bundleId = await readDefaultTerminalBundleId();
-  if (bundleId) opens.push(["-b", bundleId, scriptPath]);
+  if (bundleId) opens.push({ args: ["-b", bundleId, scriptPathFor(id)], bundleId });
   const warp = ["/Applications/Warp.app", path.join(homedir(), "Applications/Warp.app")];
-  if (!bundleId?.startsWith("dev.warp.Warp") && warp.some((p) => fs.existsSync(p))) {
-    opens.push(["-a", "Warp", scriptPath]);
+  if (!bundleId?.startsWith("dev.warp.") && warp.some((p) => fs.existsSync(p))) {
+    opens.push({ args: ["-a", "Warp", scriptPathFor(id)], bundleId: "dev.warp.Warp-Studio" });
   }
-  opens.push([scriptPath]);
-  for (const args of opens) {
+  opens.push({ args: [scriptPathFor(id)], bundleId: bundleId ?? "com.apple.Terminal" });
+  // The script must know which app runs it so its auto-paste can activate
+  // that app; build it per candidate.
+  for (const candidate of opens) {
+    buildCommandScript({ ...launch, terminalBundleId: candidate.bundleId }, id);
     const exit = await new Promise<number | null>((resolve) => {
-      const child = nodeSpawn("open", args, { stdio: "ignore", detached: true });
+      const child = nodeSpawn("open", candidate.args, { stdio: "ignore", detached: true });
       child.on("exit", (code) => resolve(code));
       child.on("error", () => resolve(-1));
     });
-    if (exit === 0) return { ok: true, scriptPath };
+    if (exit === 0) return { ok: true, scriptPath: scriptPathFor(id) };
   }
   return { ok: false, reason: "opening a terminal failed" };
 }
+
+function scriptPathFor(id: string): string {
+  return path.join(getStateDir(), "dispatch", `session-${id}.command`);
+}
+
+/**
+ * Bundle ids we will hand a .command file to. Editors (VSCode and friends)
+ * register themselves as handlers for the generic shell-script UTIs and
+ * would open the script as TEXT — reporting success while no terminal ever
+ * appears and the conversation claim sits idle.
+ */
+const TERMINAL_BUNDLE_IDS = new Set([
+  "com.apple.Terminal",
+  "dev.warp.Warp-Studio",
+  "com.googlecode.iterm2",
+]);
 
 /** The LaunchServices handler for .command files — the user's default terminal. */
 async function readDefaultTerminalBundleId(): Promise<string | null> {
@@ -205,9 +242,9 @@ async function readDefaultTerminalBundleId(): Promise<string | null> {
       for (const handler of parsed.LSHandlers ?? []) {
         const tag = handler.LSHandlerContentTag;
         const uti = handler.LSHandlerContentType;
-        if (tag !== "command" && uti !== "com.apple.terminal.shell-script" && uti !== "public.shell-script") continue;
+        if (tag !== "command" && uti !== "com.apple.terminal.shell-script") continue;
         const app = handler.LSHandlerRoleAll ?? handler.LSHandlerRoleViewer;
-        if (typeof app === "string" && app !== "") return app;
+        if (typeof app === "string" && TERMINAL_BUNDLE_IDS.has(app)) return app;
       }
     } catch {
       // unreadable domain: try the next

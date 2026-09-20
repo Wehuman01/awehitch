@@ -35,6 +35,14 @@ import { Logger, nullLogger } from "../logger/index.js";
  * ChatGPT DOM is untrusted territory: selectors fail and layouts change.
  * Every lookup has fallbacks and errors are honest (`CHATGPT_DOM_CHANGED`
  * rather than a generic throw) so the agent can run doctor / ask the user.
+ *
+ * Concurrency: the MCP SDK dispatches tool handlers concurrently, so every
+ * page-touching operation runs through a per-driver chain (`serialize`) —
+ * two calls can never interleave a goto mid-typing or read a half-navigated
+ * page. Long polls sleep OUTSIDE the chain, so a wait never blocks other
+ * tools. Browser LAUNCHES are additionally serialized per profile in-process:
+ * two simultaneous launches would steal each other's live lock file (same
+ * pid) and fight over Chromium's own profile singleton.
  */
 
 const CHATGPT_HOME = "https://chatgpt.com/";
@@ -143,6 +151,26 @@ interface SharedBrowser {
 
 const sharedByProfile = new Map<string, SharedBrowser>();
 
+/** In-flight launches per profile — see the concurrency note up top. */
+const launchingByProfile = new Map<string, Promise<SharedBrowser>>();
+
+function sharedBrowserFor(profileKey: string): Promise<SharedBrowser> {
+  const live = sharedByProfile.get(profileKey);
+  if (live) return Promise.resolve(live);
+  let pending = launchingByProfile.get(profileKey);
+  if (!pending) {
+    pending = launchSharedContext(profileKey).then((shared) => {
+      if (!sharedByProfile.has(profileKey)) sharedByProfile.set(profileKey, shared);
+      return shared;
+    });
+    launchingByProfile.set(profileKey, pending);
+    void pending.catch(() => undefined).then(() => {
+      if (launchingByProfile.get(profileKey) === pending) launchingByProfile.delete(profileKey);
+    });
+  }
+  return pending;
+}
+
 /**
  * Chromium does not inherit the shell's proxy environment. On networks where
  * chatgpt.com is only reachable through a local proxy, a direct-launching
@@ -205,6 +233,13 @@ export class ControlPlaneBrowser {
   /** Task whose conversation is currently open; bindings apply to it. */
   private activeTaskId: string | null = null;
   private replyAnchor: ReplyAnchor | null = null;
+  /**
+   * Last consumed assistant state for directive anchoring: an already-seen
+   * directive must never be returned twice. Lives on the instance (not in
+   * call locals) so repeated wait_directive calls cannot re-fire the same
+   * directive; openConversation resets it when it navigates elsewhere.
+   */
+  private directiveAnchor: { count: number; text: string } | null = null;
   /** Active selector pack (external override over compiled defaults). */
   private readonly site: SiteSelectors;
   private readonly logger: Logger;
@@ -217,6 +252,8 @@ export class ControlPlaneBrowser {
    * which keep the legacy single "default" profile.
    */
   private slot: SessionSlot | null = null;
+  /** Per-driver operation chain — see the concurrency note up top. */
+  private opChain: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly workspaceId: string,
@@ -229,9 +266,29 @@ export class ControlPlaneBrowser {
     this.site = loadSiteSelectors().site;
   }
 
+  private serialize<T>(op: () => Promise<T>): Promise<T> {
+    const run = this.opChain.then(op, op);
+    this.opChain = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
   /** This process's session slot, once claimed (diagnostics / chat_info). */
   slotInfo(): { index: number; key: string } | null {
     return this.slot ? { index: this.slot.index, key: this.slot.key } : null;
+  }
+
+  /**
+   * Claim this session's pool slot WITHOUT launching a browser (chat_info
+   * should report the slot the session will use). Null for harness-less
+   * callers, which share the legacy "default" profile.
+   */
+  claimSlotInfo(): { index: number; key: string } | null {
+    if (!this.harness) return null;
+    this.ensureSlot();
+    return this.slotInfo();
   }
 
   /**
@@ -266,12 +323,7 @@ export class ControlPlaneBrowser {
     // closed the window, Chrome crashed); anything beyond that is a real
     // failure and must surface.
     for (let attempt = 0; ; attempt++) {
-      let shared = sharedByProfile.get(profileKey);
-      if (!shared) {
-        shared = await launchSharedContext(profileKey);
-        sharedByProfile.set(profileKey, shared);
-      }
-      const s = shared;
+      const s = await sharedBrowserFor(profileKey);
       try {
         const initial = s.context.pages()[0];
         if (initial && !initial.isClosed() && !s.initialPageClaimed) {
@@ -313,19 +365,33 @@ export class ControlPlaneBrowser {
   }
 
   async close(): Promise<void> {
-    const page = this.page;
-    this.page = null;
-    // The conversation URL is only observable while the tab lives; this is the
-    // last chance to persist it before the browser goes away, so an idle close
-    // cannot orphan the active task's chat.
-    if (page && !page.isClosed()) this.bindConversationUrl(page.url());
-    await page?.close().catch(() => undefined);
-    this.dropSharedRef();
+    await this.serialize(async () => {
+      const page = this.page;
+      this.page = null;
+      // The conversation URL is only observable while the tab lives; this is the
+      // last chance to persist it before the browser goes away, so an idle close
+      // cannot orphan the active task's chat.
+      if (page && !page.isClosed()) this.bindConversationUrl(page.url());
+      await page?.close().catch(() => undefined);
+      this.dropSharedRef();
+    });
+  }
+
+  /**
+   * Close the browser AND give up this session's slot lease. For short-lived
+   * drivers (dispatch conversation peeks) that must not hold a pool slot for
+   * the rest of the process; long-lived session drivers keep close()
+   * semantics — their slot survives idle closes by design.
+   */
+  async dispose(): Promise<void> {
+    await this.close();
+    this.slot?.release();
+    this.slot = null;
   }
 
   /** Current page handle (for diagnostics and login helpers). */
   async currentPage(): Promise<Page> {
-    return this.ensurePage();
+    return this.serialize(() => this.ensurePage());
   }
 
   /** True when the ChatGPT login wall is absent for the current page. */
@@ -349,6 +415,13 @@ export class ControlPlaneBrowser {
    * task must always reuse its chat so review context survives.
    */
   async openConversation(
+    chatUrl?: string,
+    opts: { taskId?: string; fresh?: boolean } = {}
+  ): Promise<string> {
+    return this.serialize(() => this.openConversationLocked(chatUrl, opts));
+  }
+
+  private async openConversationLocked(
     chatUrl?: string,
     opts: { taskId?: string; fresh?: boolean } = {}
   ): Promise<string> {
@@ -378,8 +451,9 @@ export class ControlPlaneBrowser {
     if (page.url() === target || (target === CHATGPT_HOME && onHome)) {
       // Already there — do not goto the URL we are on.
     } else {
-      // The anchor belongs to the old conversation; it is meaningless here.
+      // A different conversation: both anchors belong to the old one.
       this.replyAnchor = null;
+      this.directiveAnchor = null;
       await page.goto(target, { waitUntil: "domcontentloaded", timeout: 45_000 });
     }
     if (!(await this.isLoggedIn(page))) {
@@ -409,13 +483,15 @@ export class ControlPlaneBrowser {
    * tab. The workspace-level saved chat is persisted state — reopen it instead
    * of failing with CHATGPT_DOM_CHANGED. A tab already on http(s) was driven
    * intentionally (open_chat, a chat, the home page) and is left alone.
+   *
+   * The reopen lands in the SAME conversation the anchors were taken in, so
+   * they stay valid: a relaunch must not make an already-consumed reply look
+   * fresh again.
    */
-  private async ensureConversationOpen(page: Page): Promise<void> {
+  private async ensureConversationOpenLocked(page: Page): Promise<void> {
     if (/^https?:\/\//i.test(page.url())) return;
     const saved = resolveChatTarget(this.workspaceId, {}, this.harness, this.slot?.index);
     const target = saved ?? CHATGPT_HOME;
-    // The anchor belongs to whatever was open before the relaunch.
-    this.replyAnchor = null;
     await page.goto(target, { waitUntil: "domcontentloaded", timeout: 45_000 });
     // The saved URL may redirect or swap in its canonical id on reload.
     this.bindConversationUrl(page.url());
@@ -426,10 +502,14 @@ export class ControlPlaneBrowser {
    * the send by reading the message back from the conversation log.
    */
   async sendMessage(text: string): Promise<SendResult> {
+    return this.serialize(() => this.sendMessageLocked(text));
+  }
+
+  private async sendMessageLocked(text: string): Promise<SendResult> {
     const page = await this.ensurePage();
     // After an idle close the tab comes back blank; recover the saved
     // conversation instead of failing to find the composer.
-    await this.ensureConversationOpen(page);
+    await this.ensureConversationOpenLocked(page);
     if (!(await this.isLoggedIn(page))) {
       throw new ControlPlaneError("NOT_LOGGED_IN", "Log in to ChatGPT first (open_conversation).");
     }
@@ -493,24 +573,35 @@ export class ControlPlaneBrowser {
    * `generating` means ChatGPT is still typing — keep polling, never resend.
    */
   async readReply(): Promise<ReplyView> {
-    const { messageCount, ...view } = await this.readReplyWithCount();
+    const { messageCount, ...view } = await this.serialize(() => this.readReplyWithCountLocked());
     return view;
   }
 
   /** ReplyView plus the number of assistant messages on the page. */
-  private async readReplyWithCount(): Promise<ReplyView & { messageCount: number }> {
+  private async readReplyWithCountLocked(): Promise<ReplyView & { messageCount: number }> {
     const page = await this.ensurePage();
     // After an idle close the tab comes back blank; recover the saved
     // conversation so a wait does not report a bogus empty timeout.
-    await this.ensureConversationOpen(page);
+    await this.ensureConversationOpenLocked(page);
     if (!(await this.isLoggedIn(page))) {
-      return { status: "error", text: null, isControlMessage: false, state: null, messageCount: 0 };
+      return {
+        status: "error",
+        text: null,
+        isControlMessage: false,
+        state: null,
+        messageCount: 0,
+        note: "not logged in to ChatGPT — log in in the control-plane browser window, then retry",
+      };
     }
     // The conversation URL can lag the send (SPA) or swap in its canonical id
     // later — every poll is a fresh chance to persist it. Cheap: applyChatBinding
     // no-ops when the binding is already current.
     this.bindConversationUrl(page.url());
+    return this.collectReplyView(page);
+  }
 
+  /** The DOM half of a reply read: counts, generating marker, last text. */
+  private async collectReplyView(page: Page): Promise<ReplyView & { messageCount: number }> {
     const generating = await page
       .locator(this.site.selectors.generating)
       .count()
@@ -542,13 +633,16 @@ export class ControlPlaneBrowser {
    * `replyAnchor`) are reported as `replied`; the pre-send reply shows up in
    * the `timeout` view instead — it is NOT the answer to the last message.
    * A timeout is reported honestly (`timeout` status) — it is NOT a failure
-   * and must not trigger a resend by the caller.
+   * and must not trigger a resend by the caller. An unreadable page (login
+   * wall) returns `error` immediately with the reason, instead of burning
+   * the whole timeout pretending to poll.
    */
   async waitReply(opts: { timeoutMs?: number; expectState?: string } = {}): Promise<ReplyView> {
     const timeoutMs = opts.timeoutMs ?? 5 * 60_000;
     const deadline = Date.now() + timeoutMs;
     for (;;) {
-      const { messageCount, ...reply } = await this.readReplyWithCount();
+      const { messageCount, ...reply } = await this.serialize(() => this.readReplyWithCountLocked());
+      if (reply.status === "error") return reply;
       const fresh =
         reply.status === "replied" && isFreshReply({ messageCount, text: reply.text }, this.replyAnchor);
       if (fresh) {
@@ -564,7 +658,9 @@ export class ControlPlaneBrowser {
         }
         return { ...reply, status: "timeout", note };
       }
-      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+      // Never overshoot the deadline by a full poll interval.
+      const remaining = deadline - Date.now();
+      await new Promise((resolve) => setTimeout(resolve, Math.min(POLL_INTERVAL_MS, Math.max(0, remaining))));
     }
   }
 
@@ -574,8 +670,12 @@ export class ControlPlaneBrowser {
    * authorizes execution, the user's own message does.
    */
   async readLatestUserMessage(): Promise<{ text: string | null; count: number }> {
+    return this.serialize(() => this.readLatestUserMessageLocked());
+  }
+
+  private async readLatestUserMessageLocked(): Promise<{ text: string | null; count: number }> {
     const page = await this.ensurePage();
-    await this.ensureConversationOpen(page);
+    await this.ensureConversationOpenLocked(page);
     // Same client-rendering story as the sidebar scan: the turns hydrate
     // seconds after domcontentloaded, so an immediate count sees zero. Wait
     // bounded for the first user turn, then read.
@@ -592,78 +692,99 @@ export class ControlPlaneBrowser {
    * newest first. The dispatch auto-watch polls these to discover where the
    * user typed a dispatch marker — the daemon has no account-level API, the
    * sidebar IS the recent-activity index. Opening the home page binds
-   * nothing (home has no conversation id).
+   * nothing (home has no conversation id); the active task and its send
+   * anchor are restored afterwards so a task-driving session is not
+   * derailed by this read.
    */
   async listRecentConversations(limit = 3): Promise<string[]> {
-    const page = await this.ensurePage();
-    await this.openConversation(CHATGPT_HOME);
-    // The sidebar is client-rendered: domcontentloaded fires well before the
-    // conversation list hydrates (seconds later on a fresh load), so an
-    // immediate scrape sees an empty sidebar every time. Wait bounded for
-    // the first link, then scrape.
-    await page
-      .waitForSelector(this.site.selectors.sidebarLink, { timeout: 15_000 })
-      .catch(() => undefined);
-    const handles = await page
-      .locator(this.site.selectors.sidebarLink)
-      .elementHandles()
-      .catch(() => []);
-    const urls: string[] = [];
-    for (const handle of handles) {
-      const href = await handle.getAttribute("href").catch(() => null);
-      if (!href) continue;
-      try {
-        const url = normalizeChatUrl(new URL(href, "https://chatgpt.com").href);
-        if (url && !urls.includes(url)) urls.push(url);
-      } catch {
-        // Malformed href: skip it.
-      }
-      if (urls.length >= limit) break;
+    const previousTaskId = this.activeTaskId;
+    const previousAnchor = this.replyAnchor;
+    try {
+      return await this.serialize(async () => {
+        const page = await this.ensurePage();
+        await this.openConversationLocked(CHATGPT_HOME);
+        // The sidebar is client-rendered: domcontentloaded fires well before the
+        // conversation list hydrates (seconds later on a fresh load), so an
+        // immediate scrape sees an empty sidebar every time. Wait bounded for the
+        // first link, then scrape.
+        await page
+          .waitForSelector(this.site.selectors.sidebarLink, { timeout: 15_000 })
+          .catch(() => undefined);
+        const handles = await page
+          .locator(this.site.selectors.sidebarLink)
+          .elementHandles()
+          .catch(() => []);
+        const urls: string[] = [];
+        for (const handle of handles) {
+          const href = await handle.getAttribute("href").catch(() => null);
+          if (!href) continue;
+          try {
+            const url = normalizeChatUrl(new URL(href, "https://chatgpt.com").href);
+            if (url && !urls.includes(url)) urls.push(url);
+          } catch {
+            // Malformed href: skip it.
+          }
+          if (urls.length >= limit) break;
+        }
+        return urls;
+      });
+    } finally {
+      this.activeTaskId = previousTaskId;
+      this.replyAnchor = previousAnchor;
     }
-    return urls;
   }
 
   /**
    * Wait for an actionable dispatch in a user-owned conversation. A dispatch
    * is actionable only when BOTH hold: (a) the user's own latest message
    * carries the dispatch marker, and (b) the latest assistant message is a
-   * [C2C] DIRECTIVE. Anchoring: the first call returns an already-present
-   * authorized directive once (restart recovery); afterwards only NEW
-   * assistant output counts, and replies that are not authorized directives
-   * are consumed, so the user's plain conversation with ChatGPT (and GPT's
-   * replies to it) never triggers the agent.
+   * [C2C] DIRECTIVE. Anchoring (instance-level, reset by openConversation
+   * navigating elsewhere): the first call after (re)binding a conversation
+   * returns an already-present authorized directive once (restart
+   * recovery); afterwards only NEW assistant output counts, and replies
+   * that are not authorized directives are consumed, so the user's plain
+   * conversation with ChatGPT (and GPT's replies to it) never triggers the
+   * agent — and the same directive is never handed out twice.
    */
   async waitDirective(opts: { timeoutMs?: number; marker?: string } = {}): Promise<DirectiveView> {
     const timeoutMs = opts.timeoutMs ?? 5 * 60_000;
     const marker = resolveDispatchMarker(opts.marker);
     const deadline = Date.now() + timeoutMs;
-    let anchor: { assistantCount: number; assistantText: string } | null = null;
-    let first = true;
     for (;;) {
-      const page = await this.ensurePage();
-      await this.ensureConversationOpen(page);
-      const userCount = await page.locator(this.site.selectors.userTurn).count().catch(() => 0);
-      const userText = userCount > 0 ? await lastUserText(page, this.site.selectors.userTurn) : null;
-      const { messageCount, status, text } = await this.readReplyWithCount();
-      if (status === "error") {
+      const snap = await this.serialize(async () => {
+        const page = await this.ensurePage();
+        await this.ensureConversationOpenLocked(page);
+        const loggedIn = await this.isLoggedIn(page);
+        const userCount = await page.locator(this.site.selectors.userTurn).count().catch(() => 0);
+        const userText = userCount > 0 ? await lastUserText(page, this.site.selectors.userTurn) : null;
+        if (!loggedIn) return { userText, reply: null };
+        return { userText, reply: await this.collectReplyView(page) };
+      });
+      if (!snap.reply) {
         return {
           status: "timeout",
           authorized: false,
-          userText,
-          replyText: text,
+          userText: snap.userText,
+          replyText: null,
           directive: null,
           note: "not logged in to ChatGPT (open the conversation, log in, retry)",
         };
       }
+      const { messageCount, status, text } = snap.reply;
+      const userText = snap.userText;
       // A user-turn that an agent injected via composer send (it starts
       // with [C2C]) is machine-authored: it can never carry the USER's own
       // authorization, even when its task text echoes the marker.
       const authorized = !isAgentInjected(userText) && isDispatchAuthorized(userText, marker);
       const { isDirective, body } = parseDirective(text);
       const generating = status === "generating";
+      const anchor = this.directiveAnchor;
       const changed =
-        anchor !== null && (messageCount !== anchor.assistantCount || (text ?? "") !== anchor.assistantText);
-      if (!generating && authorized && isDirective && (first || changed)) {
+        anchor !== null && (messageCount !== anchor.count || (text ?? "") !== anchor.text);
+      if (!generating && authorized && isDirective && (anchor === null || changed)) {
+        // Consume BEFORE returning: a handed-out directive must not be
+        // handed out again by the next wait call.
+        this.directiveAnchor = { count: messageCount, text: text ?? "" };
         return { status: "directive", authorized: true, userText, replyText: text, directive: body };
       }
       // Consume the observed assistant state: whatever it was — plain chat,
@@ -674,8 +795,7 @@ export class ControlPlaneBrowser {
       // (same count, same text) — consuming it there would make the final
       // directive look unchanged and never fire.
       if (!generating) {
-        anchor = { assistantCount: messageCount, assistantText: text ?? "" };
-        first = false;
+        this.directiveAnchor = { count: messageCount, text: text ?? "" };
       }
       if (Date.now() >= deadline) {
         const note = !authorized
@@ -683,7 +803,9 @@ export class ControlPlaneBrowser {
           : "no new [C2C] DIRECTIVE reply arrived";
         return { status: "timeout", authorized, userText, replyText: text, directive: null, note };
       }
-      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+      // Never overshoot the deadline by a full poll interval.
+      const remaining = deadline - Date.now();
+      await new Promise((resolve) => setTimeout(resolve, Math.min(POLL_INTERVAL_MS, Math.max(0, remaining))));
     }
   }
 }

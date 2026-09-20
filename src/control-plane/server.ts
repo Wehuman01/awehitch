@@ -97,7 +97,11 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
   const workspace = new Workspace(opts.workspaceRoot);
   const workspaceId = opts.workspaceId ?? workspace.id;
   const harness = opts.harness;
-  const driver = opts.driver ?? new ControlPlaneBrowser(workspaceId, {}, logger, harness);
+  const driver = opts.driver ?? new ControlPlaneBrowser(workspaceId, {
+    // The one human-facing hint this server can give: a login wall opened a
+    // visible window — tell the user (log), not just the JSON error.
+    onNotice: (message) => logger.warn(message),
+  }, logger, harness);
 
   // The control-plane browser is a machine-global resource (one profile, one
   // ChatGPT login). A session must not hold it while the harness is quietly
@@ -380,8 +384,10 @@ export async function createControlPlaneServer(opts: ControlPlaneServerOptions):
         const saved = readControlPlaneState(workspaceId, harness);
         const taskId = args.task_id?.trim();
         // Session slots >= 1 keep their own chat pointer; slot 0 (and
-        // harness-less callers) mirror into the shared state file.
-        const slot = driver.slotInfo();
+        // harness-less callers) mirror into the shared state file. Claiming
+        // the slot here (no browser launch) makes chat_info correct before
+        // the first browser-using tool call, too.
+        const slot = driver.claimSlotInfo() ?? driver.slotInfo();
         const chatUrl =
           slot && slot.index >= 1 ? readSlotPointer(workspaceId, harness, slot.index) : saved?.chatUrl ?? null;
         return ok({

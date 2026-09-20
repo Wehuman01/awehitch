@@ -14,7 +14,7 @@ import {
   stopBridge,
   stopBridgeAndWait,
 } from "../process/daemon.js";
-import { Workspace } from "../workspace/manager.js";
+import { Workspace, DEFAULT_CHATGPT_MODE } from "../workspace/manager.js";
 import { readRegistryRoots } from "../workspace/registry.js";
 import { AuthStore } from "../auth/store.js";
 import { detectTunnelBinaries } from "../tunnel/detect.js";
@@ -798,7 +798,16 @@ program
       ),
     });
     dispatchWatcher.start();
+    // A dispatched agent run can keep the watcher's stop() waiting for its
+    // child for a long time: a second signal force-exits instead of hanging.
+    let exiting = false;
     const shutdown = (): void => {
+      if (exiting) process.exit(130);
+      exiting = true;
+      process.removeAllListeners("SIGINT");
+      process.removeAllListeners("SIGTERM");
+      process.on("SIGINT", () => process.exit(130));
+      process.on("SIGTERM", () => process.exit(143));
       void Promise.all([bridge.close(), dispatchWatcher.stop()]).then(() => process.exit(0));
     };
     process.on("SIGINT", shutdown);
@@ -1321,7 +1330,7 @@ program
         let tier = "";
         try {
           const workspace = new Workspace(root);
-          tier = ` — ${workspace.projectConfig.chatgptMode ?? "readonly"}`;
+          tier = ` — ${workspace.projectConfig.chatgptMode ?? DEFAULT_CHATGPT_MODE}`;
         } catch {
           // A vanished root is reported by doctor; status stays silent here.
         }

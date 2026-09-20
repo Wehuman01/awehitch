@@ -224,7 +224,8 @@ describe("workspace identity", () => {
     const invalidWs = new Workspace(invalid);
 
     expect(invalidWs.name).toBe(path.basename(invalid));
-    expect(invalidWs.projectConfig).toEqual({});
+    // Nothing user-set survived parsing; the built-in default tier fills in.
+    expect(invalidWs.projectConfig).toEqual({ chatgptMode: "write-exec" });
     cleanup(invalid);
   });
 

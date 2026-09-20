@@ -159,8 +159,11 @@ export function normalizeChatUrl(url: string): string | null {
   try {
     const parsed = new URL(url.trim());
     if (parsed.hostname !== "chatgpt.com" && parsed.hostname !== "www.chatgpt.com") return null;
-    if (parsed.pathname === "/") return "https://chatgpt.com/";
-    return `https://chatgpt.com${parsed.pathname}`;
+    if (parsed.pathname === "/" || parsed.pathname === "") return "https://chatgpt.com/";
+    // Trailing slashes are copy-paste noise: "/c/<id>/" and "/c/<id>" are
+    // the same conversation and must compare equal (watch-mode refusal and
+    // the one-session-per-chat registry key on it).
+    return `https://chatgpt.com${parsed.pathname.replace(/\/+$/, "")}`;
   } catch {
     return null;
   }
@@ -292,7 +295,12 @@ export function withStateMergeLock<T>(
   harness: string | undefined,
   fn: () => T
 ): T {
-  const file = path.join(getStateDir(), "control-plane", `${sessionKey(workspaceId, harness)}.merge.lock`);
+  return withNamedStateLock(`${sessionKey(workspaceId, harness)}.merge`, fn);
+}
+
+/** The same primitive under an explicit lock name (machine-level files). */
+export function withNamedStateLock<T>(name: string, fn: () => T): T {
+  const file = path.join(getStateDir(), "control-plane", `${name}.lock`);
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const info = JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() });
   const deadline = Date.now() + 2000;

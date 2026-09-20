@@ -227,7 +227,10 @@ export function browserConversationResolver(logger: Logger) {
       );
       return null;
     } finally {
-      await browser.close().catch(() => undefined);
+      // dispose, not close: without releasing the slot lease, a long-lived
+      // bridge burns one pool slot per lookup and dispatch dies with
+      // "slots busy" after a couple of uses.
+      await browser.dispose().catch(() => undefined);
     }
   };
 }
@@ -249,7 +252,9 @@ export function browserUserMessageReader(logger: Logger) {
       logger.warn(`dispatch user-message verification failed for ${chatUrl}: ${reason}`);
       return { readable: false, reason };
     } finally {
-      await browser.close().catch(() => undefined);
+      // dispose, not close — see browserConversationResolver: every dispatch
+      // verification must give its session slot back to the pool.
+      await browser.dispose().catch(() => undefined);
     }
   };
 }

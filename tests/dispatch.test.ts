@@ -22,6 +22,11 @@ describe("isDispatchAuthorized", () => {
     expect(isDispatchAuthorized("@agent", "@agent")).toBe(true);
   });
 
+  it("matches case-insensitively, like the @harness mention gate", () => {
+    expect(isDispatchAuthorized("@Agent fix it", "@agent")).toBe(true);
+    expect(isDispatchAuthorized("来吧 @AGENT 修一下", "@agent")).toBe(true);
+  });
+
   it("rejects markers embedded in longer tokens", () => {
     expect(isDispatchAuthorized("not@agent", "@agent")).toBe(false);
     expect(isDispatchAuthorized("@agent-x", "@agent")).toBe(false);

@@ -4,6 +4,7 @@ import path from "node:path";
 import { buildDispatchPrompt, DispatchWatcher, FOLLOW_PROTOCOL_NOTE } from "../src/dispatch/watcher.js";
 import { pickHarness, planSpawn } from "../src/dispatch/harness.js";
 import { dispatchStateFile, readDispatchWatch, writeDispatchWatch } from "../src/dispatch/state.js";
+import { claimConversation, releaseConversation } from "../src/dispatch/spawn.js";
 import type { HarnessId } from "../src/adapters/paths.js";
 import { cleanup, isolateStateDir, makeTmpDir } from "./helpers.js";
 
@@ -29,6 +30,7 @@ interface Calls {
   opened: string[];
   sent: string[];
   waits: number;
+  waitOpts: ({ timeoutMs?: number; marker?: string } | undefined)[];
   closed: boolean;
   latestUser: string | null;
   recent: string[];
@@ -40,7 +42,7 @@ function stubDriver(
   latestUser: string | null = null,
   reply: { status: string; text: string | null } = { status: "replied", text: "Plain prose answer." }
 ) {
-  const calls: Calls = { opened: [], sent: [], waits: 0, closed: false, latestUser, recent: [], reply };
+  const calls: Calls = { opened: [], sent: [], waits: 0, waitOpts: [], closed: false, latestUser, recent: [], reply };
   let i = 0;
   const driver = {
     async openConversation(url?: string) {
@@ -51,8 +53,9 @@ function stubDriver(
       calls.sent.push(text);
       return {};
     },
-    async waitDirective() {
+    async waitDirective(opts?: { timeoutMs?: number; marker?: string }) {
       calls.waits++;
+      calls.waitOpts.push(opts);
       const next = waitResults[Math.min(i, waitResults.length - 1)];
       i++;
       return next;
@@ -277,6 +280,50 @@ describe("DispatchWatcher chat mode", () => {
       expect(spawns).toHaveLength(0);
     } finally {
       await watcher.stop();
+    }
+    cleanup(root);
+  });
+
+  it("honors the watched workspace's configured dispatchMarker", async () => {
+    const root = makeTmpDir("dispatch-root");
+    fs.writeFileSync(path.join(root, ".c2c.json"), JSON.stringify({ dispatchMarker: "@go" }));
+    writeWatch(root, { notedUrl: CHAT_URL });
+    const { driver, calls } = stubDriver([{ status: "timeout", directive: null }]);
+    const spawns: unknown[] = [];
+    const watcher = new DispatchWatcher(watcherOpts(driver, spawns));
+    watcher.start();
+    try {
+      await vi.waitFor(() => expect(calls.waits).toBeGreaterThan(0));
+      // The CLI prints this marker as the one to type; anything else here
+      // would silently disarm the watch.
+      expect(calls.waitOpts.at(-1)?.marker).toBe("@go");
+    } finally {
+      await watcher.stop();
+    }
+    cleanup(root);
+  });
+
+  it("parks a directive behind a busy conversation instead of dropping it", async () => {
+    const root = makeTmpDir("dispatch-root");
+    writeWatch(root, { notedUrl: CHAT_URL });
+    // A tool-dispatched run owns the conversation…
+    const { driver } = stubDriver([{ status: "directive", directive: DIRECTIVE }]);
+    const spawns: unknown[] = [];
+    expect(claimConversation(CHAT_URL, "opencode")).toBe(true);
+    const watcher = new DispatchWatcher(watcherOpts(driver, spawns));
+    watcher.start();
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 40)); // several cycles see it, none spawn
+      expect(spawns).toHaveLength(0);
+      // …and it must NOT be persisted as executed: nobody ran it.
+      expect(readDispatchWatch()?.lastDirective).toBeUndefined();
+      // Once the other run releases, the parked directive executes.
+      releaseConversation(CHAT_URL);
+      await vi.waitFor(() => expect(spawns).toHaveLength(1));
+      expect(readDispatchWatch()?.lastDirective).toBe(DIRECTIVE);
+    } finally {
+      await watcher.stop();
+      releaseConversation(CHAT_URL);
     }
     cleanup(root);
   });

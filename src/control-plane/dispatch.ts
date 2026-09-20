@@ -36,12 +36,13 @@ export function isAgentInjected(text: string | null | undefined): boolean {
  * appear as a standalone token: not glued to Latin letters, digits, "@",
  * "_" or "-" on either side — so "not@agent", "@agent-x" or
  * "email@agent.com" do not authorize anything, while natural CJK typing
- * around the marker ("来吧@agent 修一下") still counts.
+ * around the marker ("来吧@agent 修一下") still counts. Case-insensitive,
+ * matching how @harness mentions are parsed on the dispatch tool path.
  */
 export function isDispatchAuthorized(userText: string | null | undefined, marker: string): boolean {
   if (!userText) return false;
   const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(^|[^A-Za-z0-9@_-])${escaped}(?![A-Za-z0-9@_-])`).test(userText);
+  return new RegExp(`(^|[^A-Za-z0-9@_-])${escaped}(?![A-Za-z0-9@_-])`, "i").test(userText);
 }
 
 /**

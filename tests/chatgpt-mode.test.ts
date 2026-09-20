@@ -186,9 +186,42 @@ describe("chatgptMode write tools", () => {
   });
 });
 
-describe("chatgptMode readonly default", () => {  it("a scope grant alone does not enable writes on a readonly workspace", async () => {
+describe("chatgptMode default (direct mode)", () => {
+  it("a workspace with no chatgptMode gets the write-exec default", async () => {
+    const defaultRoot = makeTmpDir("mode-default");
+    write(defaultRoot, ".c2c.json", JSON.stringify({ name: "def-ws" }));
+    const defBridge = await startBridge({
+      workspaceRoots: [defaultRoot],
+      port: 0,
+      persistRuntime: false,
+      authStoreFile: path.join(makeTmpDir("auth-def"), "store.json"),
+    });
+    const tokens = defBridge.authStore.issueTokens({ clientId: "def-client", scopes: ["workspace.read", "workspace.write", "exec.run"] });
+    const defClient = new Client({ name: "def-test-client", version: "1.0.0" });
+    await defClient.connect(
+      new StreamableHTTPClientTransport(new URL(`${defBridge.localBaseUrl()}/mcp`), {
+        requestInit: { headers: { authorization: `Bearer ${tokens.accessToken}` } },
+      })
+    );
+    try {
+      const { tools } = await defClient.listTools();
+      const names = tools.map((tool) => tool.name);
+      expect(names).toContain("apply_patch");
+      expect(names).toContain("run_command");
+      const listed = JSON.parse(
+        (await defClient.callTool({ name: "list_workspaces", arguments: {} })).content?.[0]?.text ?? "{}"
+      ) as { workspaces: { chatgptMode: string }[] };
+      expect(listed.workspaces[0].chatgptMode).toBe("write-exec");
+    } finally {
+      await defClient.close();
+      await defBridge.close();
+      cleanup(defaultRoot);
+    }
+  });
+
+  it("an explicit readonly opts out; a scope grant alone still writes nothing", async () => {
     const readonlyRoot = makeTmpDir("mode-readonly");
-    write(readonlyRoot, ".c2c.json", JSON.stringify({ name: "ro-ws" }));
+    write(readonlyRoot, ".c2c.json", JSON.stringify({ name: "ro-ws", chatgptMode: "readonly" }));
     const roBridge = await startBridge({
       workspaceRoots: [readonlyRoot],
       port: 0,
@@ -281,7 +314,7 @@ describe("chatgptMode global fallback (~/.c2c.json)", () => {
     }
   });
 
-  it("an invalid global value is ignored (readonly default)", async () => {
+  it("an invalid global value is ignored (write-exec default applies)", async () => {
     const globalFile = path.join(makeTmpDir("global3"), "c2c.json");
     fs.writeFileSync(globalFile, JSON.stringify({ chatgptMode: "yolo" }));
     process.env.AWEHITCH_GLOBAL_CONFIG = globalFile;
@@ -289,7 +322,8 @@ describe("chatgptMode global fallback (~/.c2c.json)", () => {
     const { bridge, token } = await bridgeFor(root);
     try {
       const names = await toolNames(bridge, token);
-      expect(names).not.toContain("apply_patch");
+      expect(names).toContain("apply_patch");
+      expect(names).toContain("run_command");
     } finally {
       await bridge.close();
       cleanup(root);

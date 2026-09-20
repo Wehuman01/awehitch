@@ -1,13 +1,13 @@
 <div align="center">
-  <h1>awehitch：把 ChatGPT 网页大脑挂到任意编码 agent 上</h1>
-  <p><strong>ChatGPT 负责思考，你的 agent 负责干活。</strong></p>
-  <p>用你已付费的 ChatGPT 网页订阅做规划与审查层，任意编码 agent（codex / opencode / zcode）完整保留执行权。</p>
+  <h1>awehitch：把 ChatGPT 网页大脑挂到你的工作区</h1>
+  <p><strong>ChatGPT 负责思考——默认它还亲自动手。</strong></p>
+  <p>用你已付费的 ChatGPT 网页订阅做编码大脑：直操模式（默认）下 ChatGPT 自己改文件、跑受限命令；接上任意编码 agent（codex / opencode / zcode）则退回"它规划审查、agent 完整保留执行权"的协作模式。</p>
   <p>
     <a href="./README.md">English</a> ·
     <strong>简体中文</strong>
   </p>
   <p>
-    <img src="https://img.shields.io/badge/version-0.3.1-7C3AED?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-0.4.0-7C3AED?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/node-%E2%89%A520-0EA5E9?style=flat-square" alt="Node">
   </p>
   <p>
@@ -17,9 +17,9 @@
   </p>
 </div>
 
-> ChatGPT 负责思考，你的 agent 负责干活。
+> ChatGPT 负责思考——默认它还亲自动手。
 
-awehitch 把 ChatGPT 网页大脑挂（hitch）到任意编码 agent 上：ChatGPT 负责规划与审查，本地 agent 负责执行。你的仓库永远不会被上传——ChatGPT 通过一条安全的、OAuth 保护的 MCP 连接（**默认只读**，可选升级为直操）按需读取当前工作区里它真正需要的那几行代码。不用 API Key，不搞逆向代理。
+awehitch 把 ChatGPT 网页大脑挂（hitch）到你的机器上：**直操模式（默认）**下，ChatGPT 在自己的对话里用结构化补丁改文件、跑受限命令，不需要装任何本地 agent；**协作模式**下它规划与审查，本地 agent 执行。你的仓库永远不会被上传——ChatGPT 通过一条安全的、OAuth 保护的 MCP 连接按需读取当前工作区里它真正需要的那几行代码。不用 API Key，不搞逆向代理。
 
 ## 安装
 
@@ -58,26 +58,39 @@ awehitch up
 
 配对与连接器创建全自动。唯一可能需要你动手的，是在弹出的窗口里登录一次 ChatGPT。装好后日常零命令。
 
-之后正常使用："@chatgpt 帮我规划 XXX"。口语化的"用 ChatGPT …"、"问问 ChatGPT …"也可以——服务没跑时 agent 会按需自动拉起。
+一个 agent 都不装？这就是默认体验：在你自己的 ChatGPT 对话里直接让它干活——它通过连接器读代码、打补丁、跑受限命令（直操模式，见下）。想要 agent 在环？正常使用即可："@chatgpt 帮我规划 XXX"。口语化的"用 ChatGPT …"、"问问 ChatGPT …"也可以——服务没跑时 agent 会按需自动拉起。
 
 ## 工作原理
 
 ```
 远端大脑（ChatGPT 网页）
-      ↕  控制面：[C2C] 状态消息（<1 KB）
+      ↕  控制面：[C2C] 状态消息（<1 KB）        —— 协作模式
 控制面代理（本地，Playwright → 8 个语义化 MCP 工具）
       ↕  工具调用（stdio MCP）
 本地 Agent（codex / opencode / zcode）
-      ↕  数据面：只读（默认）/ 可写（opt-in）MCP
+      ↕  数据面：直操 MCP（补丁 + 受限命令；       —— 两种模式共用
+         配置 readonly 才退回只读）
 awehitch Bridge（本地，工作区网关 + OAuth + 隧道）
 ```
 
 - **控制面** — agent 与 ChatGPT 交换极小的结构化 `[C2C]` 消息（`INIT → PLAN → EXECUTED → REVIEW → DONE`）。本地**控制面代理**用 Playwright（独立浏览器配置目录）把 ChatGPT 会话封装成八个语义化工具：`awehitch_open_chat`、`awehitch_send_state`、`awehitch_send_handoff`、`awehitch_wait_reply`、`awehitch_read_reply`、`awehitch_chat_info`，以及派发工具 `awehitch_check_dispatch` / `awehitch_wait_directive`。一个任务一条聊天：新 TASK_ID 自动开新聊天，同一任务的恢复与多轮审查始终复用它绑定的聊天；原聊天丢失时 `awehitch_send_handoff` 从本地检查点自动生成交接简报（绝不包含文件、diff 或日志）。轮询是 20–30 秒的廉价 DOM 检查；超时不等于失败；只用一个标签页；绝不因超时重发。原方案里绑死 Codex 内置浏览器的控制面被彻底解耦——任何 agent 只要"能调工具"就能接入。
 - **按会话并行** — 每个编码会话拥有自己的 ChatGPT 对话。每个 harness 维护一个小型浏览器 profile 池（从首个登录的 profile 播种，全程只需登录一次）；会话在首次使用时领取空闲槽位 —— 槽位 0 就是该 harness 自己的 profile，同 harness 的额外并发会话（比如同时开两个 opencode 窗口）依次拿到 `<harness>-s1`、`-s2`…… 任务→对话的绑定通过短跨进程锁合并写入，任务总能重开自己的对话，而每个会话"当前所在对话"的指针是私有的。codex / opencode / zcode —— 以及它们的多个实例 —— 都能同时跑规划循环。可用 `AWEHITCH_MAX_PARALLEL_SESSIONS` 调大池子（默认每个 harness 2 个，上限 16；每个额外槽位对应多开一个 Chromium 窗口）。
-- **数据面** — ChatGPT 通过 10 个只读工具自行拉取文件、diff、搜索结果、测试记录，走 OAuth 2.1 + PKCE + 动态客户端注册的隧道；另有 `dispatch_agent` 工具（独立 `dispatch.execute` 权限）在你点名时启动本地 agent。独立审查：EXECUTED 之后 ChatGPT 亲自看真实 git diff，绝不轻信"测试全过"。直操模式开启后（见下），数据面再提供 `apply_patch` / `run_command` 两个写工具。
+- **数据面** — ChatGPT 通过 OAuth 2.1 + PKCE + 动态客户端注册的隧道自行拉取文件、diff、搜索结果、测试记录，外加直操写工具 `apply_patch` / `run_command`（默认就有；只有 `chatgptMode` 为 `readonly` 的工作区才从目录里消失）与 `dispatch_agent` 工具（独立 `dispatch.execute` 权限）在你点名时启动本地 agent。独立审查：EXECUTED 之后 ChatGPT 亲自看真实 git diff，绝不轻信"测试全过"。
 - **Adapter** — codex（`~/.codex/skills` + `config.toml` MCP + 沙箱 writable_roots）、opencode（`~/.config/opencode` skill + `opencode.json` MCP）、zcode（`~/.zcode/cli/config.json` mcpServers + skill）。每个 adapter 都很薄，互不 import。
 
-### 协作模式——谁发起都行，没有模式开关
+### 直操模式（纯 ChatGPT）——默认，三档
+
+开箱即用，ChatGPT **自己直接动手**：在自己的对话里读工作区、用结构化补丁改文件，默认档位还能跑受限命令，不需要装任何本地 agent。档位来自 `chatgptMode`（工作区 `.c2c.json`，或全局 `~/.c2c.json`），默认 `write-exec`。三档能力单调递增，写工具标注如实（`readOnlyHint: false`）：
+
+| 档位 | ChatGPT 能做什么 |
+| --- | --- |
+| `readonly` | 只读工具 + `dispatch_agent`。结构性只读——服务端根本没有写工具。想只让它看、不让它动手就选这档。 |
+| `write` | 加 `apply_patch`：结构化、原子、带回滚的多文件补丁（create / update / delete）。`update` 要求 `oldText` 与当前文件精确匹配且唯一，改错了就是整批拒绝。 |
+| `write-exec`（默认） | 再加 `run_command`：argv 直传（无 shell，管道/展开/重定向结构性不存在）、最小环境变量（不继承任何秘密）、网络客户端与提权命令一律拒绝、git 的网络子命令（push/fetch/pull/clone）拒绝、默认 60 秒超时、输出封顶。 |
+
+规则不变的部分：敏感文件策略（`.env*`、密钥、SSH…）对**写**一视同仁——直操模式也写不了它们；工作区边界与 symlink 检查照旧；没有 dangerous 档——想要无限制执行，那是本地沙箱工具的活，远程网页模型不背这个风险，这一档是**故意不存在**的。写授权由你写进配置文件（而不是 ChatGPT 的一句话），OAuth 侧对应 `workspace.write` / `exec.run` scope。
+
+### 协作模式（接本地 agent）——谁发起都行，没有模式开关
 
 同一套机器——bridge、隧道、连接器——服务一个协作循环，控制流从哪边发起是运行时的事，不是两种模式。不变量只有一条：**执行授权永远来自你**。想从哪边干活都行，两边同时用也可以：
 
@@ -90,18 +103,6 @@ awehitch Bridge（本地，工作区网关 + OAuth + 隧道）
 
 连 agent 会话都不用挂着也行——ChatGPT 自己就能帮你起。在你**任意**一条 ChatGPT 对话里，用自己的消息 @ 点名执行者加任务（`@opencode 修一下登录页`、`@codex …`、`@zcode …`）；ChatGPT 随即调用它的 `dispatch_agent` 连接器工具，bridge 在注册的工作区里拉起对应 agent，跑完回报进同一条对话交给 ChatGPT 审查。@ 点名是**服务端硬校验**的授权：派发前 bridge 会亲自打开该对话读取你本人的最新消息，确认里面真的 @ 了那个执行者才动手——ChatGPT 在 task 参数里自己补一个 @、或仅凭它认为"你想执行"就派 agent，都会被拒绝（`DISPATCH_UNAUTHORIZED`），此时它只能退回自己的数据面工具（只读或直操档）。对话读不出来时同样拒绝（fail closed）。一条对话只有一个 agent 会话——当前执行没回报前，再次派发会被拒绝。后台没有任何轮询：工具调用就是触发，你的 @ 点名就是授权。想把范围钉死在某一条对话、走完整的标记 + DIRECTIVE 协议循环？`awehitch dispatch watch <对话URL>` 仍然保留，`dispatch stop` 取消钉定。两种方式可以共存（工具会让位给钉定的对话），安全规则不变——一条对话只留一个执行者。（ChatGPT 说不出自己所在对话的 URL 时，bridge 会用你自己的登录 profile 在本地看一眼最近对话侧栏来定位，除了 ChatGPT 本身没有第三方参与。） 想亲眼看着它跑？`awehitch dispatch launch interactive` 会让派发改为在终端窗口打开 agent 自己的 TUI——任务打印在窗口里并复制到剪贴板，窗口会先列出该 agent 的 aweswitch profile 供选择（aweswitch 是依赖项：启用 interactive 时若未安装会用 pip 自动装上），选完即以该 profile 启动，也可以直接在窗口里继续对话（`dispatch launch headless` 恢复会自动回报的后台运行）。
 
-### 直操模式（纯 ChatGPT）——三档，默认只读
-
-不想装任何本地 agent？可以让 ChatGPT **自己直接动手**：在 `.c2c.json` 里为某个工作区开启 `chatgptMode`，ChatGPT 就在自己的对话里用结构化补丁改文件、（最高档）跑受限命令。三档能力单调递增，写工具标注如实（`readOnlyHint: false`）：
-
-| 档位 | ChatGPT 能做什么 |
-| --- | --- |
-| `readonly`（默认） | 只读工具 + `dispatch_agent`。结构性只读——服务端根本没有写工具。 |
-| `write` | 加 `apply_patch`：结构化、原子、带回滚的多文件补丁（create / update / delete）。`update` 要求 `oldText` 与当前文件精确匹配且唯一，改错了就是整批拒绝。 |
-| `write-exec` | 再加 `run_command`：argv 直传（无 shell，管道/展开/重定向结构性不存在）、最小环境变量（不继承任何秘密）、网络客户端与提权命令一律拒绝、git 的网络子命令（push/fetch/pull/clone）拒绝、默认 60 秒超时、输出封顶。 |
-
-规则不变的部分：敏感文件策略（`.env*`、密钥、SSH…）对**写**一视同仁——直操模式也写不了它们；工作区边界与 symlink 检查照旧；没有 dangerous 档——想要无限制执行，那是本地沙箱工具的活，远程网页模型不背这个风险，这一档是**故意不存在**的。写授权由你写进 `.c2c.json`（而不是 ChatGPT 的一句话），OAuth 侧对应独立的 `workspace.write` / `exec.run` scope。
-
 ## 配置
 
 工作区 `.c2c.json`：
@@ -113,12 +114,13 @@ awehitch Bridge（本地，工作区网关 + OAuth + 隧道）
   "browserIdleMinutes": 10,        // 控制面浏览器空闲多少分钟后自动关闭（默认 10）
   "dispatchMarker": "@agent",      // 你在自己的 ChatGPT 对话里输入的派发标记——
                                    //   agent 盯着该对话时，带标记才授权它执行
-  "chatgptMode": "readonly"        // ChatGPT 直操档位：readonly（默认）/ write / write-exec。
-                                   //   写授权写在你自己的配置文件里，永远不来自 ChatGPT 的一句话
+  "chatgptMode": "write-exec"      // ChatGPT 直操档位：write-exec（默认）/ write / readonly。
+                                   //   设 "readonly" 让连接器只看不动手；
+                                   //   写授权永远写在你自己的配置里，不来自 ChatGPT 的一句话
 }
 ```
 
-`chatgptMode` 也可以写在全局 `~/.c2c.json`，对所有注册工作区生效；工作区自己的 `.c2c.json` 优先——目录没写这个键才落到全局，两边都没写就是 `readonly`。改任一层都要重连一次（`awehitch up`）才生效。
+`chatgptMode` 也可以写在全局 `~/.c2c.json`，对所有注册工作区生效；工作区自己的 `.c2c.json` 优先——目录没写这个键才落到全局，两边都没写就是 `write-exec`。改任一层都要重连一次（`awehitch up`）才生效。
 
 `.c2cignore` 在内置敏感文件策略（`.env*`、`.envrc`、密钥、SSH、云凭证以及整个 `.git/` 目录默认拒绝）之上追加你自己的规则。
 
@@ -145,10 +147,11 @@ Agent/高级命令（session / record / login / connector-setup / stop / pair / 
 ## 安全
 
 - 全机同时只有一个 bridge，只服务一个工作区：对另一个目录跑 `up` 会停掉旧的并切换。所有 token 都绑定当前工作区。bridge 只监听 127.0.0.1——唯一的公网面是走隧道的 HTTPS，由 OAuth 2.1 + PKCE + 动态客户端注册保护。
-- ChatGPT 拿到只读 scope（`workspace.read`、`workspace.search`、`git.read`、`execution.read`、`offline_access`）加一个 `dispatch.execute`——它只为你 @ 点名的请求启动 agent。访问令牌 1 小时失效，刷新令牌每次使用即轮换，落盘只存 SHA-256 哈希。直操模式另发 `workspace.write` / `exec.run` scope，但真正的闸门是工作区的 `chatgptMode`——scope 授了、档位没开，写工具连目录里都不会出现。令牌刷新时会自动补齐服务端新支持的 scope，所以以后升级不需要重新配对连接器。
+- ChatGPT 拿到只读 scope（`workspace.read`、`workspace.search`、`git.read`、`execution.read`、`offline_access`）加一个 `dispatch.execute`——它只为你 @ 点名的请求启动 agent；默认直操模式另发 `workspace.write` / `exec.run` scope。访问令牌 1 小时失效，刷新令牌每次使用即轮换，落盘只存 SHA-256 哈希。真正的闸门始终是工作区的 `chatgptMode`：显式写了 `"readonly"` 的工作区，即使 scope 授了、写工具也连目录里都不会出现。令牌刷新时会自动补齐服务端新支持的 scope，所以以后升级不需要重新配对连接器。
 - 敏感文件（`.env*`、`.envrc`、密钥、SSH、云凭证、整个 `.git/` 目录…）在所有关口被拒绝——读、列目录、搜索、diff、**写**一视同仁。`.env.example` 放行；自己的规则写在 `.c2cignore`。
 - 配对码：约 40 位强度、5 次尝试、一次性、5 分钟有效期、按 IP 限流。
-- 默认情况下 ChatGPT 永远不能写文件、删文件、跑 shell、提交、装包——服务端根本不存在这些工具。开启直操（`chatgptMode`）后唯一的写入口是 `apply_patch`（结构化、原子、基线校验、敏感文件照拦）与 `run_command`（无 shell、最小环境、网络/提权/破坏性命令拒绝）；不存在无限制的 dangerous 档。`dispatch_agent` 只为用户 @ 点名的任务启动编码 agent，不接受 shell 命令。
+- 协作模式的派发是硬约束：`dispatch_agent` 只有在 bridge 亲自读到你自己最新消息、且里面 @ 了执行者时才会启动（agent 注入的 [C2C] 消息永远不算）；读不出来就拒绝（fail closed）。没有你的 @，ChatGPT 只能用数据面工具干活。
+- 任何档位下，仅有的写入口都是 `apply_patch`（结构化、原子、基线校验、敏感文件照拦）与 `run_command`（无 shell、最小环境、网络/提权/破坏性命令拒绝）——服务端不存在其他写入口，也没有无限制的 dangerous 档。想让 ChatGPT 只看不动手？写 `"chatgptMode": "readonly"`，写工具从目录里整个消失。`dispatch_agent` 只为用户 @ 点名的任务启动编码 agent，不接受 shell 命令。
 
 ## 故障排查
 

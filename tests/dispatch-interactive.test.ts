@@ -59,16 +59,26 @@ describe("interactive dispatch script", () => {
         prompt: "x",
         chatUrl: "https://chatgpt.com/c/abc-123",
         aweswitchProfiles: [],
+        terminalBundleId: "com.apple.Terminal",
       },
       "test4"
     );
     expect(script).not.toContain("exec ");
     expect(script).toContain("'opencode' &");
     expect(script).toContain("AGENT=$!");
+    // The paste must first bring THIS terminal forward — System Events types
+    // into whatever app is frontmost.
+    expect(script).toContain('tell application id "com.apple.Terminal" to activate');
+    expect(script.indexOf('tell application id "com.apple.Terminal" to activate')).toBeLessThan(
+      script.indexOf('keystroke "v" using command down')
+    );
     expect(script).toContain('keystroke "v" using command down');
     expect(script).toContain("keystroke return");
     expect(script).toContain("wait $AGENT");
-    expect(script).toMatch(/awehitch dispatch release 'https:\/\/chatgpt\.com\/c\/abc-123' >\/dev\/null 2>&1\n?$/);
+    // The claim is released by an EXIT/HUP trap — it survives the user
+    // closing the window, not just a clean exit.
+    expect(script).toContain(`trap "awehitch dispatch release 'https://chatgpt.com/c/abc-123' >/dev/null 2>&1" EXIT HUP`);
+    expect(script).toMatch(/wait \$AGENT\n?$/);
   });
 
   it("auto-pastes after the aweswitch picker too, launching it in the background", () => {

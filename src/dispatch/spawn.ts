@@ -16,6 +16,7 @@ import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { ControlPlaneBrowser } from "../control-plane/browser.js";
+import { withNamedStateLock } from "../control-plane/state.js";
 import type { HarnessId } from "../adapters/paths.js";
 import type { Logger } from "../logger/index.js";
 import { getStateDir, readJsonIfExists, writeSecureJson } from "../config/paths.js";
@@ -99,6 +100,9 @@ export function defaultSpawnFn(
       cwd: plan.cwd,
       stdio: ["ignore", out, out],
     });
+    // The child holds its own dup of the fd; the parent must not leak one
+    // per dispatch.
+    fs.closeSync(out);
     onStart?.(child.pid);
     child.on("exit", (code) => resolve({ exitCode: code }));
     child.on("error", () => resolve({ exitCode: -1 }));
@@ -163,36 +167,45 @@ function claimIsLive(entry: ActiveDispatchSession): boolean {
  * Claim a conversation for one agent session. The registry is file-backed so
  * the "one conversation, one session" invariant survives bridge restarts and
  * covers interactive launches too; a stale claim (dead pid, or no pid and
- * older than the trust window) is reclaimed instead of refusing.
+ * older than the trust window) is reclaimed instead of refusing. All
+ * read-modify-write cycles run under a short cross-process lock: the
+ * interactive terminal's `dispatch release` is a separate process racing
+ * the bridge's claim/note updates.
  */
 export function claimConversation(chatUrl: string, harness: HarnessId): boolean {
-  const claims = readClaims();
-  const existing = claims[chatUrl];
-  if (existing && claimIsLive(existing)) return false;
-  claims[chatUrl] = {
-    harness,
-    taskId: dispatchTaskId(chatUrl),
-    startedAt: new Date().toISOString(),
-  };
-  writeClaims(claims);
-  return true;
+  return withNamedStateLock("dispatch-claims", () => {
+    const claims = readClaims();
+    const existing = claims[chatUrl];
+    if (existing && claimIsLive(existing)) return false;
+    claims[chatUrl] = {
+      harness,
+      taskId: dispatchTaskId(chatUrl),
+      startedAt: new Date().toISOString(),
+    };
+    writeClaims(claims);
+    return true;
+  });
 }
 
 /** Record the spawned run's pid so a dead process frees its claim. */
 export function noteClaimPid(chatUrl: string, pid: number | undefined): void {
   if (pid === undefined) return;
-  const claims = readClaims();
-  const entry = claims[chatUrl];
-  if (!entry || entry.pid !== undefined) return;
-  claims[chatUrl] = { ...entry, pid };
-  writeClaims(claims);
+  withNamedStateLock("dispatch-claims", () => {
+    const claims = readClaims();
+    const entry = claims[chatUrl];
+    if (!entry || entry.pid !== undefined) return;
+    claims[chatUrl] = { ...entry, pid };
+    writeClaims(claims);
+  });
 }
 
 export function releaseConversation(chatUrl: string): void {
-  const claims = readClaims();
-  if (!(chatUrl in claims)) return;
-  delete claims[chatUrl];
-  writeClaims(claims);
+  withNamedStateLock("dispatch-claims", () => {
+    const claims = readClaims();
+    if (!(chatUrl in claims)) return;
+    delete claims[chatUrl];
+    writeClaims(claims);
+  });
 }
 
 export function activeSession(chatUrl: string): ActiveDispatchSession | null {
@@ -224,6 +237,8 @@ export async function reportBlocked(
       `dispatch BLOCKED report failed for ${chatUrl}: ${error instanceof Error ? error.message : String(error)}`
     );
   } finally {
-    await browser.close().catch(() => undefined);
+    // dispose, not close: a short-lived peek must give its session slot back
+    // or the harness's pool (default 2) exhausts after a few dispatches.
+    await browser.dispose().catch(() => undefined);
   }
 }

@@ -78,10 +78,13 @@ afterAll(async () => {
 });
 
 describe("MCP tools over Streamable HTTP", () => {
-  it("lists the read-only tools plus list_workspaces", async () => {
+  it("lists the read tools plus the default direct-mode write tools", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((tool) => tool.name).sort();
     expect(names).toEqual([
+      // default chatgptMode is write-exec, so the direct-mode write tools
+      // are part of the default catalog
+      "apply_patch",
       "dispatch_agent",
       "execution_output",
       "execution_summary",
@@ -90,11 +93,12 @@ describe("MCP tools over Streamable HTTP", () => {
       "list_directory",
       "list_workspaces",
       "read_file",
+      "run_command",
       "search_workspace",
       "test_status",
       "workspace_info",
     ]);
-    // no write tools in V1
+    // no unconstrained write tools in any mode
     for (const forbidden of ["write_file", "delete_file", "execute_shell", "git_commit", "install_package"]) {
       expect(names).not.toContain(forbidden);
     }
@@ -366,7 +370,7 @@ describe("MCP tools over Streamable HTTP", () => {
     );
     expect(listed.workspaces).toHaveLength(1);
     expect(listed.workspaces[0].workspaceId).toBe(workspaceId);
-    expect(listed.workspaces[0].chatgptMode).toBe("readonly");
+    expect(listed.workspaces[0].chatgptMode).toBe("write-exec");
 
     // Selecting by id (single registered workspace) works…
     const byId = structuredJsonOf<{ workspaceId: string }>(

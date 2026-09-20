@@ -1,5 +1,81 @@
 # Changelog
 
+## v0.4.0 - 2026-09-20
+
+### Direct mode is now the default
+- The built-in `chatgptMode` default flips from `readonly` to
+  `write-exec`: out of the box ChatGPT can patch files (`apply_patch`)
+  and run gated commands (`run_command`) itself in its own conversation,
+  with no local agent needed. A workspace's own `.c2c.json` still wins,
+  then the global `~/.c2c.json`; set `"chatgptMode": "readonly"`
+  explicitly to go back to the observation-only connector — then the
+  write tools vanish from the catalog entirely, scopes granted or not.
+  Everything else about the tiers is unchanged (sensitive files denied
+  for writes, no shell, no network/privilege commands, no dangerous
+  tier). README / README_cn / CONTRIBUTING / skill template reordered to
+  present direct mode as the default and collaborative mode as the
+  opt-in.
+
+### Collaborative mode fixes (the "not smooth" list)
+- Session-slot leak: the dispatch conversation resolver and the
+  user-message verifier created a fresh `ControlPlaneBrowser` per call
+  and never released its pool slot — a long-lived bridge burned both
+  slots of the `dispatch` pool (default 2) after one or two dispatches,
+  after which every dispatch failed with `DISPATCH_UNVERIFIED` /
+  `CONVERSATION_UNRESOLVED` until restart. Short-lived peek drivers now
+  `dispose()` (close + release the slot); same for the watcher's
+  replaced/stopped drivers and `reportBlocked`.
+- `wait_directive` double-fire: the directive anchor was call-local, so
+  the same already-executed directive was handed out again on every
+  subsequent call (double execution). The anchor now lives on the driver
+  instance, is consumed before the directive is returned, and resets
+  only when `open_chat` navigates to a different conversation.
+- Stale replies after an idle-close relaunch: reopening the blank tab
+  reset the send anchor, so the pre-send reply looked fresh again and
+  got re-processed. The anchor now survives the relaunch (same
+  conversation, still valid).
+- `wait_reply` swallowed a login wall as a full 5-minute bare timeout;
+  it now returns `status: "error"` immediately with the reason (and
+  `read_reply` carries the note too). Both waits also stop overshooting
+  their deadline by a full poll interval.
+- Concurrent tool calls raced on one tab (the MCP SDK dispatches
+  handlers concurrently): interleaved `goto` mid-typing garbled sends,
+  and two simultaneous first-use launches on one profile stole each
+  other's live browser lock (same pid) and fought Chromium's own
+  singleton. Driver operations are now serialized per instance (long
+  polls sleep outside the chain), and launches per profile in-process.
+- The pinned watcher ignored a configured `dispatchMarker` and only
+  ever matched `@agent` — a user following the CLI's printed marker got
+  a dead watch. The marker now comes from the watched workspace's
+  config.
+- The watcher persisted a directive as executed *before* claiming the
+  conversation; when a tool-dispatched run held the claim, the directive
+  was silently dropped forever. The claim now comes first, and a busy
+  conversation parks the directive for the next cycle instead.
+- `Ctrl+C` on the bridge hung while a dispatched run was alive because
+  the watcher's `stop()` awaited the spawned child; a second signal now
+  force-exits, and `stop()` bounds its wait.
+- Interactive dispatch keystrokes went to whatever app was frontmost
+  (the task could get pasted+submitted into your ChatGPT tab). The
+  script now activates its own terminal app before pasting, releases
+  the conversation claim via an `EXIT`/`HUP` trap (window close no
+  longer wedges the claim for 4 hours), and only hands the script to
+  known terminal apps (an editor registered as a shell-script handler
+  used to "succeed" by opening it as text).
+- Chat URLs are normalized without trailing slashes, so `/c/<id>/` and
+  `/c/<id>` can no longer be treated as different conversations (which
+  let the watcher and `dispatch_agent` double-execute one conversation).
+- The dispatch marker now matches case-insensitively, consistent with
+  the @harness mention gate.
+- The dispatch claims registry (`sessions.json`) takes a short
+  cross-process lock for its read-modify-write cycles (the interactive
+  terminal's `dispatch release` races the bridge); dispatch spawns no
+  longer leak one file descriptor per run; `awehitch_chat_info` claims
+  its session slot before first browser use so slot >= 1 sessions no
+  longer report slot 0's chat; `listRecentConversations` no longer
+  clears the active task binding as a side effect; the control-plane
+  driver's login-wall notice is wired to the log.
+
 ## v0.3.1 - 2026-09-20
 
 ### Fixes

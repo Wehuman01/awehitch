@@ -56,6 +56,8 @@ export interface DispatchDriver {
   listRecentConversations(limit?: number): Promise<string[]>;
   sendMessage(text: string): Promise<unknown>;
   close(): Promise<void>;
+  /** Give up the session slot too (short-lived drivers); optional seam. */
+  dispose?(): Promise<void>;
 }
 
 export type DispatchSpawnFn = (
@@ -77,8 +79,14 @@ export interface DispatchWatcherOptions {
 export class DispatchWatcher {
   private running = false;
   private loopPromise: Promise<void> | null = null;
-  private cached: { root: string; driver: DispatchDriver } | null = null;
+  private cached: { root: string; driver: DispatchDriver; marker: string } | null = null;
   private wake: (() => void) | null = null;
+  /**
+   * A directive that arrived while another executor owned the conversation
+   * (a tool-dispatched run): kept for the next cycle instead of being
+   * silently dropped or double-fired.
+   */
+  private pendingDirective: string | null = null;
   private readonly pollMs: number;
   private readonly logger: Logger;
   private readonly injectedDriver: DispatchDriver | null;
@@ -102,6 +110,8 @@ export class DispatchWatcher {
           cwd: plan.cwd,
           stdio: ["ignore", out, out],
         });
+        // The child dups the fd; the watcher must not leak one per spawn.
+        fs.closeSync(out);
         onStart?.(child.pid);
         return await new Promise<SpawnResult>((resolve) => {
           child.on("exit", (code) => resolve({ exitCode: code }));
@@ -121,9 +131,23 @@ export class DispatchWatcher {
   async stop(): Promise<void> {
     this.running = false;
     this.wake?.();
-    if (this.loopPromise) await this.loopPromise;
+    if (this.loopPromise) {
+      // The loop may be awaiting a spawned run's exit (minutes, hours):
+      // shutdown must not hang on it. The run keeps going; the watcher
+      // stops watching.
+      await Promise.race([
+        this.loopPromise,
+        new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 5_000);
+          timer.unref?.();
+        }),
+      ]);
+    }
     this.loopPromise = null;
-    if (this.cached) await this.cached.driver.close().catch(() => undefined);
+    if (this.cached) {
+      const driver = this.cached.driver;
+      await (driver.dispose ? driver.dispose() : driver.close()).catch(() => undefined);
+    }
     this.cached = null;
   }
 
@@ -174,19 +198,31 @@ export class DispatchWatcher {
     });
   }
 
-  private driverFor(workspaceRoot: string): DispatchDriver {
+  private driverFor(workspaceRoot: string): { driver: DispatchDriver; marker: string } {
     if (this.cached?.root !== workspaceRoot) {
-      if (this.cached) void this.cached.driver.close().catch(() => undefined);
+      if (this.cached) {
+        const stale = this.cached.driver;
+        void (stale.dispose ? stale.dispose() : stale.close()).catch(() => undefined);
+      }
+      // The marker comes from the WATCHED workspace's config — the CLI
+      // prints "type this marker" from the same place, so honoring anything
+      // else would silently disarm the watch.
+      let dispatchMarker: string | undefined;
+      try {
+        dispatchMarker = new Workspace(workspaceRoot).projectConfig.dispatchMarker;
+      } catch {
+        // A vanished root is doctor's report; the default marker applies.
+      }
       const driver =
         this.injectedDriver ??
         new ControlPlaneBrowser(new Workspace(workspaceRoot).id, {}, this.logger, "dispatch");
-      this.cached = { root: workspaceRoot, driver };
+      this.cached = { root: workspaceRoot, driver, marker: resolveDispatchMarker(dispatchMarker) };
     }
-    return this.cached.driver;
+    return { driver: this.cached.driver, marker: this.cached.marker };
   }
 
   private async chatCycle(watch: DispatchWatch & { chatUrl: string; workspaceRoot: string }): Promise<void> {
-    const driver = this.driverFor(watch.workspaceRoot);
+    const { driver, marker } = this.driverFor(watch.workspaceRoot);
     // One-time protocol note per conversation: ChatGPT must know the
     // DIRECTIVE format before it can dispatch anything.
     if (watch.notedUrl !== watch.chatUrl) {
@@ -196,21 +232,36 @@ export class DispatchWatcher {
       this.logger.info(`dispatch watch armed on ${watch.chatUrl}`);
       return;
     }
-    const view = await driver.waitDirective({ timeoutMs: this.pollMs });
-    if (view.status !== "directive" || !view.directive) return;
-    if (view.directive === watch.lastDirective) return; // already executed (restart dedup)
+    let directive: string | null = null;
+    if (this.pendingDirective !== null) {
+      directive = this.pendingDirective;
+    } else {
+      const view = await driver.waitDirective({ timeoutMs: this.pollMs, marker });
+      if (view.status !== "directive" || !view.directive) return;
+      if (view.directive === watch.lastDirective) return; // already executed (restart dedup)
+      directive = view.directive;
+    }
 
-    const choice = pickHarness(watch, view.directive, this.installedFn());
+    const choice = pickHarness(watch, directive, this.installedFn());
     if (!choice.ok) {
       await driver.sendMessage(`[C2C]\nSTATE: BLOCKED\nRESULT: ${choice.reason}`);
-      writeDispatchWatch({ ...watch, lastDirective: view.directive });
+      writeDispatchWatch({ ...watch, lastDirective: directive });
+      this.pendingDirective = null;
       return;
     }
 
+    // Claim FIRST. Persisting before a failed claim would mark a directive
+    // as executed that nobody ever spawned — a silent drop. A claim held by
+    // a tool-dispatched run parks the directive for the next cycle instead.
+    if (!claimConversation(watch.chatUrl, choice.harness)) {
+      this.pendingDirective = directive;
+      this.logger.info(`dispatch watch deferred a directive: ${watch.chatUrl} has an active agent session`);
+      return;
+    }
     // Persist before spawning: a crash mid-run must not re-fire the task.
-    writeDispatchWatch({ ...watch, lastDirective: view.directive });
-    if (!claimConversation(watch.chatUrl, choice.harness)) return; // a tool-dispatched run owns it
-    const prompt = buildDispatchPrompt(view.directive, watch.chatUrl);
+    writeDispatchWatch({ ...watch, lastDirective: directive });
+    this.pendingDirective = null;
+    const prompt = buildDispatchPrompt(directive, watch.chatUrl);
     const plan = planSpawn(choice.harness, watch.workspaceRoot, prompt, watch.command);
     const result = await this.spawnFn(plan, (pid) => noteClaimPid(watch.chatUrl, pid));
     releaseConversation(watch.chatUrl);

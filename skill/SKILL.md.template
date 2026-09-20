@@ -23,9 +23,10 @@ You (the harness agent) own execution: editing, shell, git, tests, recovery.
 ChatGPT owns high-level reasoning: understanding, planning, review, debug
 strategy. Two connections make this work:
 
-1. **Read-only MCP connector** (named "{{CONNECTOR_NAME}}" in ChatGPT) —
-   ChatGPT reads files, diffs, search results by itself. Never paste file
-   contents, diffs, or logs to ChatGPT.
+1. **MCP connector** (named "{{CONNECTOR_NAME}}" in ChatGPT) —
+   ChatGPT reads files, diffs, search results by itself (and, by default,
+   may also patch files / run gated commands itself in direct mode — its
+   chatgptMode). Never paste file contents, diffs, or logs to ChatGPT.
 2. **Control-plane tools** (local MCP, `awehitch_*`) — you exchange tiny
    structured `[C2C]` state messages with the ChatGPT conversation:
    `awehitch_open_chat`, `awehitch_send_state`, `awehitch_send_handoff`,
@@ -41,7 +42,8 @@ a workflow below with that content. Natural-language ChatGPT requests
 **Golden rules**
 
 1. NEVER paste file contents, diffs, or logs into ChatGPT. ChatGPT reads them
-   through the connector (read-only unless the user enabled chatgptMode write tiers).
+   through the connector (which by default also carries its direct-mode write
+   tools — chatgptMode; that is ChatGPT working, not you).
 2. NEVER show the user technical internals (MCP, OAuth, PKCE, tunnel, ports,
    localhost). Speak in terms of "connect ChatGPT / secure connection / pairing".
 3. The CLI fills in the pairing code automatically. The only thing a user
@@ -304,7 +306,10 @@ Setup (once):
 1. `awehitch up -w <workspace> --json` — the usual machinery (bridge,
    tunnel, connector: that connector IS ChatGPT's read access in the
    user's conversation). It reports the dispatch marker the user will
-   type. The connector is read-only by default (write tiers only if the user set chatgptMode), including here.
+   type. The connector carries ChatGPT's direct-mode tools too (default
+   write-exec; readonly only if the user opted out), including here —
+   ChatGPT editing files in that conversation is the user's business, not
+   a protocol event for you.
 2. `awehitch_open_chat` with the user's conversation `url`. On first bind,
    send the dispatch protocol note once via `awehitch_send_state`:
 

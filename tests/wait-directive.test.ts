@@ -91,6 +91,30 @@ describe("waitDirective", () => {
     expect(view.directive).toBe("fix the login validation\nmigrate the checks");
   });
 
+  it("does not re-fire the same directive on the next call", async () => {
+    const dom: DomState = {
+      userText: "@agent fix the login validation",
+      assistantText: "[C2C]\nDIRECTIVE: fix the login validation",
+      generating: false,
+    };
+    const driver = driverFor(fakePage(dom));
+
+    const first = await driver.waitDirective({ timeoutMs: 60_000 });
+    expect(first.status).toBe("directive");
+
+    // Nothing changed on the page: a second wait must time out, not hand
+    // the same directive to the agent again (double execution).
+    const second = await driver.waitDirective({ timeoutMs: 0 });
+    expect(second.status).toBe("timeout");
+    expect(second.directive).toBeNull();
+
+    // New assistant output (the user re-authorized) fires again.
+    dom.assistantText = "[C2C]\nDIRECTIVE: also add tests";
+    const third = await driver.waitDirective({ timeoutMs: 60_000 });
+    expect(third.status).toBe("directive");
+    expect(third.directive).toBe("also add tests");
+  });
+
   it("times out (honestly) when no marker is present", async () => {
     const dom: DomState = {
       userText: "what do you think of the architecture?",

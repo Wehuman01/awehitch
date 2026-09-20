@@ -40,13 +40,13 @@ durable.
                          ▼          │
               ┌─────────────────────┐
               │    awehitch Bridge    │
-              │  MCP Server (RO)     │
+              │  MCP Server          │
               │  OAuth AS + PRM      │
               │  Pairing Manager     │
               │  Tunnel Manager      │
               │  Admin API (local)   │
               └────────┬────────────┘
-                       │ read-only
+                       │ reads + direct-mode writes
                        ▼
               ┌─────────────────────┐
               │   Local Workspace    │
@@ -63,8 +63,10 @@ durable.
 
 Principles:
 
-- **ChatGPT thinks. The agent works.** The bridge never re-implements a coding
-  harness.
+- **ChatGPT thinks — and by default acts.** Direct mode (`chatgptMode`,
+  default `write-exec`) lets ChatGPT patch files and run gated commands
+  itself; the bridge never re-implements a coding harness beyond those two
+  constrained write paths.
 - **Control plane decoupled from the harness.** Any harness that can call MCP
   tools can run the whole loop — the bar is "can call tools", not "has a
   built-in browser".
@@ -73,8 +75,9 @@ Principles:
   `awehitch_wait_reply`, `awehitch_read_reply`) plus read-only
   `awehitch_chat_info`. Polling is cheap (20–30 s), timeout ≠ failure, one tab,
   never resend, one chat per task.
-- **MCP = data plane**: ChatGPT pulls files/diffs/search itself. Read-only by
-  design — no write/exec tools exist.
+- **MCP = data plane**: ChatGPT pulls files/diffs/search itself, plus the two
+  direct-mode write tools (`apply_patch`, `run_command`) — present unless the
+  workspace opts into `readonly`; no other write surface exists.
 - **Workspace is the security boundary**: one bridge = one workspace = one
   token audience.
 
@@ -83,7 +86,7 @@ Module map (`src/`):
 | Module | Responsibility |
 | --- | --- |
 | `bridge/` | Express app, loopback-only listener, port fallback, runtime state, admin API |
-| `mcp/` | Data-plane MCP server (9 read-only tools), stateless Streamable HTTP |
+| `mcp/` | Data-plane MCP server (read tools + direct-mode `apply_patch` / `run_command` + `dispatch_agent`), stateless Streamable HTTP |
 | `control-plane/` | Playwright driver over the ChatGPT conversation + stdio MCP server (5 semantic tools); per-session browser profiles from a slot pool (`slot.ts`) behind cross-process locks, per-task chat bindings merged under a short lock |
 | `auth/` | OAuth 2.1 AS: discovery (RFC 8414), DCR (RFC 7591), code + PKCE (S256), refresh rotation, revocation (RFC 7009); tokens stored as SHA-256 hashes |
 | `pairing/` | Pairing-code lifecycle: CSPRNG, TTL, attempt limits, IP rate limit (keyed on the unforgeable last XFF hop), one-time use |

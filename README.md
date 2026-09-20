@@ -1,13 +1,13 @@
 <div align="center">
-  <h1>awehitch: Hitch the ChatGPT Web Brain to Any Coding Agent</h1>
-  <p><strong>ChatGPT thinks. Your agent works.</strong></p>
-  <p>Use the ChatGPT web subscription you already pay for as the planning and review layer — while any coding agent (codex / opencode / zcode) keeps full ownership of execution.</p>
+  <h1>awehitch: Hitch the ChatGPT Web Brain to Your Workspace</h1>
+  <p><strong>ChatGPT thinks — and by default, it acts.</strong></p>
+  <p>Use the ChatGPT web subscription you already pay for as a coding brain: in direct mode (the default) ChatGPT patches files and runs gated commands itself; with any coding agent (codex / opencode / zcode) it becomes the planning and review layer while the agent keeps full ownership of execution.</p>
   <p>
     <strong>English</strong> ·
     <a href="./README_cn.md">简体中文</a>
   </p>
   <p>
-    <img src="https://img.shields.io/badge/version-0.3.1-7C3AED?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-0.4.0-7C3AED?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/node-%E2%89%A520-0EA5E9?style=flat-square" alt="Node">
   </p>
   <p>
@@ -17,9 +17,9 @@
   </p>
 </div>
 
-> ChatGPT thinks. Your agent works.
+> ChatGPT thinks — and by default, it acts.
 
-awehitch hitches the ChatGPT web app onto any coding agent as its external brain: ChatGPT plans and reviews, the local agent executes. Your repository is never uploaded — ChatGPT reads exactly the lines it needs through a secure, OAuth-protected MCP connection to your workspace (**read-only by default**, with opt-in direct-write tiers). No API keys, no reverse proxy.
+awehitch hitches the ChatGPT web app onto your machine as a coding brain. In **direct mode (the default)**, ChatGPT edits files with structured patches and runs gated commands itself, right in its own conversation; in **collaborative mode** it plans and reviews while a local agent executes. Your repository is never uploaded — ChatGPT reads exactly the lines it needs through a secure, OAuth-protected MCP connection to your workspace. No API keys, no reverse proxy.
 
 ## Install
 
@@ -58,26 +58,39 @@ Please run awehitch and set it up for me automatically.
 
 Pairing and connector creation are fully automatic. The only action that may need you: logging in to ChatGPT in the popped-up window. After setup, everyday use requires zero commands.
 
-Then use your agent normally: "@chatgpt plan XXX for me". Casual asks work too — "using ChatGPT …", "ask ChatGPT …" / "问问 ChatGPT …"; the agent starts the service on demand when it is not running.
+No agent installed at all? That is the default experience: open your own ChatGPT conversation and just ask it to work on the connected workspace — it reads, patches and runs gated commands through the connector (direct mode, see below). Prefer an agent in the loop? Then use it normally: "@chatgpt plan XXX for me". Casual asks work too — "using ChatGPT …", "ask ChatGPT …" / "问问 ChatGPT …"; the agent starts the service on demand when it is not running.
 
 ## How it works
 
 ```
-远端大脑（ChatGPT 网页）
-      ↕  控制面：[C2C] 状态消息（<1 KB）
-控制面代理（本地，Playwright → 5 个语义化 MCP 工具）
-      ↕  工具调用（stdio MCP）
-本地 Agent（codex / opencode / zcode）
-      ↕  数据面：只读（默认）/ 可写（opt-in）MCP
-awehitch Bridge（本地，工作区网关 + OAuth + 隧道）
+Remote brain (ChatGPT web)
+      ↕  Control plane: [C2C] state messages (< 1 KB)      — collaborative mode
+Control-plane proxy (local, Playwright → 8 semantic MCP tools)
+      ↕  Tool calls (stdio MCP)
+Local agent (codex / opencode / zcode)
+      ↕  Data plane: direct-mode MCP (patches + gated commands;
+         readonly when you opt out) — serves both modes
+awehitch Bridge (local, workspace gateway + OAuth + tunnel)
 ```
 
 - **Control plane** — the agent and ChatGPT exchange tiny structured `[C2C]` messages (`INIT → PLAN → EXECUTED → REVIEW → DONE`). A local **control-plane proxy** wraps the ChatGPT web conversation (Playwright, dedicated profile) into eight semantic tools: `awehitch_open_chat`, `awehitch_send_state`, `awehitch_send_handoff`, `awehitch_wait_reply`, `awehitch_read_reply`, `awehitch_chat_info`, plus dispatch tools `awehitch_check_dispatch` / `awehitch_wait_directive`. One chat per task: a new TASK_ID automatically opens a fresh chat, and resuming the same task (across review iterations and agent restarts) always reuses its bound chat; when the old chat is lost, `awehitch_send_handoff` composes the resume brief from the local checkpoint (never files, diffs, or logs). Cheap DOM polling (20–30 s), timeouts are not failures, one tab, never resend. This decouples the original Codex-only browser control plane from any specific harness — an agent just needs "can call tools".
 - **Parallel by session** — every coding session gets its own ChatGPT conversation. Each harness has a small pool of browser profiles (seeded from the first logged-in profile, so one login covers all); a session claims a free slot at first use — slot 0 is the harness's own profile, extra concurrent sessions of the same harness (say, two opencode windows) get `<harness>-s1`, `-s2`… Task→chat bindings are merged under a short cross-process lock so a task always reopens its chat, while each session's current chat stays private. codex / opencode / zcode — and several instances of each — run planning loops at the same time. Raise the pool with `AWEHITCH_MAX_PARALLEL_SESSIONS` (default 2 per harness, max 16; each extra slot is one more Chromium window).
-- **Data plane** — ChatGPT pulls files, diffs, search results, test records itself through 10 read-only tools over an OAuth 2.1 + PKCE + dynamic-client-registration tunnel, plus the `dispatch_agent` tool (its own `dispatch.execute` scope) that starts a local agent when you ask for one. Independent review: after EXECUTED, ChatGPT inspects the real git diff — it never trusts "all tests passed". With direct mode enabled (below), the data plane additionally offers the `apply_patch` / `run_command` write tools.
+- **Data plane** — ChatGPT pulls files, diffs, search results, test records itself through the read tools over an OAuth 2.1 + PKCE + dynamic-client-registration tunnel, plus the direct-mode write tools `apply_patch` / `run_command` (present by default; absent only where `chatgptMode` is `readonly`) and the `dispatch_agent` tool (its own `dispatch.execute` scope) that starts a local agent when you ask for one. Independent review: after EXECUTED, ChatGPT inspects the real git diff — it never trusts "all tests passed".
 - **Adapters** — codex (`~/.codex/skills` + `config.toml` MCP + sandbox writable_roots), opencode (`~/.config/opencode` skill + `opencode.json` MCP), zcode (`~/.zcode/cli/config.json` mcpServers + skill). Each is thin; none import each other.
 
-### Collaborative mode — either side can start, no mode switch
+### Direct mode (pure ChatGPT) — the default, three tiers
+
+Out of the box, ChatGPT **acts directly**: in its own conversation it reads your workspace, edits files with structured patches and — at the default tier — runs gated commands. No local agent needed. The tier comes from `chatgptMode` (workspace `.c2c.json`, or the global `~/.c2c.json`); the default is `write-exec`. Tiers are monotonic; write tools are truthfully annotated (`readOnlyHint: false`):
+
+| Tier | What ChatGPT can do |
+| --- | --- |
+| `readonly` | Read tools + `dispatch_agent`. Structurally read-only — the write tools do not exist server-side. The opt-out for observation-only. |
+| `write` | Adds `apply_patch`: structured, atomic, rollback-safe multi-file patches (create / update / delete). An `update` requires `oldText` matching the current file exactly once; a stale patch is rejected whole. |
+| `write-exec` (default) | Adds `run_command`: argv passed straight to spawn (no shell — pipes, expansion and redirection are structurally impossible), a minimal environment (no inherited secrets), network clients and privilege escalation denied, git's network subcommands (push/fetch/pull/clone) denied, 60 s timeout by default, capped output. |
+
+What does not change in any tier: the sensitive-file policy (`.env*`, keys, SSH…) covers **writes** too — direct mode cannot touch them either; workspace boundaries and symlink checks stay; there is **no dangerous tier** — unlimited execution is a job for local sandboxed tools, and a remote web model deliberately does not get one. Write authority lives in your config file (never in something ChatGPT says), with matching OAuth scopes `workspace.write` / `exec.run`.
+
+### Collaborative mode (with a local agent) — either side can start, no mode switch
 
 The same machinery — bridge, tunnel, connector — serves one collaborative loop; which side initiates is a runtime fact, not two modes. The one invariant: **execution authority always comes from you**. Work from whichever side you like, even both at once:
 
@@ -90,18 +103,6 @@ Both sides share one @ syntax: **`@chatgpt` in your terminal hands the thinking 
 
 No agent session needs to be running, either — ChatGPT can start one for you. In **any** of your ChatGPT conversations, @-mention an executor with a task in your own message (`@opencode fix the login page`, `@codex …`, `@zcode …`); ChatGPT then calls its `dispatch_agent` connector tool, the bridge spawns that agent in the registered workspace, and the run reports back into the same conversation for ChatGPT's review. The @-mention is a **server-enforced hard gate**: before spawning, the bridge opens the conversation and reads YOUR latest message — only a real @-mention of the executor there dispatches. An @ ChatGPT wrote into its task parameter, or its own guess that you "want execution", is refused (`DISPATCH_UNAUTHORIZED`) and it falls back to its data-plane tools (read-only or the chatgptMode tiers); an unreadable conversation is refused too (fail closed). One conversation gets one agent session — a second dispatch there is refused until the current run reports. Nothing polls in the background: the tool call is the trigger, your @-mention is the authorization. Prefer an explicit, pinned conversation with the full marker + DIRECTIVE protocol loop? `awehitch dispatch watch <url>` still does that; `dispatch stop` unpins it. The two styles coexist (the tool defers to a pinned conversation), but the safe rule stays "one executor per conversation". (When ChatGPT cannot tell which conversation it is in, the bridge identifies it with one short local peek at your recent-conversations sidebar through your own logged-in profile; no third party is involved beyond ChatGPT itself.) Prefer to see the agent run? `awehitch dispatch launch interactive` opens the harness's own TUI in a Terminal window instead of a background run — the task is printed there and copied to the clipboard, so you can pick an aweswitch profile (aweswitch is a dependency: enabling interactive installs it via pip if missing) or keep talking to the agent in that window (`dispatch launch headless` restores the reporting background run).
 
-### Direct mode (pure ChatGPT) — three tiers, read-only by default
-
-No local agent installed? Let ChatGPT **act directly**: set `chatgptMode` in a workspace's `.c2c.json` and ChatGPT edits files with structured patches — and, at the top tier, runs gated commands — right in its own conversation. Tiers are monotonic; write tools are truthfully annotated (`readOnlyHint: false`):
-
-| Tier | What ChatGPT can do |
-| --- | --- |
-| `readonly` (default) | Read tools + `dispatch_agent`. Structurally read-only — the write tools do not exist server-side. |
-| `write` | Adds `apply_patch`: structured, atomic, rollback-safe multi-file patches (create / update / delete). An `update` requires `oldText` matching the current file exactly once; a stale patch is rejected whole. |
-| `write-exec` | Adds `run_command`: argv passed straight to spawn (no shell — pipes, expansion and redirection are structurally impossible), a minimal environment (no inherited secrets), network clients and privilege escalation denied, git's network subcommands (push/fetch/pull/clone) denied, 60 s timeout by default, capped output. |
-
-What does not change: the sensitive-file policy (`.env*`, keys, SSH…) covers **writes** too — direct mode cannot touch them either; workspace boundaries and symlink checks stay; there is **no dangerous tier** — unlimited execution is a job for local sandboxed tools, and a remote web model deliberately does not get one. Write authorization lives in your `.c2c.json` (never in something ChatGPT says), with matching OAuth scopes `workspace.write` / `exec.run`.
-
 ## Config
 
 Per-workspace `.c2c.json`:
@@ -113,12 +114,13 @@ Per-workspace `.c2c.json`:
   "browserIdleMinutes": 10,        // close the idle control-plane browser after N minutes (default 10)
   "dispatchMarker": "@agent",      // marker in YOUR message that authorizes the
                                    //   agent when it watches your conversation
-  "chatgptMode": "readonly"        // ChatGPT direct tier: readonly (default) / write / write-exec.
-                                   //   Write authority lives in your config file, never in ChatGPT's words
+  "chatgptMode": "write-exec"      // ChatGPT direct tier: write-exec (default) / write / readonly.
+                                   //   Set "readonly" to make the connector observation-only;
+                                   //   write authority always lives here, never in ChatGPT's words
 }
 ```
 
-`chatgptMode` can also live in a global `~/.c2c.json`, applying to every registered workspace; the workspace's own `.c2c.json` takes precedence — the global value only fills in where a workspace leaves the key unset, and with neither set the tier is `readonly`. Reconnect once (`awehitch up`) after changing either layer.
+`chatgptMode` can also live in a global `~/.c2c.json`, applying to every registered workspace; the workspace's own `.c2c.json` takes precedence — the global value only fills in where a workspace leaves the key unset, and with neither set the tier is `write-exec`. Reconnect once (`awehitch up`) after changing either layer.
 
 `.c2cignore` adds workspace-specific deny rules on top of the built-in sensitive-file policy (`.env*`, `.envrc`, keys, SSH, cloud credentials and the whole `.git/` directory are denied by default).
 
@@ -145,11 +147,11 @@ Agent/advanced commands (session / record / login / connector-setup / stop / pai
 ## Security
 
 - One bridge per machine, serving all of its registered workspaces: running `up` in another directory only adds it to the registry, never disrupting existing work. Every token is bound to the machine's bridge. The bridge binds 127.0.0.1 only — the public surface is HTTPS via the tunnel, protected by OAuth 2.1 + PKCE with dynamic client registration.
-- ChatGPT gets read-only scopes (`workspace.read`, `workspace.search`, `git.read`, `execution.read`, `offline_access`) plus `dispatch.execute`, which only starts an agent for YOUR @-mentioned request. Access tokens live 1 hour, refresh tokens rotate on every use, and only SHA-256 hashes are stored. Direct mode adds `workspace.write` / `exec.run` scopes, but the real gate is the workspace's `chatgptMode` — with the tier off, the write tools are absent from the catalog even with the scope granted. Token refresh keeps the grant up to date with the scopes the server supports, so upgrades ship without re-pairing the connector.
+- ChatGPT gets read scopes (`workspace.read`, `workspace.search`, `git.read`, `execution.read`, `offline_access`) plus `dispatch.execute` (only starts an agent for YOUR @-mentioned request) and — for the default direct mode — `workspace.write` / `exec.run`. Access tokens live 1 hour, refresh tokens rotate on every use, and only SHA-256 hashes are stored. The real gate is always the workspace's `chatgptMode`: with an explicit `"readonly"`, the write tools are absent from the catalog even with the scopes granted. Token refresh keeps the grant up to date with the scopes the server supports, so upgrades ship without re-pairing the connector.
 - Sensitive files (`.env*`, `.envrc`, keys, SSH, cloud credentials, the whole `.git/` directory…) are denied at every gate — reads, listings, search, diff and **writes** alike. `.env.example` is allowed; add your own rules via `.c2cignore`.
 - Pairing codes: ~40 bits, 5 attempts, one-time, 5-minute TTL, per-IP rate limit.
 - Collaborative-mode dispatch is a hard constraint: `dispatch_agent` only spawns after the bridge reads your own latest message and finds the executor @-mentioned there (an agent-injected [C2C] turn never counts); unreadable means no dispatch (fail closed). Without your @, ChatGPT can only work with its data-plane tools.
-- By default ChatGPT can never write files, delete files, run shell commands, commit, or install packages — those tools do not exist on the server. With direct mode (`chatgptMode`) the only write paths are `apply_patch` (structured, atomic, baseline-checked, sensitive files still denied) and `run_command` (no shell, minimal environment, network/privilege/destructive commands denied); there is no unlimited dangerous tier. `dispatch_agent` only starts a coding agent for a task the user @-mentioned; it takes no shell command.
+- In every tier the only write paths are `apply_patch` (structured, atomic, baseline-checked, sensitive files still denied) and `run_command` (no shell, minimal environment, network/privilege/destructive commands denied) — no other write surface exists server-side, and there is no unlimited dangerous tier. Want ChatGPT observation-only? Set `"chatgptMode": "readonly"` and the write tools vanish from the catalog entirely. `dispatch_agent` only starts a coding agent for a task the user @-mentioned; it takes no shell command.
 
 ## Troubleshooting
 

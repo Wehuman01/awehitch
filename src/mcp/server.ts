@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import { Workspace, WorkspaceError, chatgptModeTier } from "../workspace/manager.js";
+import { Workspace, WorkspaceError, chatgptModeTier, DEFAULT_CHATGPT_MODE } from "../workspace/manager.js";
 import { searchWorkspace } from "../workspace/search.js";
 import { gitDiff, gitInfo, gitStatus, type DiffMode } from "../workspace/git.js";
 import { applyWorkspacePatch, type PatchEdit } from "../workspace/patch.js";
@@ -61,8 +61,8 @@ function requireMode(workspace: Workspace, tier: 1 | 2, tool: string): ToolResul
   if (chatgptModeTier(workspace.projectConfig.chatgptMode) < tier) {
     return fail(
       "MODE_DISABLED",
-      `${tool} is disabled for workspace '${workspace.name}': its .c2c.json does not set chatgptMode ` +
-        (tier === 2 ? "to 'write-exec'." : "to 'write' (or 'write-exec').")
+      `${tool} is disabled for workspace '${workspace.name}': its chatgptMode is 'readonly'. ` +
+        `Set chatgptMode to ${tier === 2 ? "'write-exec'" : "'write' (or 'write-exec')"} in its .c2c.json to enable.`
     );
   }
   return null;
@@ -337,7 +337,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
           workspaceName: workspace.name,
           rootAlias: "workspace:/",
           rootPath: workspace.root,
-          chatgptMode: workspace.projectConfig.chatgptMode ?? "readonly",
+          chatgptMode: workspace.projectConfig.chatgptMode ?? DEFAULT_CHATGPT_MODE,
         })),
       });
     }

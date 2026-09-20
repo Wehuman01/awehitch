@@ -75,6 +75,14 @@ export type ChatgptMode = "readonly" | "write" | "write-exec";
 
 export const CHATGPT_MODES: readonly ChatgptMode[] = ["readonly", "write", "write-exec"];
 
+/**
+ * The built-in default tier: direct mode at full strength. The workspace's
+ * own .c2c.json wins, then the global ~/.c2c.json; only when neither says
+ * anything does this apply. Opt back into the conservative behavior with
+ * `"chatgptMode": "readonly"`.
+ */
+export const DEFAULT_CHATGPT_MODE: ChatgptMode = "write-exec";
+
 export function chatgptModeTier(mode: ChatgptMode | undefined): number {
   switch (mode) {
     case "write":
@@ -95,7 +103,7 @@ export interface ProjectConfig {
    * authorizes the agent to act on a dispatch. Dispatch authority is the
    * user's, never ChatGPT's — see control-plane/dispatch.ts. */
   dispatchMarker?: string;
-  /** What ChatGPT may do directly (see ChatgptMode). Default: readonly. */
+  /** What ChatGPT may do directly (see ChatgptMode). Default: write-exec. */
   chatgptMode?: ChatgptMode;
 }
 
@@ -176,9 +184,10 @@ export class Workspace {
     this.id = createHash("sha256").update(normCase(real)).digest("hex").slice(0, 12);
     this.ignoreRules = new IgnoreRules(real);
     this.projectConfig = parseProjectConfig(readJsonIfExists<unknown>(path.join(real, ".c2c.json")));
-    // Directory config wins; the global ~/.c2c.json fills in what it left unset.
+    // Directory config wins; the global ~/.c2c.json fills in what it left
+    // unset; the built-in default (direct mode) applies when both are silent.
     if (!this.projectConfig.chatgptMode) {
-      this.projectConfig.chatgptMode = readGlobalChatgptMode();
+      this.projectConfig.chatgptMode = readGlobalChatgptMode() ?? DEFAULT_CHATGPT_MODE;
     }
     this.name = this.projectConfig.name ?? path.basename(real);
   }

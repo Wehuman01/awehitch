@@ -93,7 +93,7 @@ describe("ensureConversationOpen recovers a blank tab after relaunch", () => {
     const page = fakePage("about:blank");
     const d = driverFor(page);
 
-    await (d as unknown as { ensureConversationOpen: (p: Page) => Promise<void> }).ensureConversationOpen(page);
+    await (d as unknown as { ensureConversationOpenLocked: (p: Page) => Promise<void> }).ensureConversationOpenLocked(page);
 
     expect((page.goto as unknown as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toBe(
       "https://chatgpt.com/c/saved"
@@ -104,7 +104,7 @@ describe("ensureConversationOpen recovers a blank tab after relaunch", () => {
     const page = fakePage("about:blank");
     const d = driverFor(page);
 
-    await (d as unknown as { ensureConversationOpen: (p: Page) => Promise<void> }).ensureConversationOpen(page);
+    await (d as unknown as { ensureConversationOpenLocked: (p: Page) => Promise<void> }).ensureConversationOpenLocked(page);
 
     expect((page.goto as unknown as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toBe(
       "https://chatgpt.com/"
@@ -115,7 +115,7 @@ describe("ensureConversationOpen recovers a blank tab after relaunch", () => {
     const page = fakePage("https://chatgpt.com/");
     const d = driverFor(page);
 
-    await (d as unknown as { ensureConversationOpen: (p: Page) => Promise<void> }).ensureConversationOpen(page);
+    await (d as unknown as { ensureConversationOpenLocked: (p: Page) => Promise<void> }).ensureConversationOpenLocked(page);
 
     expect(page.goto as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
@@ -126,11 +126,53 @@ describe("ensureConversationOpen recovers a blank tab after relaunch", () => {
     const page = fakePage("about:blank");
     const d = driverFor(page, "codex");
 
-    await (d as unknown as { ensureConversationOpen: (p: Page) => Promise<void> }).ensureConversationOpen(page);
+    await (d as unknown as { ensureConversationOpenLocked: (p: Page) => Promise<void> }).ensureConversationOpenLocked(page);
 
     expect((page.goto as unknown as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toBe(
       "https://chatgpt.com/c/codex"
     );
+  });
+
+  it("keeps the send anchor: a relaunch must not make the pre-send reply look fresh", async () => {
+    applyChatBinding(WS, "https://chatgpt.com/c/saved", "task-1");
+    const page = fakePage("about:blank");
+    const d = driverFor(page);
+    const anchor = { count: 2, text: "[C2C]\nSTATE: PLAN\npre-send turn" };
+    (d as unknown as { replyAnchor: unknown }).replyAnchor = anchor;
+
+    await (d as unknown as { ensureConversationOpenLocked: (p: Page) => Promise<void> }).ensureConversationOpenLocked(page);
+
+    // The reopen lands in the SAME conversation the anchor was taken in, so
+    // the stale-reply guard survives browser idle closes.
+    expect((d as unknown as { replyAnchor: unknown }).replyAnchor).toBe(anchor);
+  });
+});
+
+describe("openConversation resets anchors when it navigates elsewhere", () => {
+  it("drops the send and directive anchors on a conversation switch", async () => {
+    const page = fakePage("https://chatgpt.com/c/old-chat");
+    const d = driverFor(page);
+    const anchor = { count: 2, text: "old" };
+    (d as unknown as { replyAnchor: unknown }).replyAnchor = anchor;
+    (d as unknown as { directiveAnchor: unknown }).directiveAnchor = { count: 2, text: "old" };
+
+    await d.openConversation("https://chatgpt.com/c/new-chat", { taskId: "t2" });
+
+    expect((d as unknown as { replyAnchor: unknown }).replyAnchor).toBeNull();
+    expect((d as unknown as { directiveAnchor: unknown }).directiveAnchor).toBeNull();
+  });
+
+  it("keeps both anchors when already on the target conversation", async () => {
+    const page = fakePage("https://chatgpt.com/c/same-chat");
+    const d = driverFor(page);
+    const anchor = { count: 1, text: "x" };
+    (d as unknown as { replyAnchor: unknown }).replyAnchor = anchor;
+    (d as unknown as { directiveAnchor: unknown }).directiveAnchor = { count: 1, text: "x" };
+
+    await d.openConversation("https://chatgpt.com/c/same-chat");
+
+    expect((d as unknown as { replyAnchor: unknown }).replyAnchor).toBe(anchor);
+    expect((d as unknown as { directiveAnchor: unknown }).directiveAnchor).toEqual({ count: 1, text: "x" });
   });
 });
 
