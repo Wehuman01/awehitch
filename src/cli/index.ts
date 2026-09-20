@@ -709,7 +709,7 @@ program
       return;
     }
     say("");
-    say('From now on, ask your agent to "use ChatGPT to plan XXX".');
+    say('From now on, ask your agent to "use ChatGPT to plan XXX" — or just prefix it with @chatgpt.');
     const watchMode = readDispatchWatch()?.mode ?? "off";
     if (watchMode === "chat") {
       say(`One pinned conversation is watched: ${dispatchMarker} there dispatches work (\`awehitch dispatch stop\` unpins it).`);
@@ -926,7 +926,7 @@ dispatchCmd
       return;
     }
     check(style === "interactive"
-      ? "Dispatches now open the agent's TUI in a Terminal window with an aweswitch profile picker (task printed + copied to the clipboard; no automatic [C2C] report)"
+      ? "Dispatches now open the agent's TUI in a Terminal window with an aweswitch profile picker; the task is pasted into the agent and submitted automatically (clipboard fallback; no automatic [C2C] report)"
       : "Dispatches now run in the background and report [C2C] back into the conversation");
   });
 

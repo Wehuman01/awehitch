@@ -100,7 +100,7 @@ export function buildCommandScript(launch: InteractiveLaunch, id: string): { scr
   // aweswitch launch mode takes the profile name only — its positional args
   // select a model, they are NOT passed through to the agent. The script
   // already cd'd into the workspace, which the launched TUI inherits.
-  const profileMenu = profiles.length
+  const profilePicker = profiles.length
     ? [
         'PROFILE=""',
         `profiles=(${profiles.map(shellQuote).join(" ")})`,
@@ -111,22 +111,45 @@ export function buildCommandScript(launch: InteractiveLaunch, id: string): { scr
         '  PROFILE=${profiles[reply]}',
         '  print -- "launching with aweswitch profile: $PROFILE"',
         "fi",
-        'if [[ -n "$PROFILE" ]]; then aweswitch "$PROFILE"; else ' + tuiLine + "; fi",
       ]
-    : [tuiLine];
-  // With a dispatching conversation, the claim on it must be released when
-  // this TUI exits — so the TUI runs in the foreground (no exec) and the
-  // release runs after. Without one there is nothing to release; keep exec.
-  const runTui = launch.chatUrl
-    ? [...profileMenu, `awehitch dispatch release ${shellQuote(launch.chatUrl)} >/dev/null 2>&1`]
-    : profileMenu.map((line) => (line === tuiLine ? `exec ${line}` : line));
+    : [];
+
+  let runTui: string[];
+  if (launch.chatUrl) {
+    // A dispatched TUI cannot take the task as argv (none of the three
+    // TUIs accepts an initial prompt), so the script pastes the clipboard
+    // task into the freshly opened TUI and submits it — best effort via
+    // System Events; when macOS denies that, the printed fallback tells
+    // the user to paste it themselves. The TUI runs in the background so
+    // the conversation claim is released after `wait` when it exits.
+    const launchTui = profiles.length
+      ? [`if [[ -n "$PROFILE" ]]; then aweswitch "$PROFILE" & else ${tuiLine} & fi`]
+      : [`${tuiLine} &`];
+    runTui = [
+      ...profilePicker,
+      ...launchTui,
+      "AGENT=$!",
+      "sleep 8",
+      "osascript -e 'tell application \"System Events\" to keystroke \"v\" using command down' >/dev/null 2>&1",
+      "sleep 1",
+      "osascript -e 'tell application \"System Events\" to keystroke return' >/dev/null 2>&1",
+      "wait $AGENT",
+      `awehitch dispatch release ${shellQuote(launch.chatUrl)} >/dev/null 2>&1`,
+    ];
+  } else if (profiles.length) {
+    runTui = [...profilePicker, `if [[ -n "$PROFILE" ]]; then exec aweswitch "$PROFILE"; else exec ${tuiLine}; fi`];
+  } else {
+    runTui = [`exec ${tuiLine}`];
+  }
 
   const script = [
     "#!/bin/zsh",
     `cd ${shellQuote(launch.workspaceRoot)}`,
     "clear",
     `cat ${shellQuote(promptPath)}`,
-    `printf '\\n———— prompt copied to the clipboard — paste it into the agent below ————\\n\\n'`,
+    launch.chatUrl
+      ? `printf '\\n———— the task will be pasted into the agent automatically; if it does not start within a few seconds it is on the clipboard — paste and press Enter ————\\n\\n'`
+      : `printf '\\n———— prompt copied to the clipboard — paste it into the agent below ————\\n\\n'`,
     `pbcopy < ${shellQuote(promptPath)}`,
     ...runTui,
     "",

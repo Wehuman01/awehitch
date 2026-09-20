@@ -48,10 +48,10 @@ describe("interactive dispatch script", () => {
     expect(script).toContain("profiles=('oc-glm' 'oc-deepseek')");
     expect(script).toContain('printf "  %2d) %s\\n" "$i" "$p"');
     expect(script).toContain("aweswitch");
-    expect(script).toMatch(/then aweswitch "\$PROFILE"; else 'opencode'; fi/);
+    expect(script).toMatch(/exec aweswitch "\$PROFILE"; else exec 'opencode'/);
   });
 
-  it("releases the conversation claim after the TUI exits when dispatched from a chat", () => {
+  it("auto-pastes the task into the dispatched TUI and releases the claim after it exits", () => {
     const { script } = buildCommandScript(
       {
         harness: "opencode",
@@ -63,7 +63,28 @@ describe("interactive dispatch script", () => {
       "test4"
     );
     expect(script).not.toContain("exec ");
-    expect(script).toMatch(/'opencode'\nawehitch dispatch release 'https:\/\/chatgpt\.com\/c\/abc-123' >\/dev\/null 2>&1\n?$/);
+    expect(script).toContain("'opencode' &");
+    expect(script).toContain("AGENT=$!");
+    expect(script).toContain('keystroke "v" using command down');
+    expect(script).toContain("keystroke return");
+    expect(script).toContain("wait $AGENT");
+    expect(script).toMatch(/awehitch dispatch release 'https:\/\/chatgpt\.com\/c\/abc-123' >\/dev\/null 2>&1\n?$/);
+  });
+
+  it("auto-pastes after the aweswitch picker too, launching it in the background", () => {
+    const { script } = buildCommandScript(
+      {
+        harness: "opencode",
+        workspaceRoot: "/tmp",
+        prompt: "x",
+        chatUrl: "https://chatgpt.com/c/abc-123",
+        aweswitchProfiles: ["oc-glm"],
+      },
+      "test5"
+    );
+    expect(script).toContain('aweswitch "$PROFILE" &');
+    expect(script).toContain('keystroke "v" using command down');
+    expect(script).not.toContain("exec ");
   });
 
   it("refuses non-macOS honestly", async () => {

@@ -152,7 +152,7 @@ export function createDispatchToolHandler(deps: DispatchToolDeps) {
         ok: true,
         harness,
         chatUrl,
-        message: `Opened an interactive ${harness} terminal for this conversation (workspace ${opts.workspace.root}). The task is printed there and copied to the clipboard; the window first offers an aweswitch profile picker (Enter launches plain), then the user pastes the task into the agent. The conversation stays bound to that session until its terminal closes. No automatic [C2C] report will be posted — the user reports back from that session.`,
+        message: `Opened an interactive ${harness} terminal for this conversation (workspace ${opts.workspace.root}). The window first offers an aweswitch profile picker (Enter launches plain), then the task is pasted into the agent and submitted automatically; if that fails it stays on the clipboard. The conversation stays bound to that session until its terminal closes. No automatic [C2C] report will be posted — the user reports back from that session.`,
       };
     }
 

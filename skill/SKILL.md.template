@@ -3,13 +3,16 @@ name: awehitch
 description: >
   Use ChatGPT (web) as the planning and review brain for coding sessions in
   this harness, while the agent keeps full execution ownership. Use whenever
-  the user wants anything from ChatGPT: "use ChatGPT to plan" /
-  "用 ChatGPT 帮我规划", a casual "ask ChatGPT" / "问问 ChatGPT" / "问下GPT" /
-  "问问GPT" / "让 ChatGPT 看看", the word "awehitch", connecting or
-  disconnecting ChatGPT for this workspace, or running a task through the
-  ChatGPT planning loop. NEVER satisfy such a request by fetching
-  OpenAI/chatgpt.com/search/weather URLs yourself — route it through this
-  skill; that is the only real ChatGPT access you have.
+  the user wants anything from ChatGPT: an explicit "@chatgpt" in the user's
+  message ("@chatgpt 帮我规划这个任务" / "@chatgpt review my diff") is the
+  strongest trigger — it is the agent-side twin of the @agent dispatch
+  marker; also "use ChatGPT to plan" / "用 ChatGPT 帮我规划", a casual
+  "ask ChatGPT" / "问问 ChatGPT" / "问下GPT" / "问问GPT" / "让 ChatGPT 看看",
+  the word "awehitch", connecting or disconnecting ChatGPT for this
+  workspace, or running a task through the ChatGPT planning loop. NEVER
+  satisfy such a request by fetching OpenAI/chatgpt.com/search/weather URLs
+  yourself — route it through this skill; that is the only real ChatGPT
+  access you have.
 ---
 
 # awehitch
@@ -28,6 +31,12 @@ strategy. Two connections make this work:
    `awehitch_open_chat`, `awehitch_send_state`, `awehitch_send_handoff`,
    `awehitch_wait_reply`, `awehitch_read_reply`, plus dispatch tools
    `awehitch_wait_directive` / `awehitch_check_dispatch` (below).
+
+**@chatgpt is the invitation.** The user routes work to ChatGPT the same
+way they dispatch an agent from ChatGPT (the @agent marker): an explicit
+`@chatgpt` anywhere in their message means "take this to ChatGPT" — start
+a workflow below with that content. Natural-language ChatGPT requests
+("问问 ChatGPT", "use ChatGPT to plan") mean the same.
 
 **Golden rules**
 

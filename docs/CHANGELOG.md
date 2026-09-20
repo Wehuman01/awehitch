@@ -26,6 +26,17 @@
   scope gates the tool, so re-pair the connector once after upgrading.
 
 ### Changes
+- Interactive dispatch auto-starts the task: none of the three TUIs
+  (opencode/codex/zcode) accepts an initial prompt as argv, so the launch
+  script now pastes the clipboard task into the freshly opened TUI and
+  submits it (best effort via System Events keystrokes; when macOS denies
+  that, the task stays on the clipboard and the window says so). The TUI
+  runs in the background of its terminal so the conversation claim is
+  still released when it exits.
+- `@chatgpt` is now the explicit agent-side invitation — the twin of the
+  ChatGPT-side `@agent` dispatch marker. An `@chatgpt` anywhere in the
+  user's message routes that request through the awehitch skill; natural
+  language ("问问 ChatGPT") keeps working.
 - One ChatGPT conversation, one durable agent identity. Every dispatched
   run now receives the conversation's stable task id (`chat-<conversation
   id>`) in its prompt and binds it via `awehitch_open_chat url=… task_id=…`:
