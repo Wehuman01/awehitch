@@ -118,6 +118,8 @@ Per-workspace `.c2c.json`:
 }
 ```
 
+`chatgptMode` can also live in a global `~/.c2c.json`, applying to every registered workspace; the workspace's own `.c2c.json` takes precedence — the global value only fills in where a workspace leaves the key unset, and with neither set the tier is `readonly`. Reconnect once (`awehitch up`) after changing either layer.
+
 `.c2cignore` adds workspace-specific deny rules on top of the built-in sensitive-file policy (`.env*`, `.envrc`, keys, SSH, cloud credentials and the whole `.git/` directory are denied by default).
 
 The idle browser close is deliberate: the control-plane browser is a machine-global resource, released while idle and relaunched (reopening the bound chat) on the next tool call. For a one-shot override without editing `.c2c.json`: `awehitch control-plane --browser-idle-minutes <N>`.

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import readline from "node:readline";
@@ -133,6 +134,26 @@ const DEFAULT_MAX_LINES = 400;
 const HARD_MAX_LINES = 2000;
 const DEFAULT_MAX_BYTES = 256 * 1024;
 
+/**
+ * The machine-level fallback config: `~/.c2c.json` (override with
+ * AWEHITCH_GLOBAL_CONFIG, used by tests). A workspace's own `.c2c.json`
+ * wins over it for every key it sets — including chatgptMode.
+ */
+export function globalConfigFile(): string {
+  const override = process.env.AWEHITCH_GLOBAL_CONFIG;
+  if (override && override.trim() !== "") return path.resolve(override);
+  return path.join(os.homedir(), ".c2c.json");
+}
+
+function readGlobalChatgptMode(): ChatgptMode | undefined {
+  const raw = readJsonIfExists<unknown>(globalConfigFile());
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const mode = (raw as Record<string, unknown>).chatgptMode;
+  return typeof mode === "string" && (CHATGPT_MODES as readonly string[]).includes(mode)
+    ? (mode as ChatgptMode)
+    : undefined;
+}
+
 export class Workspace {
   readonly root: string;
   readonly id: string;
@@ -155,6 +176,10 @@ export class Workspace {
     this.id = createHash("sha256").update(normCase(real)).digest("hex").slice(0, 12);
     this.ignoreRules = new IgnoreRules(real);
     this.projectConfig = parseProjectConfig(readJsonIfExists<unknown>(path.join(real, ".c2c.json")));
+    // Directory config wins; the global ~/.c2c.json fills in what it left unset.
+    if (!this.projectConfig.chatgptMode) {
+      this.projectConfig.chatgptMode = readGlobalChatgptMode();
+    }
     this.name = this.projectConfig.name ?? path.basename(real);
   }
 

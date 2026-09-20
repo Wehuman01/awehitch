@@ -118,6 +118,8 @@ awehitch Bridge（本地，工作区网关 + OAuth + 隧道）
 }
 ```
 
+`chatgptMode` 也可以写在全局 `~/.c2c.json`，对所有注册工作区生效；工作区自己的 `.c2c.json` 优先——目录没写这个键才落到全局，两边都没写就是 `readonly`。改任一层都要重连一次（`awehitch up`）才生效。
+
 `.c2cignore` 在内置敏感文件策略（`.env*`、`.envrc`、密钥、SSH、云凭证以及整个 `.git/` 目录默认拒绝）之上追加你自己的规则。
 
 浏览器空闲即关是刻意设计：控制面浏览器是机器级独占资源，空闲时释放，下次工具调用会自动重启并恢复绑定的聊天。想临时换时长（不改 `.c2c.json`）：`awehitch control-plane --browser-idle-minutes <N>`。

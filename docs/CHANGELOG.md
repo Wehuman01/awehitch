@@ -14,6 +14,10 @@
   user's @, ChatGPT's only path is its own data-plane tools.
 
 ### Direct mode (pure ChatGPT)
+- `chatgptMode` can now be set globally in `~/.c2c.json` and applies to
+  every registered workspace; a workspace's own `.c2c.json` wins when it
+  sets the key, and an unset key everywhere stays `readonly`
+  (`AWEHITCH_GLOBAL_CONFIG` overrides the global path for tests).
 - New `chatgptMode` in `.c2c.json` with three monotonic tiers, keeping
   read-only as the default and the structural story unchanged:
   - `readonly` (default): exactly today's connector — read tools plus

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -186,8 +186,7 @@ describe("chatgptMode write tools", () => {
   });
 });
 
-describe("chatgptMode readonly default", () => {
-  it("a scope grant alone does not enable writes on a readonly workspace", async () => {
+describe("chatgptMode readonly default", () => {  it("a scope grant alone does not enable writes on a readonly workspace", async () => {
     const readonlyRoot = makeTmpDir("mode-readonly");
     write(readonlyRoot, ".c2c.json", JSON.stringify({ name: "ro-ws" }));
     const roBridge = await startBridge({
@@ -212,6 +211,88 @@ describe("chatgptMode readonly default", () => {
       await roClient.close();
       await roBridge.close();
       cleanup(readonlyRoot);
+    }
+  });
+});
+
+describe("chatgptMode global fallback (~/.c2c.json)", () => {
+  const realEnv = process.env.AWEHITCH_GLOBAL_CONFIG;
+  afterEach(() => {
+    if (realEnv === undefined) delete process.env.AWEHITCH_GLOBAL_CONFIG;
+    else process.env.AWEHITCH_GLOBAL_CONFIG = realEnv;
+  });
+
+  async function bridgeFor(root: string): Promise<{ bridge: Bridge; token: string }> {
+    const bridge = await startBridge({
+      workspaceRoots: [root],
+      port: 0,
+      persistRuntime: false,
+      authStoreFile: path.join(makeTmpDir("auth-g"), "store.json"),
+    });
+    const tokens = bridge.authStore.issueTokens({ clientId: "g-client", scopes: ["workspace.read", "workspace.write", "exec.run"] });
+    return { bridge, token: tokens.accessToken };
+  }
+
+  async function toolNames(bridge: Bridge, token: string): Promise<string[]> {
+    const c = new Client({ name: "g-test", version: "1.0.0" });
+    await c.connect(
+      new StreamableHTTPClientTransport(new URL(`${bridge.localBaseUrl()}/mcp`), {
+        requestInit: { headers: { authorization: `Bearer ${token}` } },
+      })
+    );
+    try {
+      return (await c.listTools()).tools.map((t) => t.name);
+    } finally {
+      await c.close();
+    }
+  }
+
+  it("global write applies to workspaces without their own chatgptMode", async () => {
+    const globalFile = path.join(makeTmpDir("global"), "c2c.json");
+    fs.writeFileSync(globalFile, JSON.stringify({ chatgptMode: "write" }));
+    process.env.AWEHITCH_GLOBAL_CONFIG = globalFile;
+    const root = makeTmpDir("global-ws");
+    write(root, ".c2c.json", JSON.stringify({ name: "no-mode" }));
+    const { bridge, token } = await bridgeFor(root);
+    try {
+      const names = await toolNames(bridge, token);
+      expect(names).toContain("apply_patch");
+      expect(names).not.toContain("run_command");
+    } finally {
+      await bridge.close();
+      cleanup(root);
+    }
+  });
+
+  it("the workspace's own chatgptMode overrides the global one", async () => {
+    const globalFile = path.join(makeTmpDir("global2"), "c2c.json");
+    fs.writeFileSync(globalFile, JSON.stringify({ chatgptMode: "write-exec" }));
+    process.env.AWEHITCH_GLOBAL_CONFIG = globalFile;
+    const root = makeTmpDir("global-ws-strict");
+    write(root, ".c2c.json", JSON.stringify({ chatgptMode: "readonly" }));
+    const { bridge, token } = await bridgeFor(root);
+    try {
+      const names = await toolNames(bridge, token);
+      expect(names).not.toContain("apply_patch");
+      expect(names).not.toContain("run_command");
+    } finally {
+      await bridge.close();
+      cleanup(root);
+    }
+  });
+
+  it("an invalid global value is ignored (readonly default)", async () => {
+    const globalFile = path.join(makeTmpDir("global3"), "c2c.json");
+    fs.writeFileSync(globalFile, JSON.stringify({ chatgptMode: "yolo" }));
+    process.env.AWEHITCH_GLOBAL_CONFIG = globalFile;
+    const root = makeTmpDir("global-ws-bad");
+    const { bridge, token } = await bridgeFor(root);
+    try {
+      const names = await toolNames(bridge, token);
+      expect(names).not.toContain("apply_patch");
+    } finally {
+      await bridge.close();
+      cleanup(root);
     }
   });
 });
