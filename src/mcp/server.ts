@@ -658,11 +658,12 @@ export function createMcpServer(ctx: McpContext): McpServer {
       title: "Dispatch a coding agent",
       description:
         `Start a local coding agent (codex / opencode / zcode) to EXECUTE work in the registered ` +
-        `workspace, bound to this conversation. Call it ONLY when the user's own message asks for ` +
-        `execution — typically an @-mention (@opencode, @codex, @zcode) with a task; the task text ` +
-        `is the user's requested work, not yours. One conversation gets one agent session: later ` +
-        `calls here are refused until the current run posts its [C2C] EXECUTED report. The run ` +
-        `reports back into this conversation automatically. ${UNTRUSTED_NOTE}`,
+        `workspace, bound to this conversation. HARD GATE: the bridge verifies that the user's own ` +
+        `latest message in this conversation @-mentions the executor (@opencode, @codex, @zcode) — ` +
+        `your task text alone never authorizes a dispatch; without the user's @-mention the call is ` +
+        `refused and you should do the work with your data-plane tools instead. One conversation gets ` +
+        `one agent session: later calls here are refused until the current run posts its [C2C] EXECUTED ` +
+        `report. The run reports back into this conversation automatically. ${UNTRUSTED_NOTE}`,
       inputSchema: {
         workspace: selector,
         task: z.string().min(1).describe("The concrete task for the agent, in the user's words"),

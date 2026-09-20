@@ -2,14 +2,17 @@
  * The `dispatch_agent` connector tool: ChatGPT itself starts the agent.
  *
  * The user @-mentions an executor in their own message ("@opencode fix the
- * login page"); ChatGPT calls this tool with the task (and the named
- * harness). The bridge spawns the harness non-interactively in the
- * workspace, bound to THIS conversation — one conversation, one agent
- * session. No background watching: the tool call is the trigger, the user's
- * own @-mention is the authorization.
+ * login page"); ChatGPT calls this tool with the task. The authorization is
+ * a HARD server-side constraint, not a prompt convention: before spawning,
+ * the bridge reads the conversation's latest USER message and requires the
+ * @-mention there. ChatGPT's own text — or an @-mention it wrote into the
+ * task parameter — never dispatches anything. Without the user's @, the only
+ * thing ChatGPT can do is its own data-plane tools (read-only, or the
+ * chatgptMode write tiers).
  */
 
 import { ControlPlaneBrowser } from "../control-plane/browser.js";
+import { isAgentInjected } from "../control-plane/dispatch.js";
 import { normalizeChatUrl } from "../control-plane/state.js";
 import { detectHarnesses } from "../adapters/detect.js";
 import { HARNESS_IDS, type HarnessId } from "../adapters/paths.js";
@@ -30,11 +33,21 @@ import {
   type SpawnResult,
 } from "./spawn.js";
 
+/** What the verifier could (or could not) read from the conversation. */
+export type UserMessageView =
+  | { readable: true; text: string | null }
+  | { readable: false; reason: string };
+
 export interface DispatchToolDeps {
   installedHarnesses(): HarnessId[];
   spawn(plan: SpawnPlan, onStart?: (pid: number | undefined) => void): Promise<SpawnResult>;
   /** Conversations served by the explicitly pinned watcher; dispatch refuses those. */
   watchedConversations(): string[];
+  /**
+   * Read the conversation's latest USER (human) message — the only text that
+   * can authorize a dispatch. `readable: false` fails closed.
+   */
+  readUserMessage(chatUrl: string): Promise<UserMessageView>;
   /** How a dispatch starts the agent (visible TUI vs background run). */
   launchStyle(): DispatchLaunchStyle;
   /** Open the harness TUI in a visible terminal; false means it failed. */
@@ -74,36 +87,6 @@ export function createDispatchToolHandler(deps: DispatchToolDeps) {
       return { ok: false, code: "INVALID_TASK", message: "The task is empty; pass the user's requested work as task." };
     }
 
-    let harness: HarnessId | null = null;
-    if (opts.harness) {
-      const wanted = opts.harness.trim().toLowerCase() as HarnessId;
-      if (!HARNESS_IDS.includes(wanted)) {
-        return {
-          ok: false,
-          code: "UNKNOWN_HARNESS",
-          message: `Unknown harness '${opts.harness}'. Installed/executable ones: ${HARNESS_IDS.join(", ")}.`,
-        };
-      }
-      harness = wanted;
-    } else {
-      harness = mentionToHarness(task);
-    }
-    if (!harness) {
-      return {
-        ok: false,
-        code: "HARNESS_UNRESOLVED",
-        message:
-          "No executor named. Ask the user which one, or have them @-mention it: @opencode, @codex or @zcode.",
-      };
-    }
-    if (!deps.installedHarnesses().includes(harness)) {
-      return {
-        ok: false,
-        code: "HARNESS_NOT_INSTALLED",
-        message: `${harness} is not installed on this machine.`,
-      };
-    }
-
     const chatUrl = await opts.resolveConversation(opts.workspace, opts.chatUrl);
     if (!chatUrl) {
       return {
@@ -113,6 +96,51 @@ export function createDispatchToolHandler(deps: DispatchToolDeps) {
           "Could not determine which conversation to report back to. Pass this conversation's chatgpt.com/c/… URL as chatUrl.",
       };
     }
+
+    // HARD authorization gate: the executor must be @-mentioned in the
+    // conversation's latest USER message. ChatGPT's task/harness parameters
+    // alone never dispatch anything.
+    const userMessage = await deps.readUserMessage(chatUrl);
+    if (!userMessage.readable) {
+      return {
+        ok: false,
+        code: "DISPATCH_UNVERIFIED",
+        message:
+          `Could not read this conversation's latest user message (${userMessage.reason}), ` +
+          `so the dispatch cannot be verified and is refused. Do the work with your own tools ` +
+          `(read-only, or the workspace's chatgptMode write tiers) instead.`,
+      };
+    }
+    const userText = isAgentInjected(userMessage.text) ? null : userMessage.text;
+    const userMention = userText ? mentionToHarness(userText) : null;
+    if (!userMention) {
+      return {
+        ok: false,
+        code: "DISPATCH_UNAUTHORIZED",
+        message:
+          "The user's own latest message does not @-mention an executor, so starting an agent is not authorized. " +
+          "Either ask the user to send a new message that @-mentions one (@opencode, @codex, @zcode), or do the " +
+          "work yourself with your data-plane tools (read-only, or the workspace's chatgptMode write tiers).",
+      };
+    }
+    if (opts.harness && opts.harness.trim().toLowerCase() !== userMention) {
+      return {
+        ok: false,
+        code: "EXECUTOR_MISMATCH",
+        message:
+          `The user @-mentioned @${userMention}, not '${opts.harness}'. Dispatch the one the user named, ` +
+          `or ask them to confirm.`,
+      };
+    }
+    const harness: HarnessId = userMention;
+    if (!deps.installedHarnesses().includes(harness)) {
+      return {
+        ok: false,
+        code: "HARNESS_NOT_INSTALLED",
+        message: `${harness} is not installed on this machine.`,
+      };
+    }
+
     if (deps.watchedConversations().includes(chatUrl)) {
       return {
         ok: false,
@@ -204,11 +232,34 @@ export function browserConversationResolver(logger: Logger) {
   };
 }
 
+/**
+ * Real user-message reader for the hard dispatch gate: open the exact
+ * conversation and read its latest USER message. Failures are reported as
+ * unreadable — the dispatch gate fails closed, never open.
+ */
+export function browserUserMessageReader(logger: Logger) {
+  return async (chatUrl: string): Promise<UserMessageView> => {
+    const browser = new ControlPlaneBrowser("dispatch-verify", {}, logger, "dispatch");
+    try {
+      await browser.openConversation(chatUrl);
+      const { text } = await browser.readLatestUserMessage();
+      return { readable: true, text };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      logger.warn(`dispatch user-message verification failed for ${chatUrl}: ${reason}`);
+      return { readable: false, reason };
+    } finally {
+      await browser.close().catch(() => undefined);
+    }
+  };
+}
+
 export function defaultDispatchToolDeps(logger: Logger, watchedConversations: () => string[]): DispatchToolDeps {
   return {
     installedHarnesses: detectHarnesses,
     spawn: (plan, onStart) => defaultSpawnFn(plan, onStart),
     watchedConversations,
+    readUserMessage: browserUserMessageReader(logger),
     launchStyle: readLaunchStyle,
     openInteractive: async (launch) => (await openInteractiveTerminal(launch)).ok,
     logger,

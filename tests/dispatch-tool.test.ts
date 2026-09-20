@@ -23,10 +23,17 @@ function fakeWorkspace(root: string): { root: string; id: string; name: string }
   return { root, id: "ws-tool", name: "tool" };
 }
 
+/** Latest task passed to `call` — the default fake user message mirrors it. */
+let lastTaskText = "";
+
 function deps(opts: {
   installed?: HarnessId[];
   watched?: string[];
   resolve?: string | null;
+  /** The conversation's latest user message; default mirrors the task text. */
+  userMessage?: string | null;
+  /** Simulate an unreadable conversation (verification fails closed). */
+  userMessageUnreadable?: boolean;
   launchStyle?: "headless" | "interactive";
   openInteractive?: (launch: { harness: HarnessId; workspaceRoot: string; prompt: string; chatUrl?: string }) => Promise<boolean>;
 } = {}): { deps: DispatchToolDeps; plans: SpawnPlan[]; logger: Logger } {
@@ -46,6 +53,10 @@ function deps(opts: {
         return { exitCode: 0 };
       },
       watchedConversations: () => opts.watched ?? [],
+      readUserMessage: async () =>
+        opts.userMessageUnreadable
+          ? { readable: false, reason: "NOT_LOGGED_IN" }
+          : { readable: true, text: opts.userMessage === undefined ? lastTaskText : opts.userMessage },
       launchStyle: () => opts.launchStyle ?? "headless",
       openInteractive: opts.openInteractive ?? (async () => true),
       logger,
@@ -63,6 +74,7 @@ function call(
   extra: { harness?: string; chatUrl?: string; resolve?: string | null } = {}
 ) {
   const root = makeTmpDir("dispatch-tool-root");
+  lastTaskText = task;
   return handler(d)({
     workspace: fakeWorkspace(root) as never,
     task,
@@ -87,43 +99,72 @@ describe("dispatch_agent tool", () => {
     expect(plans[0].args.at(-1)).toContain("STATE: FOLLOW"); // the spawned run introduces the protocol
   });
 
-  it("an explicit harness argument wins over the mention", async () => {
-    const { deps: d, plans } = deps();
+  it("refuses when the user's own message has no @-mention (hard gate)", async () => {
+    const { deps: d, plans } = deps({ userMessage: "please create test2 on the desktop" });
     releaseConversation(CHAT_URL);
-    const result = await call(d, "@opencode do X", { harness: "codex" });
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(result.harness).toBe("codex");
-    expect(plans[0].cmd).toBe("codex");
-  });
-
-  it("refuses honestly with no harness named anywhere", async () => {
-    const { deps: d, plans } = deps();
-    const result = await call(d, "just do the thing");
+    const result = await call(d, "在桌面创建 test2 文件夹"); // ChatGPT's task text, no user @
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.code).toBe("HARNESS_UNRESOLVED");
+    if (!result.ok) expect(result.code).toBe("DISPATCH_UNAUTHORIZED");
     expect(plans).toHaveLength(0);
   });
 
-  it("refuses an uninstalled harness and an unknown one", async () => {
-    const { deps: d } = deps({ installed: ["codex"] });
-    const mentioned = await call(d, "@opencode do X");
+  it("refuses an @-mention ChatGPT wrote into the task but the user never sent", async () => {
+    const { deps: d, plans } = deps({ userMessage: "再创建个test2" });
+    const result = await call(d, "@opencode 再创建个test2");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("DISPATCH_UNAUTHORIZED");
+    expect(plans).toHaveLength(0);
+  });
+
+  it("refuses a harness argument the user did not @-mention", async () => {
+    const { deps: d, plans } = deps({ userMessage: "@opencode do X" });
+    const result = await call(d, "do X", { harness: "codex" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("EXECUTOR_MISMATCH");
+    expect(plans).toHaveLength(0);
+  });
+
+  it("fails closed when the user message cannot be read", async () => {
+    const { deps: d, plans } = deps({ userMessageUnreadable: true });
+    const result = await call(d, "@opencode do X");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("DISPATCH_UNVERIFIED");
+    expect(plans).toHaveLength(0);
+  });
+
+  it("a [C2C]-injected user turn never authorizes a dispatch", async () => {
+    const { deps: d, plans } = deps({ userMessage: "[C2C] STATE … @opencode do X" });
+    const result = await call(d, "do X");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("DISPATCH_UNAUTHORIZED");
+    expect(plans).toHaveLength(0);
+  });
+
+  it("refuses honestly with no harness named anywhere", async () => {
+    const { deps: d, plans } = deps({ userMessage: "just do the thing" });
+    const result = await call(d, "just do the thing");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("DISPATCH_UNAUTHORIZED");
+    expect(plans).toHaveLength(0);
+  });
+
+  it("refuses an uninstalled harness", async () => {
+    const { deps: d } = deps({ installed: ["codex"], userMessage: "@opencode do X" });
+    const mentioned = await call(d, "do X");
     expect(mentioned.ok).toBe(false);
     if (!mentioned.ok) expect(mentioned.code).toBe("HARNESS_NOT_INSTALLED");
-    const unknown = await call(d, "do X", { harness: "vim" });
-    expect(unknown.ok).toBe(false);
-    if (!unknown.ok) expect(unknown.code).toBe("UNKNOWN_HARNESS");
   });
 
   it("one conversation, one agent: a busy conversation is refused", async () => {
     const { deps: d, plans } = deps();
     releaseConversation(CHAT_URL);
-    const first = await call(d, "@opencode first task");
-    expect(first.ok).toBe(true);
-    const second = await call(d, "@opencode second task");
-    expect(second.ok).toBe(false);
-    if (!second.ok) expect(second.code).toBe("CONVERSATION_BUSY");
-    expect(plans).toHaveLength(1);
-    releaseConversation(CHAT_URL); // the spawn promise resolves and releases
+    expect(claimConversation(CHAT_URL, "opencode")).toBe(true);
+    noteClaimPid(CHAT_URL, process.pid); // a live holder, so the claim stays
+    const result = await call(d, "@opencode second task");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("CONVERSATION_BUSY");
+    expect(plans).toHaveLength(0);
+    releaseConversation(CHAT_URL);
   });
 
   it("a claim the spawn released can be taken again", async () => {

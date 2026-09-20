@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Collaborative mode: hard dispatch gate
+- `dispatch_agent` now verifies authorization server-side instead of
+  trusting ChatGPT's parameters: before spawning, the bridge opens the
+  conversation and reads the latest USER message; only a real
+  @-mention of the executor there dispatches. ChatGPT writing an @
+  into its task parameter, passing a harness the user did not
+  mention (EXECUTOR_MISMATCH), or an agent-injected [C2C] user turn
+  is refused with DISPATCH_UNAUTHORIZED; an unreadable conversation
+  is refused with DISPATCH_UNVERIFIED (fail closed). Without the
+  user's @, ChatGPT's only path is its own data-plane tools.
+
 ### Direct mode (pure ChatGPT)
 - New `chatgptMode` in `.c2c.json` with three monotonic tiers, keeping
   read-only as the default and the structural story unchanged:
