@@ -100,7 +100,7 @@ describe("MCP tools over Streamable HTTP", () => {
     }
 
     expectToolOutputSchema(tools, "list_workspaces", ["workspaces"]);
-    expectToolOutputSchema(tools, "workspace_info", ["workspaceId", "workspaceName", "projectType", "git"]);
+    expectToolOutputSchema(tools, "workspace_info", ["workspaceId", "workspaceName", "rootPath", "projectType", "git"]);
     expectToolOutputSchema(tools, "list_directory", ["path", "entries", "total", "hasMore"]);
     expectToolOutputSchema(tools, "read_file", ["path", "content", "startLine", "endLine", "nextStartLine"]);
     expectToolOutputSchema(tools, "search_workspace", ["matches", "matchCount", "truncated", "engine"]);

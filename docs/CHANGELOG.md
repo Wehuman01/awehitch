@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Fixes
+- `list_workspaces` and `workspace_info` now report each workspace's real
+  absolute root (`rootPath`). Without it the model saw only opaque names
+  plus the `workspace:/` alias and could not tell that a home-rooted
+  workspace covers Desktop — it concluded whole subtrees were "not
+  exposed" when they were fully reachable by relative path.
 - The control-plane Chromium now honors the standard proxy environment
   variables (https_proxy / http_proxy / all_proxy, any case) as
   --proxy-server. On networks where chatgpt.com needs a local proxy,

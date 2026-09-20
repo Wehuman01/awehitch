@@ -147,6 +147,9 @@ const workspaceInfoOutputSchema = {
   workspaceId: z.string(),
   workspaceName: z.string(),
   rootAlias: z.string(),
+  /** The real absolute root, so the model can reason about coverage
+   *  (e.g. a home-rooted workspace contains Desktop) instead of guessing. */
+  rootPath: z.string(),
   projectType: z.string(),
   languages: z.array(z.string()),
   frameworks: z.array(z.string()),
@@ -318,6 +321,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
             workspaceId: z.string(),
             workspaceName: z.string(),
             rootAlias: z.string(),
+            rootPath: z.string(),
             chatgptMode: z.enum(["readonly", "write", "write-exec"]),
           })
         ),
@@ -332,6 +336,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
           workspaceId: workspace.id,
           workspaceName: workspace.name,
           rootAlias: "workspace:/",
+          rootPath: workspace.root,
           chatgptMode: workspace.projectConfig.chatgptMode ?? "readonly",
         })),
       });
@@ -360,6 +365,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
           workspaceId: workspace.id,
           workspaceName: workspace.name,
           rootAlias: "workspace:/",
+          rootPath: workspace.root,
           ...project,
           git: {
             isRepo: git.isRepo,
