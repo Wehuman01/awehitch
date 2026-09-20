@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.1 - 2026-09-20
 
 ### Fixes
 - `list_workspaces` and `workspace_info` now report each workspace's real
